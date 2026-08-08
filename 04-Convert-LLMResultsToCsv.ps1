@@ -31,7 +31,7 @@ function Remove-Markdown {
     $clean = $Text
     $clean = $clean -replace '(?ms)```.*?```', ''
     $clean = $clean -replace '(?ms)~~~.*?~~~', ''
-    $clean = $clean -replace '!\[([^\]]*)\]\([^\)]*\)', '$1'
+    $clean = $clean -replace '!(\[[^\]]*\])\([^\)]*\)', '$1'
     $clean = $clean -replace '(^|\r?\n)\s{0,3}#{1,6}\s*', '$1'
     $clean = $clean -replace '(^|\r?\n)\s*([-+*]|\d+\.)\s+', '$1'
     $clean = $clean -replace '(^|\r?\n)\s{0,3}>\s*', '$1'
@@ -42,19 +42,73 @@ function Remove-Markdown {
     return $clean.Trim()
 }
 
+function Fix-Mojibake {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+    if ($Text -notmatch 'Ã|Â') { return $Text }
+
+    $current = $Text
+    for ($i = 0; $i -lt 4; $i++) {
+        try {
+            $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($current)
+            $decoded = [System.Text.Encoding]::UTF8.GetString($bytes)
+        } catch {
+            break
+        }
+
+        if ($decoded -eq $current -or $decoded -match '�') {
+            break
+        }
+
+        $current = $decoded
+    }
+
+    return $current
+}
+
+function Repair-JsonText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+
+    $current = $Text
+    for ($i = 0; $i -lt 4; $i++) {
+        try {
+            $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($current)
+            $decoded = [System.Text.Encoding]::UTF8.GetString($bytes)
+        } catch {
+            break
+        }
+
+        try {
+            ConvertFrom-Json -InputObject $decoded -ErrorAction Stop | Out-Null
+            return $decoded
+        } catch {
+            if ($decoded -eq $current) {
+                break
+            }
+            $current = $decoded
+        }
+    }
+
+    return $Text
+}
+
 function Convert-JsonValues {
     param([object]$Item)
     if ($null -eq $Item) { return $null }
 
     if ($Item -is [string]) {
-        return Remove-Markdown -Text $Item
+        $fixedValue = Fix-Mojibake -Text $Item
+        return Remove-Markdown -Text $fixedValue
     }
 
     if ($Item -is [System.Collections.IDictionary]) {
+        $result = @{}
         foreach ($key in $Item.Keys) {
-            $Item[$key] = Convert-JsonValues -Item $Item[$key]
+            $fixedKey = Fix-Mojibake -Text $key
+            $result[$fixedKey] = Convert-JsonValues -Item $Item[$key]
         }
-        return $Item
+        return $result
     }
 
     if ($Item -is [System.Collections.IEnumerable] -and -not ($Item -is [string])) {
@@ -163,12 +217,25 @@ if ($firstTimestamp -and $OutputCsv -eq ".\03-CSV\03-LLM-Result.csv") {
 $allObjects = @()
 foreach ($file in $files) {
     Write-Host "Processing: $($file.Name)"
-    $raw = Get-Content -Path $file.FullName -Encoding UTF8 -Raw
+    try {
+        $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
+    } catch {
+        Write-Warning "Failed to read $($file.Name): $($_.Exception.Message)"
+        continue
+    }
+
+    $raw = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+    if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
+        $raw = $raw.Substring(1)
+    }
+
     $jsonText = Get-JsonText -RawText $raw
     if (-not $jsonText) {
         Write-Warning "No JSON structure found in file: $($file.Name)"
         continue
     }
+
+    $jsonText = Repair-JsonText -Text $jsonText
 
     try {
         $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
