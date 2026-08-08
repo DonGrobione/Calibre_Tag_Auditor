@@ -49,7 +49,7 @@ try {
                Sort-Object -Property LastWriteTime -Descending |
                Select-Object -First 1
 
-    $bookFiles = Get-ChildItem -Path $ExportDir -Filter "Calibre_Buchexport_*.json" |
+    $bookFiles = Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" |
                  Sort-Object -Property Name
 
     if (-not $tagFile -or $bookFiles.Count -eq 0) {
@@ -358,8 +358,7 @@ $bookContent
             }
             else {
                 $validJsonCount++
-                $outName = $bookFile.Name -replace "^Calibre_Buchexport_", "Ergebnis_"
-                $outPath = Join-Path -Path $OutputDir -ChildPath $outName
+            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "Ergebnis_"
 
                 # Serialize the validated JSON back to string
                 $jsonString = $resultOrError | ConvertTo-Json -Depth 10

@@ -91,7 +91,7 @@ try {
     }
 
     if (-not $NeedsSplitting) {
-        $JsonFile = Join-Path $ExportDir "Calibre_Buchexport_01_$ExportDate.json"
+        $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_01_$ExportDate.json"
         $Results | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonFile -Encoding UTF8
 
         Write-Host ""
@@ -109,7 +109,7 @@ try {
             $EndIndex = [Math]::Min($StartIndex + $BooksPerFile, $TotalBooks) - 1
             $Batch = $Results[$StartIndex..$EndIndex]
             $Suffix = $CurrentFile.ToString("D$PadWidth")
-            $JsonFile = Join-Path $ExportDir "Calibre_Buchexport_${Suffix}_$ExportDate.json"
+            $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_${Suffix}_$ExportDate.json"
 
             $Batch | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonFile -Encoding UTF8
 
