@@ -10,6 +10,9 @@
     output path is used, the output file name
     includes the timestamp from the first input file. For non-success result
     files, validation and parse metadata are added as separate rows.
+    Script output (info, warnings, and errors) is written both to terminal and
+    to the central log via Modules\Write-Log.psm1. Errors are marked as already
+    logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.
@@ -20,13 +23,70 @@
     The file is written as UTF-8 with BOM so German umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.11
+    Version: 1.12
 #>
 
 param(
     [string]$InputFolder = ".\02-LLM-Result",
     [string]$OutputCsv = ".\03-CSV\03-LLM-Result.csv"
 )
+
+$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
+if (-not (Test-Path -Path $WriteLogModulePath)) {
+    throw "Required module not found: '$WriteLogModulePath'"
+}
+
+Import-Module -Name $WriteLogModulePath -Force
+
+# Prefix every log line with the current script name to simplify troubleshooting
+# when multiple scripts write into one shared logfile.
+$ScriptLogName = if ([string]::IsNullOrWhiteSpace($PSCommandPath)) { 'UnknownScript' } else { Split-Path -Path $PSCommandPath -Leaf }
+$ScriptLogPrefix = "[$ScriptLogName]"
+
+function Write-HostAndLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [object[]]$Object,
+        [ConsoleColor]$ForegroundColor,
+        [ConsoleColor]$BackgroundColor,
+        [switch]$NoNewline,
+        [object]$Separator
+    )
+
+    $joinSeparator = if ($PSBoundParameters.ContainsKey('Separator')) { [string]$Separator } else { ' ' }
+    $message = (($Object | ForEach-Object { [string]$_ }) -join $joinSeparator)
+    Write-Log -Message "$ScriptLogPrefix $message" -Info
+    Microsoft.PowerShell.Utility\Write-Host @PSBoundParameters
+}
+
+function Write-WarningAndLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [object[]]$Message
+    )
+
+    $text = ($Message | ForEach-Object { [string]$_ }) -join ' '
+    Write-Log -Message "$ScriptLogPrefix $text" -Warn
+    Microsoft.PowerShell.Utility\Write-Warning $text
+}
+
+function Write-ErrorAndLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [object[]]$Message
+    )
+
+    $text = ($Message | ForEach-Object { [string]$_ }) -join ' '
+    Write-Log -Message "$ScriptLogPrefix $text" -IsError
+    Microsoft.PowerShell.Utility\Write-Error $text
+}
+
+Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
+Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
+Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
 # Repair common mojibake text issues caused by incorrect UTF-8 or Latin-1 decoding.
 function Repair-Mojibake {
@@ -284,5 +344,10 @@ try {
 }
 catch {
     Write-Error "CSV conversion failed: $($_.Exception.Message)"
+    # Mark exception as already logged in this script so pipeline wrappers do not
+    # write the same error to log a second time.
+    if ($null -ne $_.Exception) {
+        $_.Exception.Data['LoggedByScript'] = $true
+    }
     throw
 }

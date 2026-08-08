@@ -20,7 +20,7 @@
 - Never sacrifice readability for performance.
 
 ## 4. Script Handling (PowerShell)
-- Ensure compability with PowerShell 5.1
+- Ensure compatibility with PowerShell 5.1.
 - All scripts must be written in English (code, comments, help blocks, and output messages).
 - Add new scripts to the Scripts/ directory, use PowerShell Approved Verbs for filenames.
 - Use PowerShell Approved Verbs for function names (verify with Get-Verb).
@@ -33,6 +33,11 @@
 - Do not use ====== separators (reserved for the main script only).
 - For existing scripts: validate paths with Test-Path and use try-catch for critical operations.
 - Store all LLM agent prompt instructions exclusively in external `.txt` prompt files; do not embed agent prompt text or instruction blocks in PowerShell scripts.
+- Every PowerShell script must import `Modules/Write-Log.psm1`.
+- Every user-visible script message must be written to terminal and logfile.
+- `Write-Host`, `Write-Warning`, and `Write-Error` must be wrapped or aliased so terminal output is preserved while logging the same message.
+- Every logfile entry must include the emitting script name as prefix (for example `[MyScript.ps1]`).
+- In orchestrated runs, avoid duplicate error log entries: child scripts should mark already logged exceptions, and wrappers/orchestrators must not log the same error twice.
 
 ## 5. Copilot Memory
 - All Copilot memory relevant to this project must be written to `.copilot/repo-memory.md`, not to the local user-scoped Copilot memory system.

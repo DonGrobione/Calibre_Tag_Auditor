@@ -6,10 +6,71 @@
     Executes the export, LLM processing, and CSV conversion scripts in order.
     Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
+    Script output (info, warnings, and errors) is written both to terminal and
+    to the central log via Modules\Write-Log.psm1. If a child script already
+    logged an error and marked it, the pipeline shows the error in terminal
+    without writing a duplicate ERROR entry to the logfile.
 
 .NOTES
-    Version: 1.2
+    Version: 1.3
 #>
+
+$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
+if (-not (Test-Path -Path $WriteLogModulePath)) {
+    throw "Required module not found: '$WriteLogModulePath'"
+}
+
+Import-Module -Name $WriteLogModulePath -Force
+
+# Prefix every log line with the current script name to simplify troubleshooting
+# when multiple scripts write into one shared logfile.
+$ScriptLogName = if ([string]::IsNullOrWhiteSpace($PSCommandPath)) { 'UnknownScript' } else { Split-Path -Path $PSCommandPath -Leaf }
+$ScriptLogPrefix = "[$ScriptLogName]"
+
+function Write-HostAndLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [object[]]$Object,
+        [ConsoleColor]$ForegroundColor,
+        [ConsoleColor]$BackgroundColor,
+        [switch]$NoNewline,
+        [object]$Separator
+    )
+
+    $joinSeparator = if ($PSBoundParameters.ContainsKey('Separator')) { [string]$Separator } else { ' ' }
+    $message = (($Object | ForEach-Object { [string]$_ }) -join $joinSeparator)
+    Write-Log -Message "$ScriptLogPrefix $message" -Info
+    Microsoft.PowerShell.Utility\Write-Host @PSBoundParameters
+}
+
+function Write-WarningAndLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [object[]]$Message
+    )
+
+    $text = ($Message | ForEach-Object { [string]$_ }) -join ' '
+    Write-Log -Message "$ScriptLogPrefix $text" -Warn
+    Microsoft.PowerShell.Utility\Write-Warning $text
+}
+
+function Write-ErrorAndLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [object[]]$Message
+    )
+
+    $text = ($Message | ForEach-Object { [string]$_ }) -join ' '
+    Write-Log -Message "$ScriptLogPrefix $text" -IsError
+    Microsoft.PowerShell.Utility\Write-Error $text
+}
+
+Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
+Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
+Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
 # Clear the console to keep the output readable for each run.
 clear-Host
@@ -67,6 +128,12 @@ try {
 catch {
     # Report the error and stop execution.
     $errorMessage = $null
+    $alreadyLoggedByChildScript = $false
+
+    if ($null -ne $_.Exception -and $null -ne $_.Exception.Data -and $_.Exception.Data.Contains('LoggedByScript')) {
+        $alreadyLoggedByChildScript = [bool]$_.Exception.Data['LoggedByScript']
+    }
+
     if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
         $errorMessage = $_.Exception.Message
     }
@@ -77,7 +144,14 @@ catch {
         $errorMessage = $_.ToString()
     }
 
-    Write-Error $errorMessage
+    # Avoid duplicate logfile entries: if the child script already logged this
+    # error, print it to terminal directly without invoking the logging alias.
+    if ($alreadyLoggedByChildScript) {
+        Microsoft.PowerShell.Utility\Write-Error $errorMessage
+    }
+    else {
+        Write-Error $errorMessage
+    }
     Write-Host "Press Enter to close this window after reviewing the error..." -ForegroundColor Yellow
     Read-Host | Out-Null
     throw
