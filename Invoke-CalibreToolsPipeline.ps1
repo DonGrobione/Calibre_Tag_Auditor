@@ -11,6 +11,7 @@
 #>
 
 $ErrorActionPreference = 'Stop'
+$startTime = Get-Date
 
 try {
     $llmResultDir = Join-Path -Path $PSScriptRoot -ChildPath "02-LLM-Result"
@@ -43,6 +44,11 @@ try {
     }
 
     Write-Host "--- Pipeline complete ---" -ForegroundColor Cyan
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+    Write-Host "Start:    $($startTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
+    Write-Host "End:      $($endTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
+    Write-Host "Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
 }
 catch {
     Write-Error $_.Exception.Message
