@@ -42,7 +42,7 @@ function Remove-Markdown {
     return $clean.Trim()
 }
 
-function Fix-Mojibake {
+function Repair-Mojibake {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
     if ($Text -notmatch 'Ã|Â') { return $Text }
@@ -98,14 +98,14 @@ function Convert-JsonValues {
     if ($null -eq $Item) { return $null }
 
     if ($Item -is [string]) {
-        $fixedValue = Fix-Mojibake -Text $Item
+        $fixedValue = Repair-Mojibake -Text $Item
         return Remove-Markdown -Text $fixedValue
     }
 
     if ($Item -is [System.Collections.IDictionary]) {
         $result = @{}
         foreach ($key in $Item.Keys) {
-            $fixedKey = Fix-Mojibake -Text $key
+            $fixedKey = Repair-Mojibake -Text $key
             $result[$fixedKey] = Convert-JsonValues -Item $Item[$key]
         }
         return $result
