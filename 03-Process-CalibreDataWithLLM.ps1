@@ -92,15 +92,6 @@ try {
         }
     }
 
-    function Save-RawResponse {
-        param([string]$OriginalName, [string]$Content, [string]$OutputDir)
-
-        $rawName = $OriginalName -replace '\.json$', '.json.raw'
-        $rawPath = Join-Path -Path $OutputDir -ChildPath $rawName
-        [System.IO.File]::WriteAllText($rawPath, $Content, [System.Text.Encoding]::UTF8)
-        return $rawPath
-    }
-
     function Test-AgentExists {
         param([string]$AgentId)
 
@@ -348,12 +339,15 @@ $bookContent
                 $invalidJsonCount++
                 Write-Host "  -> INVALID JSON: $resultOrError" -ForegroundColor Red
 
-                # Save raw response for manual inspection
-                $rawPath = Save-RawResponse -OriginalName $bookFile.Name -Content $apiResult -OutputDir $OutputDir
-                Write-Host "     Raw saved as: $($rawPath | Split-Path -Leaf)" -ForegroundColor DarkGray
+                # Write the raw API response directly into the JSON output file
+                $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM_Result_"
+                $outPath = Join-Path -Path $OutputDir -ChildPath $outName
+                [System.IO.File]::WriteAllText($outPath, $apiResult, [System.Text.Encoding]::UTF8)
+                Write-Host "  -> Saved invalid JSON response as: $outName" -ForegroundColor Yellow
 
-                # Show preview of first 200 chars
-                Write-Host "     Preview: $($apiResult.Substring(0, [Math]::Min(200, $apiResult.Length)))..." -ForegroundColor DarkGray
+                if ($EnableDebugLogging -and $apiResult.Length -gt 200) {
+                    Write-Host "     Preview: $($apiResult.Substring(0, [Math]::Min(200, $apiResult.Length)))..." -ForegroundColor Gray
+                }
             }
             else {
                 $validJsonCount++
@@ -385,7 +379,7 @@ $bookContent
 
     if ($invalidJsonCount -gt 0) {
         Write-Host ""
-        Write-Host "Note: Invalid responses saved as .json.raw files for manual review." -ForegroundColor Yellow
+        Write-Host "Note: Invalid responses were written directly to JSON output files." -ForegroundColor Yellow
     }
 
     if ($EnableDebugLogging) {
