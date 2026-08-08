@@ -4,3 +4,4 @@
 02-LLM-Result/*.json
 03-CSV/*.csv
 *.ods
+*.bak
