@@ -4,10 +4,10 @@ This repository contains PowerShell scripts for exporting Calibre library metada
 
 ## Project structure
 
-- `Invoke-CalibreToolsPipeline.ps1` - Run the full pipeline in sequence: clears old LLM results, then executes all scripts below in order.
+- `Invoke-CalibreToolsPipeline.ps1` - Run the full pipeline in sequence: clears old LLM results, executes all scripts below in order, and waits for Enter on failures so errors remain visible.
 - `01-Export-CalibreBooks.ps1` - Export Calibre book metadata into JSON files in `01-Export`.
 - `01-Export-CalibreTags.ps1` - Export Calibre tag definitions into JSON files in `01-Export`.
-- `02-Process-CalibreDataWithLLM.ps1` - Validate exported Calibre data with the Mistral LLM agent, using the external prompt file `02-CalibreDataLLM-Prompt.txt`, and save results in `02-LLM-Result`.
+- `02-Process-CalibreDataWithLLM.ps1` - Validate exported Calibre data with the Mistral LLM agent, using the external prompt file `02-CalibreDataLLM-Prompt.txt`, and save valid JSON wrapper results in `02-LLM-Result`.
 - `03-Convert-LLMResultsToCsv.ps1` - Convert JSON results from `02-LLM-Result` into a single timestamped CSV file in `03-CSV`, using `|` as delimiter and UTF-8 with BOM.
 - `02-CalibreDataLLM-Prompt.txt` - External prompt file used by the LLM agent.
 - `.copilot/project-rules.md` - Project rules and coding standards.
@@ -28,13 +28,16 @@ Or run each script individually:
 
 1. Run `01-Export-CalibreBooks.ps1` to export book metadata.
 2. Run `01-Export-CalibreTags.ps1` to export tag definitions.
-3. Ensure `.secrets/Mistral_API.txt` contains your Mistral API key and `.secrets/Mistral_Agent_Id.txt` can be created or updated by the LLM script.
+3. Ensure `.secrets/Mistral_API.txt` contains your Mistral API key.
 4. Run `02-Process-CalibreDataWithLLM.ps1` to validate the exports with Mistral.
 5. Run `03-Convert-LLMResultsToCsv.ps1` to merge result JSON files into a CSV.
 
 ## Notes
 
 - The LLM prompt must remain in `02-CalibreDataLLM-Prompt.txt`.
+- `02-Process-CalibreDataWithLLM.ps1` creates a fresh Mistral agent at script start, reusing no previous agent instance.
+- Each file in `02-LLM-Result` is a valid JSON wrapper with metadata fields such as `source_file`, `status`, `records`, `parse_error`, and record-count validation fields (`input_book_count`, `output_record_count`, `record_count_match`, `validation_error`).
+- Input-vs-output record-count validation is performed per book export file; mismatches are kept in output metadata and shown in terminal warnings.
 - The CSV converter repairs malformed input text before export so German umlauts and special characters survive the pipeline.
 - All PowerShell scripts use top-level error handling and are compatible with PowerShell 5.1.
 - The output folder names are versioned and consistent across scripts:
@@ -53,4 +56,5 @@ Or run each script individually:
 
 - Follow the rules documented in `.copilot/project-rules.md`.
 - Update the comment-based help block and version in each script after modifications.
+- Update this `README.md` whenever script behavior, output format, or required files change.
 - Keep prompt text only in external `.txt` prompt files.

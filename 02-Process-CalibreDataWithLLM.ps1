@@ -7,9 +7,11 @@
     or refreshes a Mistral agent for each run, sends each book export to the
     agent together with the prompt and tag definitions, and writes the LLM
     responses to the 02-LLM-Result folder as individual JSON files.
+    It also validates input and output record counts per file and stores the
+    validation outcome in the output metadata.
 
 .NOTES
-    Version: 2.6
+    Version: 2.7
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records,
@@ -187,7 +189,7 @@ try {
         }
     }
 
-    # Reuse a previous ID only if it still exists; otherwise create a new agent.
+    # Remove any previously stored agent and create a fresh one for each run.
     function Get-MistralAgentId {
         if (Test-Path -Path $script:AgentIdFile) {
             $agentIdContent = Get-Content -Path $script:AgentIdFile -Raw -Encoding UTF8

@@ -5,9 +5,10 @@
 .DESCRIPTION
     Executes the export, LLM processing, and CSV conversion scripts in order.
     Each script must complete successfully before the next one starts.
+    On failure, the error is shown and the script waits for Enter before exit.
 
 .NOTES
-    Version: 1.1
+    Version: 1.2
 #>
 
 # Clear the console to keep the output readable for each run.

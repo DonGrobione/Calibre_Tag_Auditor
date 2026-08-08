@@ -6,7 +6,8 @@
     Reads all JSON files from the input folder, unwraps the JSON result payloads
     written by the LLM step, removes Markdown formatting from string values,
     repairs mojibake from malformed input text, merges the extracted records,
-    and exports the result to a single CSV file.
+    and exports the result to a single CSV file. For non-success result files,
+    validation and parse metadata are added as separate rows.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.
@@ -17,7 +18,7 @@
     The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.8
+    Version: 1.9
 #>
 
 param(
@@ -260,11 +261,15 @@ try {
 
             if ($parsed.status -and $parsed.status -ne 'success') {
                 $allObjects += [pscustomobject]@{
-                    source_file  = $parsed.source_file
-                    agent_id     = $parsed.agent_id
-                    status       = $parsed.status
-                    parse_error  = $parsed.parse_error
-                    raw_response = $parsed.raw_response
+                    source_file         = $parsed.source_file
+                    agent_id            = $parsed.agent_id
+                    status              = $parsed.status
+                    input_book_count    = $parsed.input_book_count
+                    output_record_count = $parsed.output_record_count
+                    record_count_match  = $parsed.record_count_match
+                    validation_error    = $parsed.validation_error
+                    parse_error         = $parsed.parse_error
+                    raw_response        = $parsed.raw_response
                 }
             }
             continue
