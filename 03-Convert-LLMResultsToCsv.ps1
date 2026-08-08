@@ -4,10 +4,10 @@
 
 .DESCRIPTION
     Reads all JSON files from the input folder, unwraps the JSON result payloads
-    written by the LLM step, removes Markdown formatting from string values,
-    repairs mojibake from malformed input text, preserves German umlauts and
-    special characters, merges the extracted records, and exports the result to
-    a single CSV file. When the default output path is used, the output file name
+    written by the LLM step, repairs mojibake from malformed input text,
+    preserves German umlauts and special characters, merges the extracted
+    records, and exports the result to a single CSV file. When the default
+    output path is used, the output file name
     includes the timestamp from the first input file. For non-success result
     files, validation and parse metadata are added as separate rows.
 
@@ -27,25 +27,6 @@ param(
     [string]$InputFolder = ".\02-LLM-Result",
     [string]$OutputCsv = ".\03-CSV\03-LLM-Result.csv"
 )
-
-# Remove Markdown formatting from text so the content can be converted cleanly to CSV.
-function Remove-Markdown {
-    param([string]$Text)
-    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
-
-    $clean = $Text
-    $clean = $clean -replace '(?ms)```.*?```', ''
-    $clean = $clean -replace '(?ms)~~~.*?~~~', ''
-    $clean = $clean -replace '!(\[[^\]]*\])\([^\)]*\)', '$1'
-    $clean = $clean -replace '(^|\r?\n)\s{0,3}#{1,6}\s*', '$1'
-    $clean = $clean -replace '(^|\r?\n)\s*([-+*]|\d+\.)\s+', '$1'
-    $clean = $clean -replace '(^|\r?\n)\s{0,3}>\s*', '$1'
-    $clean = $clean -replace '(\*\*|__)(.*?)\1', '$2'
-    $clean = $clean -replace '(\*|_)(.*?)\1', '$2'
-    $clean = $clean -replace '`([^`]*)`', '$1'
-    $clean = $clean -replace '\s{2,}', ' '
-    return $clean.Trim()
-}
 
 # Repair common mojibake text issues caused by incorrect UTF-8 or Latin-1 decoding.
 function Repair-Mojibake {
@@ -98,8 +79,7 @@ function Convert-JsonValues {
     if ($null -eq $Item) { return $null }
 
     if ($Item -is [string]) {
-        $fixedValue = Repair-Mojibake -Text $Item
-        return Remove-Markdown -Text $fixedValue
+        return Repair-Mojibake -Text $Item
     }
 
     if ($Item -is [System.Collections.IDictionary]) {
