@@ -45,7 +45,7 @@ try {
     $ApiKey = (Get-Content -Path $ApiKeyFile -Raw -Encoding UTF8).Trim()
     $PromptSystem = (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim()
 
-    $tagFile = Get-ChildItem -Path $ExportDir -Filter "Calibre_Tag_Export_*.json" |
+    $tagFile = Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" |
                Sort-Object -Property LastWriteTime -Descending |
                Select-Object -First 1
 

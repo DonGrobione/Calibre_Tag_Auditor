@@ -75,7 +75,7 @@ try {
 
     if ([string]::IsNullOrWhiteSpace($OutputPath)) {
         $Timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-        $OutputPath = Join-Path $ExportDir "Calibre_Tag_Export_$Timestamp.json"
+        $OutputPath = Join-Path $ExportDir "02-Export-CalibreTags_$Timestamp.json"
     }
 
     $FullOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
