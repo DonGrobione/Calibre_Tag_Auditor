@@ -2,9 +2,9 @@
 .vscode/
 
 # Secret files and credentials
-.secrets/
+.secrets/*
 
-# Generated export and result data (all files in those folders will be ignored, not the folder itself)
+# Generated export and result data
 01-Export/*
 02-LLM-Result/*
 03-CSV/*
