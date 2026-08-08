@@ -7,17 +7,16 @@
     or refreshes a Mistral agent for each run, sends each book export to the
     agent together with the prompt and tag definitions, and writes the LLM
     responses to the 02-LLM-Result folder as individual JSON files.
-    It validates both raw record counts and unique-book counts per file,
-    repairs mojibake in LLM responses, and stores the validation outcome in the
-    output metadata.
+    It validates unique-book counts per file, repairs mojibake in LLM
+    responses, and stores the validation outcome in the output metadata.
 
 .NOTES
     Version: 2.8
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records,
-    the raw response text, parse errors, and validation details for record and
-    unique-book counts.
+    the raw response text, parse errors, and validation details for unique-book
+    counts.
 #>
 
 try {
@@ -504,13 +503,11 @@ try {
         return $keys.Count
     }
 
-    # Convert the API response text into a JSON-safe result object.
     function Convert-ResponseTextToResultObject {
         param(
             [string]$RawText,
             [string]$SourceFile,
             [string]$AgentId,
-            [int]$ExpectedRecordCount = -1,
             [int]$ExpectedUniqueBookCount = -1
         )
 
@@ -518,11 +515,8 @@ try {
             source_file             = $SourceFile
             agent_id                = $AgentId
             status                  = 'success'
-            input_book_count        = $null
             input_unique_book_count = $null
-            output_record_count     = 0
             output_unique_book_count = 0
-            record_count_match      = $null
             unique_book_count_match = $null
             validation_error        = $null
             records                 = @()
@@ -530,9 +524,6 @@ try {
             parse_error             = $null
         }
 
-        if ($ExpectedRecordCount -ge 0) {
-            $result.input_book_count = $ExpectedRecordCount
-        }
         if ($ExpectedUniqueBookCount -ge 0) {
             $result.input_unique_book_count = $ExpectedUniqueBookCount
         }
@@ -586,17 +577,9 @@ try {
             $result.records = @($parsed)
         }
 
-        $result.output_record_count = $result.records.Count
         $result.output_unique_book_count = Get-UniqueBookCount -Items $result.records -TitlePropertyName 'Titel' -AuthorPropertyName 'Autor'
 
         $validationMessages = @()
-
-        if ($ExpectedRecordCount -ge 0) {
-            $result.record_count_match = ($result.output_record_count -eq $ExpectedRecordCount)
-            if (-not $result.record_count_match) {
-                $validationMessages += "Record count mismatch: input=$ExpectedRecordCount, output=$($result.output_record_count)."
-            }
-        }
 
         if ($ExpectedUniqueBookCount -ge 0) {
             $result.unique_book_count_match = ($result.output_unique_book_count -eq $ExpectedUniqueBookCount)
@@ -613,7 +596,6 @@ try {
         return [pscustomobject]$result
     }
 
-    # Send a request to the Mistral conversations API and handle basic retry cases.
     function Invoke-MistralRequest {
         param([string]$PayloadText)
 
@@ -700,21 +682,17 @@ try {
 
         # Read the current book export and build the full prompt payload.
         $bookContent = Get-Content -Path $bookFile.FullName -Raw -Encoding UTF8
-        $inputBookCount = -1
         $inputUniqueBookCount = -1
 
-        # Count the number of books and unique books in the input file for output validation.
+        # Count the number of unique books in the input file for output validation.
         try {
             $parsedInputBooks = ConvertFrom-Json -InputObject $bookContent -ErrorAction Stop
             if ($parsedInputBooks -is [System.Collections.IEnumerable] -and -not ($parsedInputBooks -is [string])) {
-                $inputBookCount = @($parsedInputBooks).Count
                 $inputUniqueBookCount = Get-UniqueBookCount -Items $parsedInputBooks -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
             }
             else {
-                $inputBookCount = 1
                 $inputUniqueBookCount = 1
             }
-            Write-Host "  -> Input books: $inputBookCount" -ForegroundColor Gray
             Write-Host "  -> Input unique books: $inputUniqueBookCount" -ForegroundColor Gray
         }
         catch {
@@ -745,7 +723,7 @@ $bookContent
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
-            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedRecordCount $inputBookCount -ExpectedUniqueBookCount $inputUniqueBookCount
+            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedUniqueBookCount $inputUniqueBookCount
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
             $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
