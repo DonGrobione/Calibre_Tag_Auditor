@@ -29,6 +29,9 @@ try {
         New-Item -Path $ExportDir -ItemType Directory | Out-Null
     }
 
+    Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" -File |
+    Remove-Item -Force
+
     $CalibrePortablePath = $null
     foreach ($Path in $CalibrePaths) {
         if (Test-Path $Path) {
