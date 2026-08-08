@@ -3,9 +3,10 @@
     Convert JSON result files into a single CSV output.
 
 .DESCRIPTION
-    Reads all JSON files from the input folder, removes Markdown formatting from
-    string values, repairs mojibake from malformed input text, merges the
-    extracted JSON objects, and exports the result to a single CSV file.
+    Reads all JSON files from the input folder, unwraps the JSON result payloads
+    written by the LLM step, removes Markdown formatting from string values,
+    repairs mojibake from malformed input text, merges the extracted records,
+    and exports the result to a single CSV file.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.
@@ -16,7 +17,7 @@
     The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.7
+    Version: 1.8
 #>
 
 param(
@@ -248,6 +249,27 @@ try {
             continue
         }
 
+        if ($null -ne $parsed.records) {
+            $records = $parsed.records
+            if ($records -is [System.Collections.IEnumerable] -and -not ($records -is [string])) {
+                foreach ($item in $records) { $allObjects += $item }
+            }
+            elseif ($null -ne $records) {
+                $allObjects += $records
+            }
+
+            if ($parsed.status -and $parsed.status -ne 'success') {
+                $allObjects += [pscustomobject]@{
+                    source_file  = $parsed.source_file
+                    agent_id     = $parsed.agent_id
+                    status       = $parsed.status
+                    parse_error  = $parsed.parse_error
+                    raw_response = $parsed.raw_response
+                }
+            }
+            continue
+        }
+
         if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
             foreach ($item in $parsed) { $allObjects += $item }
         } else {
@@ -276,7 +298,7 @@ try {
 
     $csvPath = Join-Path -Path $csvDir -ChildPath (Split-Path -Path $OutputCsv -Leaf)
 
-    # Schreibt die zusammengefassten Daten als UTF-8-CSV mit Pipe-Delimiter.
+    # Write the combined data as UTF-8 CSV with a pipe delimiter.
     $csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
     $csvContent | Out-File -FilePath $csvPath -Encoding UTF8 -Force
     Write-Host "CSV file created: $csvPath"

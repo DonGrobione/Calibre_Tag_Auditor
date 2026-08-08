@@ -9,9 +9,11 @@
     responses to the 02-LLM-Result folder as individual JSON files.
 
 .NOTES
-    Version: 2.4
+    Version: 2.5
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
+    Each output file is written as a valid JSON object with metadata, records,
+    the raw response text, and any parse error information.
 #>
 
 try {
@@ -211,6 +213,80 @@ try {
             return $null
         }
 
+        function Get-TextFromContent {
+            param($Content)
+
+            if ($null -eq $Content) {
+                return $null
+            }
+
+            if ($Content -is [string]) {
+                return $Content
+            }
+
+            if ($Content -is [System.Collections.IEnumerable]) {
+                $textParts = foreach ($item in $Content) {
+                    if ($null -eq $item) {
+                        continue
+                    }
+
+                    if ($item -is [string]) {
+                        $item
+                        continue
+                    }
+
+                    if ($null -ne $item.text -and -not [string]::IsNullOrWhiteSpace([string]$item.text)) {
+                        [string]$item.text
+                    }
+                }
+
+                if ($textParts) {
+                    return ($textParts -join "")
+                }
+            }
+
+            if ($null -ne $Content.text -and -not [string]::IsNullOrWhiteSpace([string]$Content.text)) {
+                return [string]$Content.text
+            }
+
+            return $null
+        }
+
+        function Get-TextFromOutputEntry {
+            param($Entry)
+
+            if ($null -eq $Entry) {
+                return $null
+            }
+
+            $entryType = $null
+            if ($null -ne $Entry.type) {
+                $entryType = [string]$Entry.type
+            }
+
+            $textFromContent = Get-TextFromContent -Content $Entry.content
+            if (-not [string]::IsNullOrWhiteSpace($textFromContent)) {
+                return $textFromContent
+            }
+
+            if ($entryType -eq 'message.output' -and $null -ne $Entry.message) {
+                $textFromMessage = Get-TextFromContent -Content $Entry.message.content
+                if (-not [string]::IsNullOrWhiteSpace($textFromMessage)) {
+                    return $textFromMessage
+                }
+
+                if ($null -ne $Entry.message.text -and -not [string]::IsNullOrWhiteSpace([string]$Entry.message.text)) {
+                    return [string]$Entry.message.text
+                }
+            }
+
+            if ($null -ne $Entry.text -and -not [string]::IsNullOrWhiteSpace([string]$Entry.text)) {
+                return [string]$Entry.text
+            }
+
+            return $null
+        }
+
         if ($null -ne $Response.choices -and $Response.choices.Count -gt 0) {
             if ($null -ne $Response.choices[0].message) {
                 if ($null -ne $Response.choices[0].message.content) {
@@ -229,23 +305,11 @@ try {
         }
 
         if ($null -ne $Response.outputs -and $Response.outputs.Count -gt 0) {
-            $firstOutput = $Response.outputs[0]
-            if ($firstOutput -is [string]) {
-                return $firstOutput
-            }
-            if ($null -ne $firstOutput.content) {
-                if ($firstOutput.content -is [string]) {
-                    return $firstOutput.content
+            foreach ($outputEntry in $Response.outputs) {
+                $outputText = Get-TextFromOutputEntry -Entry $outputEntry
+                if (-not [string]::IsNullOrWhiteSpace($outputText)) {
+                    return $outputText
                 }
-                if ($firstOutput.content -is [System.Collections.IEnumerable]) {
-                    $textParts = $firstOutput.content | Where-Object { $_.type -eq 'text' } | Select-Object -ExpandProperty text
-                    if ($textParts) {
-                        return ($textParts -join "")
-                    }
-                }
-            }
-            if ($null -ne $firstOutput.text) {
-                return $firstOutput.text
             }
         }
 
@@ -257,7 +321,10 @@ try {
                 return $Response.output.text
             }
             if ($null -ne $Response.output.content) {
-                return $Response.output.content
+                $outputText = Get-TextFromContent -Content $Response.output.content
+                if (-not [string]::IsNullOrWhiteSpace($outputText)) {
+                    return $outputText
+                }
             }
         }
 
@@ -266,6 +333,139 @@ try {
         Write-Host "--- End response ---" -ForegroundColor Magenta
         Write-Warning "Response could not be parsed. See raw output above."
         return $Response | ConvertTo-Json -Depth 3
+    }
+
+    # Extract the first valid JSON block from a text response.
+    function Get-JsonText {
+        param([string]$RawText)
+
+        if ([string]::IsNullOrWhiteSpace($RawText)) {
+            return $null
+        }
+
+        $firstArray = $RawText.IndexOf('[')
+        $firstObject = $RawText.IndexOf('{')
+        if ($firstArray -eq -1 -and $firstObject -eq -1) {
+            return $null
+        }
+
+        if ($firstArray -ge 0 -and ($firstArray -le $firstObject -or $firstObject -eq -1)) {
+            $start = $firstArray
+        }
+        else {
+            $start = $firstObject
+        }
+
+        $depth = 0
+        $inString = $false
+        $escape = $false
+
+        for ($i = $start; $i -lt $RawText.Length; $i++) {
+            $character = $RawText[$i]
+
+            if ($escape) {
+                $escape = $false
+                continue
+            }
+
+            if ($character -eq '\\') {
+                $escape = $true
+                continue
+            }
+
+            if ($character -eq '"') {
+                $inString = -not $inString
+                continue
+            }
+
+            if (-not $inString) {
+                if ($character -eq '[' -or $character -eq '{') {
+                    $depth++
+                }
+                elseif ($character -eq ']' -or $character -eq '}') {
+                    $depth--
+                    if ($depth -eq 0) {
+                        return $RawText.Substring($start, $i - $start + 1)
+                    }
+                }
+            }
+        }
+
+        $lastClose = [Math]::Max($RawText.LastIndexOf(']'), $RawText.LastIndexOf('}'))
+        if ($lastClose -gt $start) {
+            return $RawText.Substring($start, $lastClose - $start + 1)
+        }
+
+        return $null
+    }
+
+    # Convert the API response text into a JSON-safe result object.
+    function Convert-ResponseTextToResultObject {
+        param(
+            [string]$RawText,
+            [string]$SourceFile,
+            [string]$AgentId
+        )
+
+        $result = [ordered]@{
+            source_file  = $SourceFile
+            agent_id     = $AgentId
+            status       = 'success'
+            records      = @()
+            raw_response = $RawText
+            parse_error  = $null
+        }
+
+        $jsonText = Get-JsonText -RawText $RawText
+        if ([string]::IsNullOrWhiteSpace($jsonText)) {
+            $result.status = 'error'
+            $result.parse_error = 'No JSON structure could be extracted from the Mistral response.'
+            return [pscustomobject]$result
+        }
+
+        try {
+            $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
+        }
+        catch {
+            $normalizedJsonText = $jsonText -replace '\\"', '"'
+
+            if ($normalizedJsonText -ne $jsonText) {
+                try {
+                    $parsed = ConvertFrom-Json -InputObject $normalizedJsonText -ErrorAction Stop
+                }
+                catch {
+                    $normalizedJsonText = [System.Text.RegularExpressions.Regex]::Unescape($jsonText)
+                    try {
+                        $parsed = ConvertFrom-Json -InputObject $normalizedJsonText -ErrorAction Stop
+                    }
+                    catch {
+                        $result.status = 'error'
+                        $result.parse_error = $_.Exception.Message
+                        return [pscustomobject]$result
+                    }
+                }
+            }
+            else {
+                $normalizedJsonText = [System.Text.RegularExpressions.Regex]::Unescape($jsonText)
+                try {
+                    $parsed = ConvertFrom-Json -InputObject $normalizedJsonText -ErrorAction Stop
+                }
+                catch {
+                    $result.status = 'error'
+                    $result.parse_error = $_.Exception.Message
+                    return [pscustomobject]$result
+                }
+            }
+        }
+
+        if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
+            $result.records = @($parsed)
+        }
+        else {
+            $result.records = @($parsed)
+        }
+
+        return [pscustomobject]$result
     }
 
     # Send a request to the Mistral conversations API and handle basic retry cases.
@@ -373,13 +573,23 @@ $bookContent
         # Send the prompt to the Mistral conversation endpoint.
         $apiResult = Invoke-MistralRequest -PayloadText $fullPrompt
 
-        if ($apiResult) {
+        if ($null -ne $apiResult) {
             $savedCount++
             $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
-            # Write the generated result to disk for later processing.
-            [System.IO.File]::WriteAllText($outPath, $apiResult, [System.Text.Encoding]::UTF8)
-            Write-Host "  -> Saved as: $outName" -ForegroundColor Green
+
+            # Store a valid JSON wrapper so parse errors and raw API output are preserved.
+            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId
+            $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
+            [System.IO.File]::WriteAllText($outPath, $jsonOutput, [System.Text.Encoding]::UTF8)
+
+            if ($resultObject.status -eq 'success') {
+                Write-Host "  -> Saved as: $outName" -ForegroundColor Green
+            }
+            else {
+                Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow
+                Write-Host "     $($resultObject.parse_error)" -ForegroundColor Yellow
+            }
         }
         else {
             Write-Host "  -> ERROR: No response from API." -ForegroundColor Red
