@@ -7,15 +7,17 @@
     or refreshes a Mistral agent for each run, sends each book export to the
     agent together with the prompt and tag definitions, and writes the LLM
     responses to the 02-LLM-Result folder as individual JSON files.
-    It also validates input and output record counts per file and stores the
-    validation outcome in the output metadata.
+    It validates both raw record counts and unique-book counts per file,
+    repairs mojibake in LLM responses, and stores the validation outcome in the
+    output metadata.
 
 .NOTES
-    Version: 2.7
+    Version: 2.8
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records,
-    the raw response text, parse errors, and record-count validation details.
+    the raw response text, parse errors, and validation details for record and
+    unique-book counts.
 #>
 
 try {

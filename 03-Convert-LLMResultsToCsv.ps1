@@ -5,9 +5,10 @@
 .DESCRIPTION
     Reads all JSON files from the input folder, unwraps the JSON result payloads
     written by the LLM step, removes Markdown formatting from string values,
-    repairs mojibake from malformed input text, merges the extracted records,
-    and exports the result to a single CSV file. For non-success result files,
-    validation and parse metadata are added as separate rows.
+    repairs mojibake from malformed input text, preserves German umlauts and
+    special characters, merges the extracted records, and exports the result to
+    a single CSV file. For non-success result files, validation and parse
+    metadata are added as separate rows.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.
@@ -18,7 +19,7 @@
     The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.9
+    Version: 1.10
 #>
 
 param(
