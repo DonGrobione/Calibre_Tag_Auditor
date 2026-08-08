@@ -6,6 +6,7 @@
     Exports title, author, series, series index, and tags from a Calibre Portable
     library into one or more JSON files in the 01-Export directory.
     The output file names include a timestamp and sequence number when split.
+    Uses calibredb.exe from the Calibre Portable installation.
 
 .NOTES
     Version: 2.5

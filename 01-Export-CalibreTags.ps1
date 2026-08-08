@@ -6,13 +6,16 @@
     Connects Calibre .calnotes/notes.db with the library metadata.db and
     exports tag notes as JSON. The first line of each note is removed so the
     output contains only the tag definition.
+    Uses calibre-debug.exe (Calibre's embedded Python interpreter) to query
+    both SQLite databases via ATTACH. The temporary Python script is written
+    to $env:TEMP and deleted after execution.
 
 .PARAMETER OutputPath
     Optional custom output file path. If omitted, a timestamped file is created
     in the 01-Export folder.
 
 .NOTES
-    Version: 2.5
+    Version: 2.6
 #>
 
 [CmdletBinding()]
@@ -87,10 +90,7 @@ try {
 
     # Prepare the target path and a temporary Python script for the data export.
     $FullOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
-    $TempDir = Join-Path $ScriptDir ".tmp"
-    if (-not (Test-Path -Path $TempDir -PathType Container)) {
-        New-Item -Path $TempDir -ItemType Directory | Out-Null
-    }
+    $TempDir = $env:TEMP
     $TempScript = Join-Path $TempDir "calibre_export_temp.py"
 
     Write-Host "Found:      $CalibrePortablePath"

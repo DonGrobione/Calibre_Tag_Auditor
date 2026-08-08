@@ -47,6 +47,7 @@ Or run each script individually:
 - PowerShell 5.1 or newer
 - Mistral API key stored in `.secrets/Mistral_API.txt`
 - Calibre Portable installation paths configured in the export scripts
+- Python (bundled with Calibre Portable) — used internally by `01-Export-CalibreTags.ps1` via `calibre-debug.exe`; no separate Python installation required
 
 ## Contributing
 
