@@ -6,7 +6,7 @@
     Uses extracted Calibre book export JSON and tag definition JSON files to
     validate book metadata against tag definitions with the Mistral API.
     Results are written to the 02-LLM-Result folder as JSON files.
-    The system prompt is loaded from the external 03-CalibreDataLLM-Prompt.txt file.
+    The system prompt is loaded from the external 02-CalibreDataLLM-Prompt.txt file.
 
 .NOTES
     Version: 2.3
@@ -21,7 +21,7 @@ try {
     $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
     $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_API.txt"
-    $PromptFile = Join-Path -Path $ScriptDir -ChildPath "03-CalibreDataLLM-Prompt.txt"
+    $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
 
     $Model = "mistral-large-latest"
     $AgentsUrl = "https://api.mistral.ai/v1/agents"
@@ -309,7 +309,7 @@ $bookContent
 
         if ($apiResult) {
             $savedCount++
-            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM_Result_"
+            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
             [System.IO.File]::WriteAllText($outPath, $apiResult, [System.Text.Encoding]::UTF8)
             Write-Host "  -> Saved as: $outName" -ForegroundColor Green
