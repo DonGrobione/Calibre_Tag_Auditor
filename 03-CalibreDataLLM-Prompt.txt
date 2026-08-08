@@ -47,7 +47,7 @@ AUSGABEREGELN:
 - Jede Änderung = eigenes Objekt
 - Bücher mit Änderungen → keine NO_CHANGES-Objekte
 - Alle Bücher dokumentieren (inkl. NO_CHANGES)
-- Gib nur gültiges JSON ohne zusätzliche Erläuterungen aus
+- Gib NUR rohes JSON aus. KEINE Markdown-Codeblöcke (kein ```json), KEIN Erklärungs-Text, KEINE Präfixe/Suffixe. Die erste Zeichen muss `{` oder `[` sein, das letzte Zeichen `}` oder `]`.
 
 Verarbeitungssprache: Deutsch
 Geschlechterform: masculine Bezeichnungen, "Protagonist"

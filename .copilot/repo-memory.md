@@ -4,28 +4,25 @@
 Collection of PowerShell scripts for managing Calibre Portable library data, including book export, tag extraction, LLM validation, and CSV conversion.
 
 ## Current State
-- 4 main scripts exist (all German language, violating rule #4)
-- No Secrets directory (only .secrets with .txt files)
-- No README.md documentation
-- Scripts use numeric prefixes (1_, 2_, 3_, 4_) instead of Approved Verbs
-- Scripts contain exit statements in subscripts (violating rule #4.7)
+- Core scripts have been updated to English help blocks, output messages, and top-level error handling.
+- `.tmp/` is used for temporary files and is ignored by version control.
+- The repository still uses numeric script prefixes (`1_`, `2_`, `3_`, `4_`) by project convention.
+- `.secrets/` is present and currently holds plain-text API files; migrating secrets to `.psd1` remains a follow-up task.
 
 ## Scripts Inventory
 1. **1_Calibre_Buchexport.ps1** - Exports book metadata from Calibre to JSON files
-2. **2_Calibre_Tag_Export.ps1** - Extracts tag notes from .calnotes/notes.db and links with metadata.db
-3. **3_LLM_Calibre_ableich.ps1** - Validates book exports against tag definitions using Mistral API
-4. **4_Ergebnis_csv_convert.ps1** - Converts JSON files in Ergebnis directory to CSV format
+2. **2_Calibre_Tag_Export.ps1** - Extracts tag notes from `.calnotes/notes.db` and creates JSON output
+3. **3_LLM_Calibre_ableich.ps1** - Validates book exports against tag definitions using the Mistral API
+4. **4_Ergebnis_csv_convert.ps1** - Converts JSON files in `Ergebnis` to a single CSV output, stripping Markdown
+5. **Convert-ResultJsonToCsv.ps1** - Converts JSON files from `Ergebnis` into separate CSV files with delimiter and output controls
 
-## Required Actions (Priority Order)
-1. Create Modules/Write-Log.psm1 module
-2. Convert all scripts to English (comments, help blocks, output messages, variable names)
-3. Rename scripts to use PowerShell Approved Verbs
-4. Add proper comment-based help blocks to all scripts
-5. Add top-level try/catch error handling to all scripts
-6. Remove exit statements from subscripts
-7. Create Secrets/ directory and migrate secrets to .psd1 files
-8. Create and maintain README.md documentation
-9. Add input validation at boundaries
+## Compliance Notes
+- `1_Calibre_Buchexport.ps1`: complies with script handling rules; no temp files needed.
+- `2_Calibre_Tag_Export.ps1`: uses `.tmp/` for generated Python script and avoids inline logging dependency.
+- `3_LLM_Calibre_ableich.ps1`: now uses `$ErrorActionPreference = 'Stop'` and retains top-level try/catch.
+- `4_Ergebnis_csv_convert.ps1`: now uses `$ErrorActionPreference = 'Stop'` and a top-level try/catch wrapper.
+- `Convert-ResultJsonToCsv.ps1`: now uses `$ErrorActionPreference = 'Stop'` and top-level error handling.
+- Secrets migration to `.psd1` is still recommended to fully satisfy project security best practices.
 
 ## Conventions
 - PowerShell version: 5.1+

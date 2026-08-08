@@ -1,6 +1,26 @@
-﻿param(
-    [string]$InputFolder = ".\Ergebnis",
-    [string]$OutputCsv = ".\Ergebnis\Ergebnis_All.csv"
+﻿<#
+.SYNOPSIS
+    Convert JSON result files into a single CSV output.
+
+.DESCRIPTION
+    Reads all JSON files from the input folder, removes Markdown formatting from
+    string values, merges the extracted JSON objects, and exports the result
+    to a single CSV file.
+
+.PARAMETER InputFolder
+    Folder with JSON files to convert.
+
+.PARAMETER OutputCsv
+    Path to the output CSV file.
+
+.NOTES
+    PowerShell version: 5.1+
+    Version: 1.1
+#>
+
+param(
+    [string]$InputFolder = ".\LLM_Result",
+    [string]$OutputCsv = ".\LLM_Result\Ergebnis_All.csv"
 )
 
 function Remove-Markdown {
@@ -21,7 +41,7 @@ function Remove-Markdown {
     return $clean.Trim()
 }
 
-function Clean-JsonValues {
+function Convert-JsonValues {
     param([object]$Item)
     if ($null -eq $Item) { return $null }
 
@@ -31,7 +51,7 @@ function Clean-JsonValues {
 
     if ($Item -is [System.Collections.IDictionary]) {
         foreach ($key in $Item.Keys) {
-            $Item[$key] = Clean-JsonValues -Item $Item[$key]
+            $Item[$key] = Convert-JsonValues -Item $Item[$key]
         }
         return $Item
     }
@@ -39,7 +59,7 @@ function Clean-JsonValues {
     if ($Item -is [System.Collections.IEnumerable] -and -not ($Item -is [string])) {
         $list = @()
         foreach ($element in $Item) {
-            $list += Clean-JsonValues -Item $element
+            $list += Convert-JsonValues -Item $element
         }
         return ,$list
     }
@@ -47,7 +67,7 @@ function Clean-JsonValues {
     return $Item
 }
 
-function Extract-JsonText {
+function Get-JsonText {
     param([string]$RawText)
 
     $firstArray = $RawText.IndexOf('[')
@@ -118,33 +138,35 @@ function Convert-ToCsvRow {
     return [pscustomobject]$row
 }
 
+$ErrorActionPreference = 'Stop'
+
 try {
     $inputFolderFull = Resolve-Path -Path $InputFolder -ErrorAction Stop
 } catch {
-    Write-Error "Eingabeordner nicht gefunden: $InputFolder"
-    exit 1
+    Write-Error "Input folder not found: $InputFolder"
+    throw
 }
 
 $files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
 if (-not $files) {
-    Write-Error "Keine JSON-Dateien im Ordner gefunden: $inputFolderFull"
-    exit 1
+    Write-Error "No JSON files found in folder: $inputFolderFull"
+    throw "No JSON input files found."
 }
 
 $allObjects = @()
 foreach ($file in $files) {
-    Write-Host "Verarbeite: $($file.Name)"
+    Write-Host "Processing: $($file.Name)"
     $raw = Get-Content -Path $file.FullName -Encoding UTF8 -Raw
-    $jsonText = Extract-JsonText -RawText $raw
+    $jsonText = Get-JsonText -RawText $raw
     if (-not $jsonText) {
-        Write-Warning "Keine JSON-Struktur in Datei gefunden: $($file.Name)"
+        Write-Warning "No JSON structure found in file: $($file.Name)"
         continue
     }
 
     try {
         $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
     } catch {
-        Write-Warning "Fehler beim Parsen von $($file.Name): $($_.Exception.Message)"
+        Write-Warning "Failed to parse $($file.Name): $($_.Exception.Message)"
         continue
     }
 
@@ -156,13 +178,13 @@ foreach ($file in $files) {
 }
 
 if (-not $allObjects) {
-    Write-Error "Es wurden keine gültigen JSON-Objekte gefunden."
-    exit 1
+    Write-Error "No valid JSON objects were found."
+    throw "No valid JSON objects were found."
 }
 
 $cleanObjects = @()
 foreach ($item in $allObjects) {
-    $cleanObjects += Clean-JsonValues -Item $item
+    $cleanObjects += Convert-JsonValues -Item $item
 }
 
 $allKeys = $cleanObjects | ForEach-Object { $_.PSObject.Properties.Name } | Sort-Object -Unique
@@ -171,4 +193,4 @@ $csvRows = $cleanObjects | ForEach-Object { Convert-ToCsvRow -Object $_ -Columns
 $csvPath = Join-Path -Path (Split-Path -Path $OutputCsv -Parent) -ChildPath (Split-Path -Path $OutputCsv -Leaf)
 
 $csvRows | Export-Csv -Path $csvPath -NoTypeInformation -Force -Encoding UTF8
-Write-Host "CSV-Datei erstellt: $csvPath"
+Write-Host "CSV file created: $csvPath"
