@@ -120,7 +120,7 @@ try {
     $TotalBooks = $Books.Count
     $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
 
-    function Normalize-ExportText {
+    function Clear-ExportText {
         param([object]$Value)
 
         if ($null -eq $Value) {
@@ -137,11 +137,11 @@ try {
     # Transform the raw data into a simple object format for JSON export.
     $Results = foreach ($Book in $Books) {
         [PSCustomObject]@{
-            Title       = Normalize-ExportText -Value $Book.title
-            Author      = Normalize-ExportText -Value $Book.authors
-            Series      = Normalize-ExportText -Value $Book.series
-            SeriesIndex = Normalize-ExportText -Value $Book.series_index
-            Tags        = Normalize-ExportText -Value ($Book.tags -join ", ")
+            Title       = Clear-ExportText -Value $Book.title
+            Author      = Clear-ExportText -Value $Book.authors
+            Series      = Clear-ExportText -Value $Book.series
+            SeriesIndex = Clear-ExportText -Value $Book.series_index
+            Tags        = Clear-ExportText -Value ($Book.tags -join ", ")
         }
     }
 
