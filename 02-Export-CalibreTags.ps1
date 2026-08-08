@@ -22,8 +22,10 @@ param (
 )
 
 try {
+    # Enable strict error handling for the tag export workflow.
     $ErrorActionPreference = "Stop"
 
+    # Check the known installation paths for Calibre Portable.
     $CalibrePaths = @(
         "E:\HiDrive\PortableApps\Calibre Portable"
         "D:\HiDrive\PortableApps\Calibre Portable"
@@ -32,6 +34,7 @@ try {
     $LibraryName = "Calibre Library"
     $ScriptDir = $PSScriptRoot
 
+    # Create the export folder and remove older tag export files.
     $ExportDir = Join-Path $ScriptDir "01-Export"
     if (-not (Test-Path $ExportDir)) {
         New-Item -Path $ExportDir -ItemType Directory | Out-Null
@@ -40,6 +43,7 @@ try {
     Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" -File |
     Remove-Item -Force
 
+    # Determine the available Calibre Portable path.
     $CalibrePortablePath = $null
     foreach ($Path in $CalibrePaths) {
         if (Test-Path $Path) {
@@ -64,6 +68,7 @@ try {
         throw "calibre-debug.exe was not found in '$CalibrePortablePath'."
     }
 
+    # Define the paths to the Calibre metadata database and notes database.
     $FullMetaDb = Join-Path $LibraryPath "metadata.db"
     $FullNotesDb = Join-Path $LibraryPath ".calnotes\notes.db"
 
@@ -80,6 +85,7 @@ try {
         $OutputPath = Join-Path $ExportDir "02-Export-CalibreTags_$Timestamp.json"
     }
 
+    # Prepare the target path and a temporary Python script for the data export.
     $FullOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
     $TempDir = Join-Path $ScriptDir ".tmp"
     if (-not (Test-Path -Path $TempDir -PathType Container)) {
@@ -94,6 +100,7 @@ try {
     Write-Host "Notes DB:   $FullNotesDb"
     Write-Host "Output:     $FullOutputPath"
 
+    # The Python code reads the tag notes from the Calibre database and writes them as JSON.
     $PythonScriptContent = @"
 import json
 import sqlite3
@@ -148,6 +155,7 @@ except Exception as e:
     print(f"ERROR:{e}")
 "@
 
+    # Write the temporary script and run it.
     Set-Content -Path $TempScript -Value $PythonScriptContent -Encoding UTF8 -Force
     $Result = & $CalibreDebugExe.FullName $TempScript
 

@@ -24,6 +24,7 @@ param(
     [string]$OutputCsv = ".\03-CSV\03-LLM-Result.csv"
 )
 
+# Remove Markdown formatting from text so the content can be converted cleanly to CSV.
 function Remove-Markdown {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
@@ -42,6 +43,7 @@ function Remove-Markdown {
     return $clean.Trim()
 }
 
+# Repair common mojibake text issues caused by incorrect UTF-8 or Latin-1 decoding.
 function Repair-Mojibake {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
@@ -66,6 +68,7 @@ function Repair-Mojibake {
     return $current
 }
 
+# Try to restore malformed or misdecoded JSON text into a parsable format.
 function Repair-JsonText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
@@ -93,6 +96,7 @@ function Repair-JsonText {
     return $Text
 }
 
+# Recursively process JSON values so strings are cleaned and nested structures are preserved.
 function Convert-JsonValues {
     param([object]$Item)
     if ($null -eq $Item) { return $null }
@@ -122,6 +126,7 @@ function Convert-JsonValues {
     return $Item
 }
 
+# Extract the first valid JSON block from raw text even if extra text surrounds it.
 function Get-JsonText {
     param([string]$RawText)
 
@@ -176,6 +181,7 @@ function Get-JsonText {
     return $null
 }
 
+# Build a CSV row from an object using all known columns.
 function Convert-ToCsvRow {
     param(
         [psobject]$Object,
@@ -196,6 +202,7 @@ function Convert-ToCsvRow {
 $ErrorActionPreference = 'Stop'
 
 try {
+    # Resolve the input path and load all JSON files from the results folder.
     $inputFolderFull = Resolve-Path -Path $InputFolder -ErrorAction Stop
 
     $files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
@@ -210,6 +217,7 @@ try {
         $OutputCsv = ".\03-CSV\03-LLM-Result_$firstTimestamp.csv"
     }
 
+    # Read each JSON file, parse its content, and collect all objects for the combined export.
     $allObjects = @()
     foreach ($file in $files) {
         Write-Host "Processing: $($file.Name)"
@@ -252,6 +260,7 @@ try {
         throw "No valid JSON objects were found."
     }
 
+    # Clean all values and normalize them into a consistent object format.
     $cleanObjects = @()
     foreach ($item in $allObjects) {
         $cleanObjects += Convert-JsonValues -Item $item
@@ -267,6 +276,7 @@ try {
 
     $csvPath = Join-Path -Path $csvDir -ChildPath (Split-Path -Path $OutputCsv -Leaf)
 
+    # Schreibt die zusammengefassten Daten als UTF-8-CSV mit Pipe-Delimiter.
     $csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
     $csvContent | Out-File -FilePath $csvPath -Encoding UTF8 -Force
     Write-Host "CSV file created: $csvPath"

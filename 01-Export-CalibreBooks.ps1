@@ -12,8 +12,10 @@
 #>
 
 try {
+    # Enable strict error handling so problems are reported immediately.
     $ErrorActionPreference = "Stop"
 
+    # Check the known installation paths for Calibre Portable.
     $CalibrePaths = @(
         "E:\HiDrive\PortableApps\Calibre Portable"
         "D:\HiDrive\PortableApps\Calibre Portable"
@@ -23,6 +25,7 @@ try {
     $BooksPerFile = 99
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    # Create the export folder and remove older book export files.
     $ExportDir = Join-Path $ScriptDir "01-Export"
     if (-not (Test-Path $ExportDir)) {
         New-Item -Path $ExportDir -ItemType Directory | Out-Null
@@ -31,6 +34,7 @@ try {
     Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" -File |
     Remove-Item -Force
 
+    # Determine the available Calibre Portable path.
     $CalibrePortablePath = $null
     foreach ($Path in $CalibrePaths) {
         if (Test-Path $Path) {
@@ -60,8 +64,10 @@ try {
     Write-Host "Library:    $LibraryPath"
     Write-Host "Output:     $ExportDir"
 
+    # Create a timestamp for the output files.
     $ExportDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 
+    # Query the Calibre library via calibredb and read the relevant fields.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
         --fields=title,authors,series,series_index,tags `
@@ -82,6 +88,7 @@ try {
     $TotalBooks = $Books.Count
     $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
 
+    # Transform the raw data into a simple object format for JSON export.
     $Results = foreach ($Book in $Books) {
         [PSCustomObject]@{
             Title       = $Book.title
@@ -92,6 +99,7 @@ try {
         }
     }
 
+    # Write the export data either to a single file or split across multiple files.
     if (-not $NeedsSplitting) {
         $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_01_$ExportDate.json"
         $Results | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonFile -Encoding UTF8

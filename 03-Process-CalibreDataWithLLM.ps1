@@ -13,6 +13,7 @@
 #>
 
 try {
+    # Enable strict error handling for the LLM workflow.
     $ErrorActionPreference = 'Stop'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -42,9 +43,11 @@ try {
         New-Item -Path $SecretDir -ItemType Directory | Out-Null
     }
 
+    # Load the API key and the prompt system from external files.
     $ApiKey = (Get-Content -Path $ApiKeyFile -Raw -Encoding UTF8).Trim()
     $PromptSystem = (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim()
 
+    # Find the latest tag definition and the book export files in the export folder.
     $tagFile = Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" |
                Sort-Object -Property LastWriteTime -Descending |
                Select-Object -First 1
@@ -134,6 +137,7 @@ try {
         return New-MistralAgent
     }
 
+    # Extract the actual text from the Mistral response regardless of its response format.
     function Get-MistralResponseText {
         param($Response)
 
@@ -201,6 +205,7 @@ try {
         return $null
     }
 
+    # Send a request to the Mistral conversations API and handle simple retry cases.
     function Invoke-MistralRequest {
         param([string]$PayloadText)
 
@@ -275,6 +280,7 @@ try {
     Write-Host "Agent ID: $AgentId" -ForegroundColor Gray
     Write-Host ""
 
+    # Process each book file one by one and save the LLM response separately.
     $counter = 0
     $total = $bookFiles.Count
     $savedCount = 0
