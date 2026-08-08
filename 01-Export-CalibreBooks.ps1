@@ -8,8 +8,7 @@
     The output file names include a timestamp and sequence number when split.
 
 .NOTES
-    PowerShell version: 5.1+
-    Version: 2.2
+    Version: 2.4
 #>
 
 try {
@@ -24,7 +23,7 @@ try {
     $BooksPerFile = 99
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $ExportDir = Join-Path $ScriptDir "Export"
+    $ExportDir = Join-Path $ScriptDir "01-Export"
     if (-not (Test-Path $ExportDir)) {
         New-Item -Path $ExportDir -ItemType Directory | Out-Null
     }

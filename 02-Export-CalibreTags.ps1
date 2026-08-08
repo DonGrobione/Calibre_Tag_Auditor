@@ -12,8 +12,7 @@
     in the Export folder.
 
 .NOTES
-    PowerShell version: 5.1+
-    Version: 2.2
+    Version: 2.4
 #>
 
 [CmdletBinding()]
@@ -33,7 +32,7 @@ try {
     $LibraryName = "Calibre Library"
     $ScriptDir = $PSScriptRoot
 
-    $ExportDir = Join-Path $ScriptDir "Export"
+    $ExportDir = Join-Path $ScriptDir "01-Export"
     if (-not (Test-Path $ExportDir)) {
         New-Item -Path $ExportDir -ItemType Directory | Out-Null
     }

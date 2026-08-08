@@ -14,13 +14,12 @@
     Path to the output CSV file.
 
 .NOTES
-    PowerShell version: 5.1+
-    Version: 1.1
+    Version: 1.2
 #>
 
 param(
-    [string]$InputFolder = ".\LLM_Result",
-    [string]$OutputCsv = ".\LLM_Result\Ergebnis_All.csv"
+    [string]$InputFolder = ".\02-LLM-Result",
+    [string]$OutputCsv = ".\03-CSV\Ergebnis_All.csv"
 )
 
 function Remove-Markdown {
@@ -190,7 +189,12 @@ foreach ($item in $allObjects) {
 $allKeys = $cleanObjects | ForEach-Object { $_.PSObject.Properties.Name } | Sort-Object -Unique
 $csvRows = $cleanObjects | ForEach-Object { Convert-ToCsvRow -Object $_ -Columns $allKeys }
 
-$csvPath = Join-Path -Path (Split-Path -Path $OutputCsv -Parent) -ChildPath (Split-Path -Path $OutputCsv -Leaf)
+$csvDir = Split-Path -Path $OutputCsv -Parent
+if (-not (Test-Path -Path $csvDir -PathType Container)) {
+    New-Item -Path $csvDir -ItemType Directory | Out-Null
+}
+
+$csvPath = Join-Path -Path $csvDir -ChildPath (Split-Path -Path $OutputCsv -Leaf)
 
 $csvRows | Export-Csv -Path $csvPath -NoTypeInformation -Force -Encoding UTF8
 Write-Host "CSV file created: $csvPath"

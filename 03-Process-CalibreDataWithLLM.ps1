@@ -5,11 +5,10 @@
 .DESCRIPTION
     Uses extracted Calibre book export JSON and tag definition JSON files to
     validate book metadata against tag definitions with the Mistral API.
-    Results are written to the LLM_Result folder as JSON files.
+    Results are written to the 02-LLM-Result folder as JSON files.
 
 .NOTES
-    PowerShell version: 5.1+
-    Version: 2.1 - Added JSON validation
+    Version: 2.2
 #>
 
 try {
@@ -17,8 +16,8 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
     $ScriptDir = $PSScriptRoot
-    $ExportDir = Join-Path -Path $ScriptDir -ChildPath "Export"
-    $OutputDir = Join-Path -Path $ScriptDir -ChildPath "LLM_Result"
+    $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
+    $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
     $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_API.txt"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "03-CalibreDataLLM-Prompt.txt"
 
@@ -358,7 +357,8 @@ $bookContent
             }
             else {
                 $validJsonCount++
-            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "Ergebnis_"
+                $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM_Result_"
+                $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
                 # Serialize the validated JSON back to string
                 $jsonString = $resultOrError | ConvertTo-Json -Depth 10
