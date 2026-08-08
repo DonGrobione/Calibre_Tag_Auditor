@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Reads all JSON files from the input folder, removes Markdown formatting from
-    string values, merges the extracted JSON objects, and exports the result
-    to a single CSV file.
+    string values, repairs mojibake from malformed input text, merges the
+    extracted JSON objects, and exports the result to a single CSV file.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.
@@ -16,7 +16,7 @@
     The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.5
+    Version: 1.6
 #>
 
 param(

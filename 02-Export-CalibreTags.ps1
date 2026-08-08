@@ -9,10 +9,10 @@
 
 .PARAMETER OutputPath
     Optional custom output file path. If omitted, a timestamped file is created
-    in the Export folder.
+    in the 01-Export folder.
 
 .NOTES
-    Version: 2.4
+    Version: 2.5
 #>
 
 [CmdletBinding()]

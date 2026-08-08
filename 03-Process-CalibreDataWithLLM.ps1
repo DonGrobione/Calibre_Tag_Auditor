@@ -6,9 +6,10 @@
     Uses extracted Calibre book export JSON and tag definition JSON files to
     validate book metadata against tag definitions with the Mistral API.
     Results are written to the 02-LLM-Result folder as JSON files.
+    The system prompt is loaded from the external 03-CalibreDataLLM-Prompt.txt file.
 
 .NOTES
-    Version: 2.2
+    Version: 2.3
 #>
 
 try {
