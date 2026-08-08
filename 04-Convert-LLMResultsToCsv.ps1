@@ -16,7 +16,7 @@
     The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.6
+    Version: 1.7
 #>
 
 param(
@@ -197,80 +197,81 @@ $ErrorActionPreference = 'Stop'
 
 try {
     $inputFolderFull = Resolve-Path -Path $InputFolder -ErrorAction Stop
-} catch {
-    Write-Error "Input folder not found: $InputFolder"
+
+    $files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
+    if (-not $files) {
+        Write-Error "No JSON files found in folder: $inputFolderFull"
+        throw "No JSON input files found."
+    }
+
+    $firstFile = $files[0]
+    $firstTimestamp = if ($firstFile.Name -match '_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.json$') { $matches[1] } else { $null }
+    if ($firstTimestamp -and $OutputCsv -eq ".\03-CSV\03-LLM-Result.csv") {
+        $OutputCsv = ".\03-CSV\03-LLM-Result_$firstTimestamp.csv"
+    }
+
+    $allObjects = @()
+    foreach ($file in $files) {
+        Write-Host "Processing: $($file.Name)"
+        try {
+            $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        } catch {
+            Write-Warning "Failed to read $($file.Name): $($_.Exception.Message)"
+            continue
+        }
+
+        $raw = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+        if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
+            $raw = $raw.Substring(1)
+        }
+
+        $jsonText = Get-JsonText -RawText $raw
+        if (-not $jsonText) {
+            Write-Warning "No JSON structure found in file: $($file.Name)"
+            continue
+        }
+
+        $jsonText = Repair-JsonText -Text $jsonText
+
+        try {
+            $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
+        } catch {
+            Write-Warning "Failed to parse $($file.Name): $($_.Exception.Message)"
+            continue
+        }
+
+        if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
+            foreach ($item in $parsed) { $allObjects += $item }
+        } else {
+            $allObjects += $parsed
+        }
+    }
+
+    if (-not $allObjects) {
+        Write-Error "No valid JSON objects were found."
+        throw "No valid JSON objects were found."
+    }
+
+    $cleanObjects = @()
+    foreach ($item in $allObjects) {
+        $cleanObjects += Convert-JsonValues -Item $item
+    }
+
+    $allKeys = $cleanObjects | ForEach-Object { $_.PSObject.Properties.Name } | Sort-Object -Unique
+    $csvRows = $cleanObjects | ForEach-Object { Convert-ToCsvRow -Object $_ -Columns $allKeys }
+
+    $csvDir = Split-Path -Path $OutputCsv -Parent
+    if (-not (Test-Path -Path $csvDir -PathType Container)) {
+        New-Item -Path $csvDir -ItemType Directory | Out-Null
+    }
+
+    $csvPath = Join-Path -Path $csvDir -ChildPath (Split-Path -Path $OutputCsv -Leaf)
+
+    $csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
+    $csvContent | Out-File -FilePath $csvPath -Encoding UTF8 -Force
+    Write-Host "CSV file created: $csvPath"
+}
+catch {
+    Write-Error "CSV conversion failed: $($_.Exception.Message)"
     throw
 }
-
-$files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
-if (-not $files) {
-    Write-Error "No JSON files found in folder: $inputFolderFull"
-    throw "No JSON input files found."
-}
-
-$firstFile = $files[0]
-$firstTimestamp = if ($firstFile.Name -match '_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.json$') { $matches[1] } else { $null }
-if ($firstTimestamp -and $OutputCsv -eq ".\03-CSV\03-LLM-Result.csv") {
-    $OutputCsv = ".\03-CSV\03-LLM-Result_$firstTimestamp.csv"
-}
-
-$allObjects = @()
-foreach ($file in $files) {
-    Write-Host "Processing: $($file.Name)"
-    try {
-        $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
-    } catch {
-        Write-Warning "Failed to read $($file.Name): $($_.Exception.Message)"
-        continue
-    }
-
-    $raw = [System.Text.Encoding]::UTF8.GetString($rawBytes)
-    if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
-        $raw = $raw.Substring(1)
-    }
-
-    $jsonText = Get-JsonText -RawText $raw
-    if (-not $jsonText) {
-        Write-Warning "No JSON structure found in file: $($file.Name)"
-        continue
-    }
-
-    $jsonText = Repair-JsonText -Text $jsonText
-
-    try {
-        $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
-    } catch {
-        Write-Warning "Failed to parse $($file.Name): $($_.Exception.Message)"
-        continue
-    }
-
-    if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
-        foreach ($item in $parsed) { $allObjects += $item }
-    } else {
-        $allObjects += $parsed
-    }
-}
-
-if (-not $allObjects) {
-    Write-Error "No valid JSON objects were found."
-    throw "No valid JSON objects were found."
-}
-
-$cleanObjects = @()
-foreach ($item in $allObjects) {
-    $cleanObjects += Convert-JsonValues -Item $item
-}
-
-$allKeys = $cleanObjects | ForEach-Object { $_.PSObject.Properties.Name } | Sort-Object -Unique
-$csvRows = $cleanObjects | ForEach-Object { Convert-ToCsvRow -Object $_ -Columns $allKeys }
-
-$csvDir = Split-Path -Path $OutputCsv -Parent
-if (-not (Test-Path -Path $csvDir -PathType Container)) {
-    New-Item -Path $csvDir -ItemType Directory | Out-Null
-}
-
-$csvPath = Join-Path -Path $csvDir -ChildPath (Split-Path -Path $OutputCsv -Leaf)
-
-$csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
-$csvContent | Out-File -FilePath $csvPath -Encoding UTF8 -Force
-Write-Host "CSV file created: $csvPath"
