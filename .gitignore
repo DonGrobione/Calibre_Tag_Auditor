@@ -4,6 +4,9 @@
 # Secret files and credentials
 .secrets/
 
+# Log files
+Logs/*
+
 # Generated export and result data
 01-Export/*
 02-LLM-Result/*
