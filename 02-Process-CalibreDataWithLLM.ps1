@@ -1,15 +1,17 @@
 ﻿<#
 .SYNOPSIS
-    Validate Calibre exports using the Mistral API.
+    Validate Calibre export data with the Mistral API.
 
 .DESCRIPTION
-    Uses extracted Calibre book export JSON and tag definition JSON files to
-    validate book metadata against tag definitions with the Mistral API.
-    Results are written to the 02-LLM-Result folder as JSON files.
-    The system prompt is loaded from the external 02-CalibreDataLLM-Prompt.txt file.
+    Reads the latest Calibre book export and tag-definition JSON files, creates
+    or refreshes a Mistral agent for each run, sends each book export to the
+    agent together with the prompt and tag definitions, and writes the LLM
+    responses to the 02-LLM-Result folder as individual JSON files.
 
 .NOTES
-    Version: 2.3
+    Version: 2.4
+    Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
+    02-CalibreDataLLM-Prompt.txt in the script folder.
 #>
 
 try {
@@ -17,6 +19,7 @@ try {
     $ErrorActionPreference = 'Stop'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+    # Resolve the script directory and required input/output paths.
     $ScriptDir = $PSScriptRoot
     $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
@@ -28,8 +31,8 @@ try {
     $ConversationsUrl = "https://api.mistral.ai/v1/conversations"
     $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_Agent_Id.txt"
     $ApiTimeoutSec = 300
-    $EnableDebugLogging = $false
 
+    # Ensure the output folder exists before writing results.
     if (-not (Test-Path -Path $OutputDir)) {
         New-Item -Path $OutputDir -ItemType Directory | Out-Null
     }
@@ -38,6 +41,7 @@ try {
         throw "API key or prompt file is missing in the script folder."
     }
 
+    # Create the secrets folder if it is missing.
     $SecretDir = Join-Path -Path $ScriptDir -ChildPath ".secrets"
     if (-not (Test-Path -Path $SecretDir)) {
         New-Item -Path $SecretDir -ItemType Directory | Out-Null
@@ -47,7 +51,7 @@ try {
     $ApiKey = (Get-Content -Path $ApiKeyFile -Raw -Encoding UTF8).Trim()
     $PromptSystem = (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim()
 
-    # Find the latest tag definition and the book export files in the export folder.
+    # Find the latest tag-definition file and the available book export files.
     $tagFile = Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" |
                Sort-Object -Property LastWriteTime -Descending |
                Select-Object -First 1
@@ -59,6 +63,7 @@ try {
         throw "Tag or book export JSON files are missing in the folder '$ExportDir'."
     }
 
+    # Load the tag definitions and print a short summary for the run.
     $tagContent = Get-Content -Path $tagFile.FullName -Raw -Encoding UTF8
 
     Write-Host "Tag file: $($tagFile.Name)" -ForegroundColor Cyan
@@ -66,6 +71,7 @@ try {
     Write-Host "Target:   $OutputDir" -ForegroundColor Cyan
     Write-Host ""
 
+    # Check whether a previously stored agent ID still resolves to a real Mistral agent.
     function Test-AgentExists {
         param([string]$AgentId)
 
@@ -80,6 +86,7 @@ try {
         }
     }
 
+    # Delete an existing agent if it is still available.
     function Remove-MistralAgent {
         param([string]$AgentId)
 
@@ -105,6 +112,7 @@ try {
         }
     }
 
+    # Create a fresh Mistral agent for this run.
     function New-MistralAgent {
         $headers = @{ Authorization = "Bearer $script:ApiKey" }
         $agentBody = @{
@@ -119,7 +127,14 @@ try {
         try {
             Write-Host "Creating new Mistral agent..." -ForegroundColor Gray
             $response = Invoke-RestMethod -Uri $script:AgentsUrl -Method Post -Headers $headers -Body $agentBody -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
-            $agentId = $response.id
+
+            $agentId = $null
+            if ($null -ne $response) {
+                try {
+                    $agentId = [string]$response.id
+                }
+                catch {}
+            }
 
             if (-not [string]::IsNullOrWhiteSpace($agentId)) {
                 Set-Content -Path $script:AgentIdFile -Value $agentId -Encoding UTF8
@@ -127,15 +142,42 @@ try {
                 return $agentId
             }
 
-            throw "Agent creation failed: invalid agent ID in response."
+            $responseText = $null
+            try {
+                $responseText = $response | ConvertTo-Json -Depth 10 -Compress
+            }
+            catch {
+                if ($null -ne $response) {
+                    $responseText = $response.ToString()
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($responseText)) {
+                throw "Agent creation failed: no agent ID was returned by the API."
+            }
+
+            throw "Agent creation failed: invalid agent ID in response. Response: $responseText"
         }
         catch {
-            Write-Error "Failed to create agent: $($_.Exception.Message)"
-            if ($_.Exception.Response) {
+            $errMessage = $null
+            if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
+                $errMessage = $_.Exception.Message
+            }
+            elseif ($null -ne $_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
+                $errMessage = $_.ErrorDetails.Message
+            }
+            else {
+                $errMessage = $_.ToString()
+            }
+
+            Write-Error "Failed to create agent: $errMessage"
+            if ($null -ne $_.Exception -and $null -ne $_.Exception.Response) {
                 try {
                     $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
                     $errorBody = $reader.ReadToEnd()
-                    Write-Error "API Response: $errorBody"
+                    if (-not [string]::IsNullOrWhiteSpace($errorBody)) {
+                        Write-Error "API Response: $errorBody"
+                    }
                 }
                 catch {}
             }
@@ -143,12 +185,16 @@ try {
         }
     }
 
+    # Reuse a previous ID only if it still exists; otherwise create a new agent.
     function Get-MistralAgentId {
         if (Test-Path -Path $script:AgentIdFile) {
-            $existingId = (Get-Content -Path $script:AgentIdFile -Raw -Encoding UTF8).Trim()
-            if (-not [string]::IsNullOrWhiteSpace($existingId)) {
-                Write-Host "Existing agent ID found from previous run: $existingId" -ForegroundColor Gray
-                Remove-MistralAgent -AgentId $existingId
+            $agentIdContent = Get-Content -Path $script:AgentIdFile -Raw -Encoding UTF8
+            if ($null -ne $agentIdContent) {
+                $existingId = $agentIdContent.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($existingId)) {
+                    Write-Host "Existing agent ID found from previous run: $existingId" -ForegroundColor Gray
+                    Remove-MistralAgent -AgentId $existingId
+                }
             }
         }
 
@@ -156,14 +202,13 @@ try {
         return New-MistralAgent
     }
 
-    # Extract the actual text from the Mistral response regardless of its response format.
+    # Extract the response text from the Mistral API response regardless of the payload shape.
     function Get-MistralResponseText {
         param($Response)
 
-        if ($script:EnableDebugLogging) {
-            Write-Host "--- Raw API response ---" -ForegroundColor Magenta
-            $Response | ConvertTo-Json -Depth 10 | ForEach-Object { Write-Host $_ -ForegroundColor Magenta }
-            Write-Host "--- End response ---" -ForegroundColor Magenta
+        if ($null -eq $Response) {
+            Write-Host "No response received from the Mistral API." -ForegroundColor Yellow
+            return $null
         }
 
         if ($null -ne $Response.choices -and $Response.choices.Count -gt 0) {
@@ -216,15 +261,14 @@ try {
             }
         }
 
-        if ($script:EnableDebugLogging) {
-            Write-Warning "Response could not be parsed. See raw output above."
-            return $Response | ConvertTo-Json -Depth 3
-        }
-
-        return $null
+        Write-Host "--- Raw API response ---" -ForegroundColor Magenta
+        $Response | ConvertTo-Json -Depth 10 | ForEach-Object { Write-Host $_ -ForegroundColor Magenta }
+        Write-Host "--- End response ---" -ForegroundColor Magenta
+        Write-Warning "Response could not be parsed. See raw output above."
+        return $Response | ConvertTo-Json -Depth 3
     }
 
-    # Send a request to the Mistral conversations API and handle simple retry cases.
+    # Send a request to the Mistral conversations API and handle basic retry cases.
     function Invoke-MistralRequest {
         param([string]$PayloadText)
 
@@ -290,6 +334,7 @@ try {
         return $null
     }
 
+    # Initialize the Mistral agent for this execution.
     Write-Host "--- Initialize Mistral agent ---" -ForegroundColor Cyan
     $AgentId = Get-MistralAgentId
 
@@ -299,7 +344,7 @@ try {
     Write-Host "Agent ID: $AgentId" -ForegroundColor Gray
     Write-Host ""
 
-    # Process each book file one by one and save the LLM response separately.
+    # Process each book file one by one and save every LLM response separately.
     $counter = 0
     $total = $bookFiles.Count
     $savedCount = 0
@@ -308,6 +353,7 @@ try {
         $counter++
         Write-Host "[$counter/$total] Processing $($bookFile.Name)..." -ForegroundColor Yellow
 
+        # Read the current book export and build the full prompt payload.
         $bookContent = Get-Content -Path $bookFile.FullName -Raw -Encoding UTF8
 
         $fullPrompt = @"
@@ -324,18 +370,16 @@ BOOKS (from $($bookFile.Name)):
 $bookContent
 "@
 
+        # Send the prompt to the Mistral conversation endpoint.
         $apiResult = Invoke-MistralRequest -PayloadText $fullPrompt
 
         if ($apiResult) {
             $savedCount++
             $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
+            # Write the generated result to disk for later processing.
             [System.IO.File]::WriteAllText($outPath, $apiResult, [System.Text.Encoding]::UTF8)
             Write-Host "  -> Saved as: $outName" -ForegroundColor Green
-
-            if ($EnableDebugLogging -and $apiResult.Length -gt 200) {
-                Write-Host "     Preview: $($apiResult.Substring(0, [Math]::Min(200, $apiResult.Length)))..." -ForegroundColor Gray
-            }
         }
         else {
             Write-Host "  -> ERROR: No response from API." -ForegroundColor Red
@@ -344,17 +388,25 @@ $bookContent
         Start-Sleep -Seconds 15
     }
 
+    # Final summary for the completed run.
     Write-Host ""
     Write-Host "--- Processing Complete ---" -ForegroundColor Cyan
     Write-Host "Total files:     $total" -ForegroundColor Gray
     Write-Host "Saved files:     $savedCount" -ForegroundColor Green
 
-    if ($EnableDebugLogging) {
-        Write-Host ""
-        Write-Host "Debug mode active. After testing set `$EnableDebugLogging to `$false." -ForegroundColor Yellow
-    }
 }
 catch {
-    Write-Error $_.Exception.Message
+    $errorMessage = $null
+    if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
+        $errorMessage = $_.Exception.Message
+    }
+    elseif ($null -ne $_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
+        $errorMessage = $_.ErrorDetails.Message
+    }
+    else {
+        $errorMessage = $_.ToString()
+    }
+
+    Write-Host "ERROR: $errorMessage" -ForegroundColor Red
     throw
 }

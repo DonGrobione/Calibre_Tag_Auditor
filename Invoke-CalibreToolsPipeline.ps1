@@ -65,6 +65,17 @@ try {
 }
 catch {
     # Report the error and stop execution.
-    Write-Error $_.Exception.Message
+    $errorMessage = $null
+    if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
+        $errorMessage = $_.Exception.Message
+    }
+    elseif ($null -ne $_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
+        $errorMessage = $_.ErrorDetails.Message
+    }
+    else {
+        $errorMessage = $_.ToString()
+    }
+
+    Write-Error $errorMessage
     throw
 }

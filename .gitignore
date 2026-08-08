@@ -1,7 +1,6 @@
-.vscode/
-.secrets/
-01-Export/*.json
-02-LLM-Result/*.json
-03-CSV/*.csv
-*.ods
+.vscode/*
+.secrets/*
+01-Export/*
+02-LLM-Result/*
+03-CSV/*
 *.bak
