@@ -88,7 +88,7 @@ try {
             description  = "Agent for validating Calibre book data against tag definitions."
             instructions = $script:PromptSystem
             tools        = @(@{ type = "web_search" })
-            completion_args = @{ temperature = 0.2; top_p = 0.95; max_tokens = 8192 }
+            completion_args = @{ temperature = 0.2; top_p = 0.95 }
         } | ConvertTo-Json -Depth 10
 
         try {
