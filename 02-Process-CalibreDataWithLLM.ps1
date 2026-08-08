@@ -401,30 +401,107 @@ try {
         return $null
     }
 
+    function Get-BookIdentityKey {
+        param(
+            [object]$Book,
+            [string]$TitlePropertyName,
+            [string]$AuthorPropertyName,
+            [string]$SeriesPropertyName = '',
+            [string]$SeriesIndexPropertyName = ''
+        )
+
+        if ($null -eq $Book) {
+            return ''
+        }
+
+        $title = ''
+        $author = ''
+        $series = ''
+        $seriesIndex = ''
+
+        if ($Book.PSObject.Properties.Name -contains $TitlePropertyName) {
+            $title = [string]$Book.$TitlePropertyName
+        }
+        if ($Book.PSObject.Properties.Name -contains $AuthorPropertyName) {
+            $author = [string]$Book.$AuthorPropertyName
+        }
+        if (-not [string]::IsNullOrWhiteSpace($SeriesPropertyName) -and $Book.PSObject.Properties.Name -contains $SeriesPropertyName) {
+            $series = [string]$Book.$SeriesPropertyName
+        }
+        if (-not [string]::IsNullOrWhiteSpace($SeriesIndexPropertyName) -and $Book.PSObject.Properties.Name -contains $SeriesIndexPropertyName) {
+            $seriesIndex = [string]$Book.$SeriesIndexPropertyName
+        }
+
+        $normalizedParts = @(
+            ([regex]::Replace($title, '\s+', ' ').Trim()).ToLowerInvariant(),
+            ([regex]::Replace($author, '\s+', ' ').Trim()).ToLowerInvariant(),
+            ([regex]::Replace($series, '\s+', ' ').Trim()).ToLowerInvariant(),
+            ([regex]::Replace($seriesIndex, '\s+', ' ').Trim()).ToLowerInvariant()
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        return ($normalizedParts -join '|')
+    }
+
+    function Get-UniqueBookCount {
+        param(
+            [object[]]$Items,
+            [string]$TitlePropertyName,
+            [string]$AuthorPropertyName,
+            [string]$SeriesPropertyName = '',
+            [string]$SeriesIndexPropertyName = ''
+        )
+
+        if ($null -eq $Items) {
+            return 0
+        }
+
+        $itemList = @($Items)
+        if ($itemList.Count -eq 0) {
+            return 0
+        }
+
+        $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in $itemList) {
+            $key = Get-BookIdentityKey -Book $item -TitlePropertyName $TitlePropertyName -AuthorPropertyName $AuthorPropertyName -SeriesPropertyName $SeriesPropertyName -SeriesIndexPropertyName $SeriesIndexPropertyName
+            if (-not [string]::IsNullOrWhiteSpace($key)) {
+                [void]$keys.Add($key)
+            }
+        }
+
+        return $keys.Count
+    }
+
     # Convert the API response text into a JSON-safe result object.
     function Convert-ResponseTextToResultObject {
         param(
             [string]$RawText,
             [string]$SourceFile,
             [string]$AgentId,
-            [int]$ExpectedRecordCount = -1
+            [int]$ExpectedRecordCount = -1,
+            [int]$ExpectedUniqueBookCount = -1
         )
 
         $result = [ordered]@{
-            source_file         = $SourceFile
-            agent_id            = $AgentId
-            status              = 'success'
-            input_book_count    = $null
-            output_record_count = 0
-            record_count_match  = $null
-            validation_error    = $null
-            records             = @()
-            raw_response        = $RawText
-            parse_error         = $null
+            source_file             = $SourceFile
+            agent_id                = $AgentId
+            status                  = 'success'
+            input_book_count        = $null
+            input_unique_book_count = $null
+            output_record_count     = 0
+            output_unique_book_count = 0
+            record_count_match      = $null
+            unique_book_count_match = $null
+            validation_error        = $null
+            records                 = @()
+            raw_response            = $RawText
+            parse_error             = $null
         }
 
         if ($ExpectedRecordCount -ge 0) {
             $result.input_book_count = $ExpectedRecordCount
+        }
+        if ($ExpectedUniqueBookCount -ge 0) {
+            $result.input_unique_book_count = $ExpectedUniqueBookCount
         }
 
         $jsonText = Get-JsonText -RawText $RawText
@@ -477,13 +554,27 @@ try {
         }
 
         $result.output_record_count = $result.records.Count
+        $result.output_unique_book_count = Get-UniqueBookCount -Items $result.records -TitlePropertyName 'Titel' -AuthorPropertyName 'Autor'
+
+        $validationMessages = @()
 
         if ($ExpectedRecordCount -ge 0) {
             $result.record_count_match = ($result.output_record_count -eq $ExpectedRecordCount)
             if (-not $result.record_count_match) {
-                $result.status = 'warning'
-                $result.validation_error = "Record count mismatch: input=$ExpectedRecordCount, output=$($result.output_record_count)."
+                $validationMessages += "Record count mismatch: input=$ExpectedRecordCount, output=$($result.output_record_count)."
             }
+        }
+
+        if ($ExpectedUniqueBookCount -ge 0) {
+            $result.unique_book_count_match = ($result.output_unique_book_count -eq $ExpectedUniqueBookCount)
+            if (-not $result.unique_book_count_match) {
+                $validationMessages += "Unique book count mismatch: input=$ExpectedUniqueBookCount, output=$($result.output_unique_book_count)."
+            }
+        }
+
+        if ($validationMessages.Count -gt 0) {
+            $result.status = 'warning'
+            $result.validation_error = ($validationMessages -join ' ')
         }
 
         return [pscustomobject]$result
@@ -577,17 +668,21 @@ try {
         # Read the current book export and build the full prompt payload.
         $bookContent = Get-Content -Path $bookFile.FullName -Raw -Encoding UTF8
         $inputBookCount = -1
+        $inputUniqueBookCount = -1
 
-        # Count the number of books in the input file for output validation.
+        # Count the number of books and unique books in the input file for output validation.
         try {
             $parsedInputBooks = ConvertFrom-Json -InputObject $bookContent -ErrorAction Stop
             if ($parsedInputBooks -is [System.Collections.IEnumerable] -and -not ($parsedInputBooks -is [string])) {
                 $inputBookCount = @($parsedInputBooks).Count
+                $inputUniqueBookCount = Get-UniqueBookCount -Items $parsedInputBooks -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
             }
             else {
                 $inputBookCount = 1
+                $inputUniqueBookCount = 1
             }
             Write-Host "  -> Input books: $inputBookCount" -ForegroundColor Gray
+            Write-Host "  -> Input unique books: $inputUniqueBookCount" -ForegroundColor Gray
         }
         catch {
             Write-Host "  -> WARNING: Could not parse input book JSON for count validation." -ForegroundColor Yellow
@@ -617,14 +712,14 @@ $bookContent
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
-            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedRecordCount $inputBookCount
+            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedRecordCount $inputBookCount -ExpectedUniqueBookCount $inputUniqueBookCount
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, [System.Text.Encoding]::UTF8)
 
             if ($resultObject.status -eq 'success') {
                 Write-Host "  -> Saved as: $outName" -ForegroundColor Green
-                if ($null -ne $resultObject.record_count_match) {
-                    Write-Host "  -> Record count OK: input=$($resultObject.input_book_count), output=$($resultObject.output_record_count)" -ForegroundColor Green
+                if ($null -ne $resultObject.unique_book_count_match) {
+                    Write-Host "  -> Unique book count OK: input=$($resultObject.input_unique_book_count), output=$($resultObject.output_unique_book_count)" -ForegroundColor Green
                 }
             }
             elseif ($resultObject.status -eq 'warning') {

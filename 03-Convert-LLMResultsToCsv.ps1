@@ -264,12 +264,15 @@ try {
                     source_file         = $parsed.source_file
                     agent_id            = $parsed.agent_id
                     status              = $parsed.status
-                    input_book_count    = $parsed.input_book_count
-                    output_record_count = $parsed.output_record_count
-                    record_count_match  = $parsed.record_count_match
-                    validation_error    = $parsed.validation_error
-                    parse_error         = $parsed.parse_error
-                    raw_response        = $parsed.raw_response
+                    input_book_count        = $parsed.input_book_count
+                    input_unique_book_count = $parsed.input_unique_book_count
+                    output_record_count     = $parsed.output_record_count
+                    output_unique_book_count = $parsed.output_unique_book_count
+                    record_count_match      = $parsed.record_count_match
+                    unique_book_count_match = $parsed.unique_book_count_match
+                    validation_error        = $parsed.validation_error
+                    parse_error             = $parsed.parse_error
+                    raw_response            = $parsed.raw_response
                 }
             }
             continue
