@@ -206,6 +206,37 @@ try {
         return New-MistralAgent
     }
 
+    function Repair-MojibakeText {
+        param([string]$Text)
+
+        if ([string]::IsNullOrWhiteSpace($Text)) {
+            return $Text
+        }
+
+        if ($Text -notmatch 'Ã|Â') {
+            return $Text
+        }
+
+        $current = $Text
+        for ($i = 0; $i -lt 4; $i++) {
+            try {
+                $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($current)
+                $decoded = [System.Text.Encoding]::UTF8.GetString($bytes)
+            }
+            catch {
+                break
+            }
+
+            if ($decoded -eq $current -or $decoded -match '�') {
+                break
+            }
+
+            $current = $decoded
+        }
+
+        return $current
+    }
+
     # Extract the response text from the Mistral API response regardless of the payload shape.
     function Get-MistralResponseText {
         param($Response)
@@ -223,7 +254,7 @@ try {
             }
 
             if ($Content -is [string]) {
-                return $Content
+                return (Repair-MojibakeText -Text $Content)
             }
 
             if ($Content -is [System.Collections.IEnumerable]) {
@@ -233,7 +264,7 @@ try {
                     }
 
                     if ($item -is [string]) {
-                        $item
+                        Repair-MojibakeText -Text $item
                         continue
                     }
 
@@ -248,7 +279,7 @@ try {
             }
 
             if ($null -ne $Content.text -and -not [string]::IsNullOrWhiteSpace([string]$Content.text)) {
-                return [string]$Content.text
+                return (Repair-MojibakeText -Text [string]$Content.text)
             }
 
             return $null
@@ -278,12 +309,12 @@ try {
                 }
 
                 if ($null -ne $Entry.message.text -and -not [string]::IsNullOrWhiteSpace([string]$Entry.message.text)) {
-                    return [string]$Entry.message.text
+                    return (Repair-MojibakeText -Text [string]$Entry.message.text)
                 }
             }
 
             if ($null -ne $Entry.text -and -not [string]::IsNullOrWhiteSpace([string]$Entry.text)) {
-                return [string]$Entry.text
+                return (Repair-MojibakeText -Text [string]$Entry.text)
             }
 
             return $null
@@ -504,7 +535,7 @@ try {
             $result.input_unique_book_count = $ExpectedUniqueBookCount
         }
 
-        $jsonText = Get-JsonText -RawText $RawText
+        $jsonText = Repair-MojibakeText -Text (Get-JsonText -RawText $RawText)
         if ([string]::IsNullOrWhiteSpace($jsonText)) {
             $result.status = 'error'
             $result.parse_error = 'No JSON structure could be extracted from the Mistral response.'
@@ -714,7 +745,8 @@ $bookContent
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
             $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedRecordCount $inputBookCount -ExpectedUniqueBookCount $inputUniqueBookCount
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
-            [System.IO.File]::WriteAllText($outPath, $jsonOutput, [System.Text.Encoding]::UTF8)
+            $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
+            [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
 
             if ($resultObject.status -eq 'success') {
                 Write-Host "  -> Saved as: $outName" -ForegroundColor Green
