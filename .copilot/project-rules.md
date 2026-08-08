@@ -44,7 +44,4 @@
 - Never trust user input; always validate.
 - Apply defense in depth, least privilege, and fail securely principles.
 - Never store secrets in code — all passwords, usernames, credentials, API keys, tokens, and similar sensitive values must be stored in a `.psd1` file under the `.secrets/` folder and read from there at runtime.
-- Secrets file naming must correspond to the consuming script: drop the verb prefix from the script name (e.g., `Mount-NetworkDrives.ps1` → `Secrets/NetworkDrives.psd1`).
-- The script must reference the secrets file path explicitly (e.g., via a `$ConfigFilePath` parameter defaulting to the relative `Secrets/<Name>.psd1` path).
-- The secrets file must include a comment on the first line naming the script that consumes it (e.g., `# Used by: Scripts\Mount-NetworkDrives.ps1`).
 - Keep dependencies up to date, use static analysis tools, conduct security reviews.
