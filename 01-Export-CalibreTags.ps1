@@ -93,6 +93,18 @@ try {
     $TempDir = $env:TEMP
     $TempScript = Join-Path $TempDir "calibre_export_temp.py"
 
+    function Write-JsonFileUtf8 {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [string]$Content
+        )
+
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+    }
+
     Write-Host "Found:      $CalibrePortablePath"
     Write-Host "Tool:       $($CalibreDebugExe.FullName)"
     Write-Host "Library:    $LibraryPath"
@@ -113,6 +125,16 @@ output_path = r"$FullOutputPath"
 def strip_tag_name(note_text):
     if not note_text:
         return ''
+
+    if isinstance(note_text, bytes):
+        note_text = note_text.decode('utf-8', errors='replace')
+
+    note_text = note_text.replace('\u00ad', '')
+    note_text = note_text.replace('\u200b', '')
+    note_text = note_text.replace('\u200c', '')
+    note_text = note_text.replace('\u200d', '')
+    note_text = note_text.replace('\ufeff', '')
+
     lines = note_text.split('\n', 1)
     if len(lines) > 1:
         return lines[1].strip()

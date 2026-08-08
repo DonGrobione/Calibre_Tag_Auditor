@@ -68,6 +68,37 @@ try {
     # Create a timestamp for the output files.
     $ExportDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 
+    function ConvertTo-JsonUtf8 {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$InputObject,
+            [int]$Depth = 10
+        )
+
+        $json = $InputObject | ConvertTo-Json -Depth $Depth
+        $json = [System.Text.RegularExpressions.Regex]::Replace($json, '\\u([0-9A-Fa-f]{4})', {
+            param($match)
+            $codePoint = [int]::Parse($match.Groups[1].Value, [System.Globalization.NumberStyles]::HexNumber)
+            return [char]$codePoint
+        })
+
+        return $json
+    }
+
+    function Write-JsonFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [object]$InputObject,
+            [int]$Depth = 10
+        )
+
+        $json = ConvertTo-JsonUtf8 -InputObject $InputObject -Depth $Depth
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
+    }
+
     # Query the Calibre library via calibredb and read the relevant fields.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
@@ -89,21 +120,35 @@ try {
     $TotalBooks = $Books.Count
     $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
 
+    function Normalize-ExportText {
+        param([object]$Value)
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        if ($Value -is [string]) {
+            return ($Value -replace "[\u00AD\u200B\u200C\u200D\uFEFF]", '')
+        }
+
+        return $Value
+    }
+
     # Transform the raw data into a simple object format for JSON export.
     $Results = foreach ($Book in $Books) {
         [PSCustomObject]@{
-            Title       = $Book.title
-            Author      = $Book.authors
-            Series      = $Book.series
-            SeriesIndex = $Book.series_index
-            Tags        = ($Book.tags -join ", ")
+            Title       = Normalize-ExportText -Value $Book.title
+            Author      = Normalize-ExportText -Value $Book.authors
+            Series      = Normalize-ExportText -Value $Book.series
+            SeriesIndex = Normalize-ExportText -Value $Book.series_index
+            Tags        = Normalize-ExportText -Value ($Book.tags -join ", ")
         }
     }
 
     # Write the export data either to a single file or split across multiple files.
     if (-not $NeedsSplitting) {
         $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_01_$ExportDate.json"
-        $Results | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonFile -Encoding UTF8
+        Write-JsonFile -Path $JsonFile -InputObject $Results -Depth 10
 
         Write-Host ""
         Write-Host "Export complete:"
@@ -122,7 +167,7 @@ try {
             $Suffix = $CurrentFile.ToString("D$PadWidth")
             $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_${Suffix}_$ExportDate.json"
 
-            $Batch | ConvertTo-Json -Depth 10 | Set-Content -Path $JsonFile -Encoding UTF8
+            Write-JsonFile -Path $JsonFile -InputObject $Batch -Depth 10
 
             Write-Host ("  File {0}/{1}: Books {2}-{3} ({4}) -> {5}" -f `
                 $CurrentFile, $FileCount, ($StartIndex + 1), ($EndIndex + 1), $Batch.Count, $JsonFile)
