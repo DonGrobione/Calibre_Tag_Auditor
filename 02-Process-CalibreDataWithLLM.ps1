@@ -80,6 +80,31 @@ try {
         }
     }
 
+    function Remove-MistralAgent {
+        param([string]$AgentId)
+
+        if ([string]::IsNullOrWhiteSpace($AgentId)) {
+            return
+        }
+
+        if (-not (Test-AgentExists -AgentId $AgentId)) {
+            Write-Host "No existing agent found for ID: $AgentId" -ForegroundColor DarkGray
+            return
+        }
+
+        $headers = @{ Authorization = "Bearer $script:ApiKey" }
+        $deleteUrl = "$script:AgentsUrl/$AgentId"
+
+        try {
+            Write-Host "Deleting existing Mistral agent: $AgentId" -ForegroundColor Yellow
+            Invoke-RestMethod -Uri $deleteUrl -Method Delete -Headers $headers -TimeoutSec $script:ApiTimeoutSec | Out-Null
+            Write-Host "Existing agent deleted successfully." -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "Could not delete existing agent '$AgentId': $($_.Exception.Message)"
+        }
+    }
+
     function New-MistralAgent {
         $headers = @{ Authorization = "Bearer $script:ApiKey" }
         $agentBody = @{
@@ -122,18 +147,12 @@ try {
         if (Test-Path -Path $script:AgentIdFile) {
             $existingId = (Get-Content -Path $script:AgentIdFile -Raw -Encoding UTF8).Trim()
             if (-not [string]::IsNullOrWhiteSpace($existingId)) {
-                Write-Host "Existing agent ID found: $existingId" -ForegroundColor Gray
-                if (Test-AgentExists -AgentId $existingId) {
-                    Write-Host "Agent still exists - using existing ID." -ForegroundColor Green
-                    return $existingId
-                }
-                else {
-                    Write-Host "Agent no longer exists - creating a new agent." -ForegroundColor Yellow
-                    Remove-Item -Path $script:AgentIdFile -Force
-                }
+                Write-Host "Existing agent ID found from previous run: $existingId" -ForegroundColor Gray
+                Remove-MistralAgent -AgentId $existingId
             }
         }
 
+        Remove-Item -Path $script:AgentIdFile -Force -ErrorAction SilentlyContinue
         return New-MistralAgent
     }
 
