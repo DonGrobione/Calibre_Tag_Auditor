@@ -53,23 +53,17 @@ function Repair-Mojibake {
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
     if ($Text -notmatch 'Ã|Â') { return $Text }
 
-    $current = $Text
-    for ($i = 0; $i -lt 4; $i++) {
-        try {
-            $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($current)
-            $decoded = [System.Text.Encoding]::UTF8.GetString($bytes)
-        } catch {
-            break
+    try {
+        $latin1Bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($Text)
+        $decoded = [System.Text.Encoding]::UTF8.GetString($latin1Bytes)
+        if (-not [string]::IsNullOrWhiteSpace($decoded) -and $decoded -ne $Text) {
+            return $decoded
         }
-
-        if ($decoded -eq $current -or $decoded -match '�') {
-            break
-        }
-
-        $current = $decoded
+    } catch {
+        return $Text
     }
 
-    return $current
+    return $Text
 }
 
 # Try to restore malformed or misdecoded JSON text into a parsable format.
@@ -77,25 +71,23 @@ function Repair-JsonText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
 
-    $current = $Text
-    for ($i = 0; $i -lt 4; $i++) {
-        try {
-            $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($current)
-            $decoded = [System.Text.Encoding]::UTF8.GetString($bytes)
-        } catch {
-            break
-        }
+    try {
+        ConvertFrom-Json -InputObject $Text -ErrorAction Stop | Out-Null
+        return $Text
+    } catch {}
 
+    if ($Text -notmatch 'Ã|Â') {
+        return $Text
+    }
+
+    try {
+        $latin1Bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($Text)
+        $decoded = [System.Text.Encoding]::UTF8.GetString($latin1Bytes)
         try {
             ConvertFrom-Json -InputObject $decoded -ErrorAction Stop | Out-Null
             return $decoded
-        } catch {
-            if ($decoded -eq $current) {
-                break
-            }
-            $current = $decoded
-        }
-    }
+        } catch {}
+    } catch {}
 
     return $Text
 }
