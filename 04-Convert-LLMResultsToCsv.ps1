@@ -11,15 +11,17 @@
     Folder with JSON files to convert.
 
 .PARAMETER OutputCsv
-    Path to the output CSV file.
+    Path to the output CSV file. Defaults to the 03-CSV folder.
+    The exported CSV uses the pipe delimiter '|'.
+    The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.2
+    Version: 1.5
 #>
 
 param(
     [string]$InputFolder = ".\02-LLM-Result",
-    [string]$OutputCsv = ".\03-CSV\Ergebnis_All.csv"
+    [string]$OutputCsv = ".\03-CSV\03-LLM-Result.csv"
 )
 
 function Remove-Markdown {
@@ -152,6 +154,12 @@ if (-not $files) {
     throw "No JSON input files found."
 }
 
+$firstFile = $files[0]
+$firstTimestamp = if ($firstFile.Name -match '_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.json$') { $matches[1] } else { $null }
+if ($firstTimestamp -and $OutputCsv -eq ".\03-CSV\03-LLM-Result.csv") {
+    $OutputCsv = ".\03-CSV\03-LLM-Result_$firstTimestamp.csv"
+}
+
 $allObjects = @()
 foreach ($file in $files) {
     Write-Host "Processing: $($file.Name)"
@@ -196,5 +204,6 @@ if (-not (Test-Path -Path $csvDir -PathType Container)) {
 
 $csvPath = Join-Path -Path $csvDir -ChildPath (Split-Path -Path $OutputCsv -Leaf)
 
-$csvRows | Export-Csv -Path $csvPath -NoTypeInformation -Force -Encoding UTF8
+$csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
+$csvContent | Out-File -FilePath $csvPath -Encoding UTF8 -Force
 Write-Host "CSV file created: $csvPath"
