@@ -722,7 +722,7 @@ try {
                         $originalError = $_.ToString()
                     }
 
-                    $script:LastApiErrorMessage = "HTTP $statusCode: $originalError"
+                    $script:LastApiErrorMessage = ("HTTP {0}: {1}" -f $statusCode, $originalError)
                     $script:LastApiErrorBody = $errorBody
 
                     if (-not [string]::IsNullOrEmpty($errorBody)) {
