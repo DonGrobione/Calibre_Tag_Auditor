@@ -9,11 +9,11 @@
     responses to the 02-LLM-Result folder as individual JSON files.
 
 .NOTES
-    Version: 2.5
+    Version: 2.6
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records,
-    the raw response text, and any parse error information.
+    the raw response text, parse errors, and record-count validation details.
 #>
 
 try {
@@ -404,16 +404,25 @@ try {
         param(
             [string]$RawText,
             [string]$SourceFile,
-            [string]$AgentId
+            [string]$AgentId,
+            [int]$ExpectedRecordCount = -1
         )
 
         $result = [ordered]@{
-            source_file  = $SourceFile
-            agent_id     = $AgentId
-            status       = 'success'
-            records      = @()
-            raw_response = $RawText
-            parse_error  = $null
+            source_file         = $SourceFile
+            agent_id            = $AgentId
+            status              = 'success'
+            input_book_count    = $null
+            output_record_count = 0
+            record_count_match  = $null
+            validation_error    = $null
+            records             = @()
+            raw_response        = $RawText
+            parse_error         = $null
+        }
+
+        if ($ExpectedRecordCount -ge 0) {
+            $result.input_book_count = $ExpectedRecordCount
         }
 
         $jsonText = Get-JsonText -RawText $RawText
@@ -463,6 +472,16 @@ try {
         }
         else {
             $result.records = @($parsed)
+        }
+
+        $result.output_record_count = $result.records.Count
+
+        if ($ExpectedRecordCount -ge 0) {
+            $result.record_count_match = ($result.output_record_count -eq $ExpectedRecordCount)
+            if (-not $result.record_count_match) {
+                $result.status = 'warning'
+                $result.validation_error = "Record count mismatch: input=$ExpectedRecordCount, output=$($result.output_record_count)."
+            }
         }
 
         return [pscustomobject]$result
@@ -555,6 +574,23 @@ try {
 
         # Read the current book export and build the full prompt payload.
         $bookContent = Get-Content -Path $bookFile.FullName -Raw -Encoding UTF8
+        $inputBookCount = -1
+
+        # Count the number of books in the input file for output validation.
+        try {
+            $parsedInputBooks = ConvertFrom-Json -InputObject $bookContent -ErrorAction Stop
+            if ($parsedInputBooks -is [System.Collections.IEnumerable] -and -not ($parsedInputBooks -is [string])) {
+                $inputBookCount = @($parsedInputBooks).Count
+            }
+            else {
+                $inputBookCount = 1
+            }
+            Write-Host "  -> Input books: $inputBookCount" -ForegroundColor Gray
+        }
+        catch {
+            Write-Host "  -> WARNING: Could not parse input book JSON for count validation." -ForegroundColor Yellow
+            Write-Host "     $($_.Exception.Message)" -ForegroundColor Yellow
+        }
 
         $fullPrompt = @"
 $PromptSystem
@@ -579,12 +615,19 @@ $bookContent
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
-            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId
+            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedRecordCount $inputBookCount
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, [System.Text.Encoding]::UTF8)
 
             if ($resultObject.status -eq 'success') {
                 Write-Host "  -> Saved as: $outName" -ForegroundColor Green
+                if ($null -ne $resultObject.record_count_match) {
+                    Write-Host "  -> Record count OK: input=$($resultObject.input_book_count), output=$($resultObject.output_record_count)" -ForegroundColor Green
+                }
+            }
+            elseif ($resultObject.status -eq 'warning') {
+                Write-Host "  -> Saved with validation warning: $outName" -ForegroundColor Yellow
+                Write-Host "     $($resultObject.validation_error)" -ForegroundColor Yellow
             }
             else {
                 Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow

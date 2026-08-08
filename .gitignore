@@ -2,7 +2,7 @@
 .vscode/
 
 # Secret files and credentials
-.secrets/*
+.secrets/
 
 # Generated export and result data
 01-Export/*
