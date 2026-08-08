@@ -8,8 +8,9 @@
     preserves German umlauts and special characters, merges the extracted
     records, and exports the result to a single CSV file. When the default
     output path is used, the output file name
-    includes the timestamp from the first input file. For non-success result
-    files, validation and parse metadata are added as separate rows.
+    includes the timestamp from the first input file. Only book result records
+    are exported to CSV. Metadata fields (status, validation details, parse
+    details, raw_response) are intentionally ignored during CSV conversion.
     Script output (info, warnings, and errors) is written both to terminal and
     to the central log via Modules\Write-Log.psm1. Errors are marked as already
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
@@ -23,7 +24,7 @@
     The file is written as UTF-8 with BOM so German umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.12
+    Version: 1.13
 #>
 
 param(
@@ -217,24 +218,6 @@ function Get-JsonText {
     return $null
 }
 
-# Build a CSV row from an object using all known columns.
-function Convert-ToCsvRow {
-    param(
-        [psobject]$Object,
-        [string[]]$Columns
-    )
-
-    $row = @{}
-    foreach ($col in $Columns) {
-        $value = if ($Object.PSObject.Properties.Match($col)) { $Object.$col } else { $null }
-        if ($null -ne $value -and -not ($value -is [string]) -and ($value -is [System.Collections.IEnumerable])) {
-            $value = ConvertTo-Json $value -Compress
-        }
-        $row[$col] = $value
-    }
-    return [pscustomobject]$row
-}
-
 function Get-ParsedJsonObjectFromFile {
     param([string]$FilePath)
 
@@ -271,7 +254,7 @@ try {
         $OutputCsv = ".\03-CSV\03-LLM-Result_$firstTimestamp.csv"
     }
 
-    # Read each JSON file, parse its content, and collect all objects for the combined export.
+    # Read each JSON file and collect only book result records.
     $allObjects = @()
     foreach ($file in $files) {
         Write-Host "Processing: $($file.Name)"
@@ -292,20 +275,6 @@ try {
             elseif ($null -ne $records) {
                 $allObjects += $records
             }
-
-            if ($parsed.status -and $parsed.status -ne 'success') {
-                $allObjects += [pscustomobject]@{
-                    source_file              = $parsed.source_file
-                    agent_id                 = $parsed.agent_id
-                    status                   = $parsed.status
-                    input_unique_book_count = $parsed.input_unique_book_count
-                    output_unique_book_count = $parsed.output_unique_book_count
-                    unique_book_count_match = $parsed.unique_book_count_match
-                    validation_error         = $parsed.validation_error
-                    parse_error              = $parsed.parse_error
-                    raw_response             = $parsed.raw_response
-                }
-            }
             continue
         }
 
@@ -321,14 +290,35 @@ try {
         throw "No valid JSON objects were found."
     }
 
-    # Clean all values and normalize them into a consistent object format.
-    $cleanObjects = @()
+    # Normalize data and export only the four business columns required by the CSV consumer.
+    $csvRows = @()
     foreach ($item in $allObjects) {
-        $cleanObjects += Convert-JsonValues -Item $item
+        $cleanItem = Convert-JsonValues -Item $item
+
+        $titel = if ($cleanItem.PSObject.Properties.Match('Titel')) { $cleanItem.Titel } else { $null }
+        $autor = if ($cleanItem.PSObject.Properties.Match('Autor')) { $cleanItem.Autor } else { $null }
+        $vorgeschlageneAenderung = if ($cleanItem.PSObject.Properties.Match('Vorgeschlagene_Änderung')) { $cleanItem.Vorgeschlagene_Änderung } else { $null }
+        $begruendung = if ($cleanItem.PSObject.Properties.Match('Begründung')) { $cleanItem.Begründung } else { $null }
+
+        if ([string]::IsNullOrWhiteSpace([string]$titel) -and
+            [string]::IsNullOrWhiteSpace([string]$autor) -and
+            [string]::IsNullOrWhiteSpace([string]$vorgeschlageneAenderung) -and
+            [string]::IsNullOrWhiteSpace([string]$begruendung)) {
+            continue
+        }
+
+        $csvRows += [pscustomobject]@{
+            Titel                   = $titel
+            Autor                   = $autor
+            Vorgeschlagene_Änderung = $vorgeschlageneAenderung
+            Begründung              = $begruendung
+        }
     }
 
-    $allKeys = $cleanObjects | ForEach-Object { $_.PSObject.Properties.Name } | Sort-Object -Unique
-    $csvRows = $cleanObjects | ForEach-Object { Convert-ToCsvRow -Object $_ -Columns $allKeys }
+    if (-not $csvRows) {
+        Write-Error "No valid book records with Titel/Autor/Vorgeschlagene_Änderung/Begründung were found."
+        throw "No valid book records were found."
+    }
 
     $csvDir = Split-Path -Path $OutputCsv -Parent
     if (-not (Test-Path -Path $csvDir -PathType Container)) {

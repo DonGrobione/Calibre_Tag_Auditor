@@ -14,7 +14,7 @@
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 3.0
+    Version: 3.2
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records,
@@ -96,6 +96,8 @@ try {
     $ConversationsUrl = "https://api.mistral.ai/v1/conversations"
     $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_Agent_Id.txt"
     $ApiTimeoutSec = 300
+    $script:LastApiErrorMessage = $null
+    $script:LastApiErrorBody = $null
 
     # Ensure the output folder exists before writing results.
     if (-not (Test-Path -Path $OutputDir)) {
@@ -322,7 +324,7 @@ try {
         param($Response)
 
         if ($null -eq $Response) {
-            Write-Host "No response received from the Mistral API." -ForegroundColor Yellow
+            Write-Warning "No response received from the Mistral API."
             return $null
         }
 
@@ -623,19 +625,21 @@ try {
             $candidateJsonTexts += [System.Text.RegularExpressions.Regex]::Unescape($jsonText)
         }
 
+        $lastParseError = $null
         foreach ($candidateJsonText in ($candidateJsonTexts | Select-Object -Unique)) {
             try {
                 $parsed = ConvertFrom-Json -InputObject $candidateJsonText -ErrorAction Stop
                 break
             }
             catch {
+                $lastParseError = $_
                 continue
             }
         }
 
         if ($null -eq $parsed) {
             $result.status = 'error'
-            $result.parse_error = (Get-ErrorMessageFromException -ErrorRecord $_)
+            $result.parse_error = (Get-ErrorMessageFromException -ErrorRecord $lastParseError)
             return [pscustomobject]$result
         }
 
@@ -668,6 +672,9 @@ try {
     function Invoke-MistralRequest {
         param([string]$PayloadText)
 
+        $script:LastApiErrorMessage = $null
+        $script:LastApiErrorBody = $null
+
         $headers = @{ Authorization = "Bearer $script:ApiKey" }
         $body = @{
             agent_id = $script:AgentId
@@ -693,33 +700,42 @@ try {
                 if ($statusCode -eq 429) {
                     $retryCount++
                     $waitTime = [math]::Pow(2, $retryCount) * 30
-                    Write-Host "  -> Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)" -ForegroundColor Yellow
+                    Write-Warning "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
                 else {
-                    Write-Host "  -> API request failed: HTTP $statusCode" -ForegroundColor Red
+                    Write-Warning "API request failed: HTTP $statusCode"
 
                     if ($statusCode -eq 400) {
-                        Write-Host "     Possible causes: invalid agent ID, malformed payload, missing permissions." -ForegroundColor Yellow
+                        Write-Warning "Possible causes: invalid agent ID, malformed payload, missing permissions."
                     }
                     elseif ($statusCode -eq 401) {
-                        Write-Host "     Possible cause: API key is invalid or expired." -ForegroundColor Yellow
+                        Write-Warning "Possible cause: API key is invalid or expired."
                     }
                     elseif ($statusCode -eq 500 -or $statusCode -eq 502 -or $statusCode -eq 503) {
-                        Write-Host "     Server error at Mistral - retry later." -ForegroundColor Yellow
+                        Write-Warning "Server error at Mistral - retry later."
                     }
 
                     $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
-                    if (-not [string]::IsNullOrEmpty($errorBody)) {
-                        Write-Host "     API response body: $errorBody" -ForegroundColor DarkGray
+                    $originalError = Get-ErrorMessageFromException -ErrorRecord $_
+                    if ([string]::IsNullOrWhiteSpace($originalError)) {
+                        $originalError = $_.ToString()
                     }
 
-                    Write-Host "     Original error: $(Get-ErrorMessageFromException -ErrorRecord $_)" -ForegroundColor DarkGray
+                    $script:LastApiErrorMessage = "HTTP $statusCode: $originalError"
+                    $script:LastApiErrorBody = $errorBody
+
+                    if (-not [string]::IsNullOrEmpty($errorBody)) {
+                        Write-Warning "API response body: $errorBody"
+                    }
+
+                    Write-Warning "Original error: $originalError"
                     return $null
                 }
             }
         }
 
+        $script:LastApiErrorMessage = "API request aborted after $maxRetries attempts."
         Write-Error "API request aborted after $maxRetries attempts."
         return $null
     }
@@ -759,8 +775,9 @@ try {
             Write-Host "  -> Input unique books: $inputUniqueBookCount" -ForegroundColor Gray
         }
         catch {
-            Write-Host "  -> WARNING: Could not parse input book JSON for count validation." -ForegroundColor Yellow
-            Write-Host "     $($_.Exception.Message)" -ForegroundColor Yellow
+            $validationWarningText = "Validation warning in '$($bookFile.Name)': Could not parse input book JSON for count validation. $($_.Exception.Message)"
+            Write-Log -Message "$ScriptLogPrefix $validationWarningText" -Warn
+            Microsoft.PowerShell.Utility\Write-Warning $validationWarningText
         }
 
         $fullPrompt = @"
@@ -799,15 +816,52 @@ $bookContent
             }
             elseif ($resultObject.status -eq 'warning') {
                 Write-Host "  -> Saved with validation warning: $outName" -ForegroundColor Yellow
-                Write-Host "     $($resultObject.validation_error)" -ForegroundColor Yellow
+                $validationWarningText = "Validation warning in '$($bookFile.Name)': $($resultObject.validation_error)"
+                Write-Log -Message "$ScriptLogPrefix $validationWarningText" -Warn
+                Microsoft.PowerShell.Utility\Write-Warning $validationWarningText
             }
             else {
                 Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow
-                Write-Host "     $($resultObject.parse_error)" -ForegroundColor Yellow
+                $validationErrorText = "Validation error in '$($bookFile.Name)': $($resultObject.parse_error)"
+                Write-Log -Message "$ScriptLogPrefix $validationErrorText" -IsError
+                Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
             }
         }
         else {
-            Write-Host "  -> ERROR: No response from API." -ForegroundColor Red
+            $savedCount++
+            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
+            $outPath = Join-Path -Path $OutputDir -ChildPath $outName
+
+            $apiDetail = $script:LastApiErrorMessage
+            if ([string]::IsNullOrWhiteSpace($apiDetail)) {
+                $apiDetail = 'No response from API.'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($script:LastApiErrorBody)) {
+                $apiDetail = "$apiDetail | API response: $($script:LastApiErrorBody)"
+            }
+
+            $resultObject = [pscustomobject][ordered]@{
+                source_file              = $bookFile.Name
+                agent_id                 = $AgentId
+                status                   = 'error'
+                input_unique_book_count  = if ($inputUniqueBookCount -ge 0) { $inputUniqueBookCount } else { $null }
+                output_unique_book_count = 0
+                unique_book_count_match  = $null
+                validation_error         = $null
+                records                  = @()
+                raw_response             = if (-not [string]::IsNullOrWhiteSpace($script:LastApiErrorBody)) { $script:LastApiErrorBody } else { $apiDetail }
+                parse_error              = $apiDetail
+            }
+
+            $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
+            $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
+            [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
+
+            Write-Host "  -> Saved with API error: $outName" -ForegroundColor Red
+            $validationErrorText = "Validation error in '$($bookFile.Name)': $apiDetail"
+            Write-Log -Message "$ScriptLogPrefix $validationErrorText" -IsError
+            Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
         }
 
         Start-Sleep -Seconds 15

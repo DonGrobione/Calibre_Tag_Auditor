@@ -43,6 +43,8 @@ Or run each script individually:
 - Input-vs-output validation is performed per book export file; duplicates for the same book are collapsed before comparison, and mismatches are kept in output metadata and shown in terminal warnings.
 - The CSV converter writes UTF-8 output with a pipe delimiter and preserves German umlauts and special characters.
 - The CSV converter repairs malformed input text before export so German umlauts and special characters survive the pipeline.
+- The CSV converter exports only `Titel`, `Autor`, `Vorgeschlagene_Änderung`, and `Begründung`.
+- Validation metadata and diagnostics (`status`, count checks, `validation_error`, `parse_error`, `raw_response`) remain in JSON wrappers but are not exported to CSV.
 - All PowerShell scripts use top-level error handling and are compatible with PowerShell 5.1.
 - All PowerShell scripts import `Modules/Write-Log.psm1` and prefix each log entry with the script file name (for example `[02-Process-CalibreDataWithLLM.ps1] ...`).
 - `Write-Host`, `Write-Warning`, and `Write-Error` are wrapped per script so terminal output is still visible while the same message is written to log.
@@ -51,14 +53,6 @@ Or run each script individually:
   - `01-Export`
   - `02-LLM-Result`
   - `03-CSV`
-
-## Script versions
-
-- `Invoke-CalibreToolsPipeline.ps1`: 1.3
-- `01-Export-CalibreBooks.ps1`: 2.6
-- `01-Export-CalibreTags.ps1`: 2.7
-- `02-Process-CalibreDataWithLLM.ps1`: 3.0
-- `03-Convert-LLMResultsToCsv.ps1`: 1.12
 
 ## Example log excerpt
 
