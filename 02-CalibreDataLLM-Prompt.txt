@@ -38,6 +38,24 @@ CHANGE TYPES:
 - "REMOVE: <tag name>"   — remove (definition does not match)
 - "NO_CHANGES"           — no change needed
 
+DATA FIDELITY (CRITICAL):
+- Never invent, omit, or normalize book identity fields.
+- For each output object, Titel must be copied from the input field Title of that same book.
+- For each output object, Autor must be copied from the input field Author of that same book.
+- Keep original spelling, punctuation, whitespace, and diacritics from input values.
+- If one book has multiple changes, repeat the exact same Titel and Autor in every object for that book.
+- Do not swap authors between books.
+- Do not output null for Titel or Autor.
+
+OUTPUT SCHEMA (STRICT):
+- Allowed keys per object: Titel, Autor, Vorgeschlagene_Änderung, Begründung
+- No additional keys are allowed.
+- Vorgeschlagene_Änderung must be exactly one of:
+  - NO_CHANGES
+  - ADD: <existing or justified new tag>
+  - REMOVE: <existing tag>
+- Begründung must be a non-empty German sentence specific to that object.
+
 OUTPUT RULES:
 - Output ONLY a single JSON array of objects.
 - Each object contains exactly: Titel, Autor, Vorgeschlagene_Änderung, Begründung
@@ -53,6 +71,14 @@ OUTPUT RULES:
 - No introductory text, no summary, no verification line.
 - The first character of your response must be [ and the last character must be ].
 - Field names must be in German: Titel, Autor, Vorgeschlagene_Änderung, Begründung.
+
+FINAL SELF-CHECK BEFORE RETURNING JSON (MANDATORY):
+1) Valid JSON array only.
+2) Every object has all 4 required keys.
+3) Titel and Autor in each object exactly match one input book pair (Title+Author).
+4) No object with missing/empty Titel or Autor.
+5) Every input book appears at least once in output.
+6) For books with ADD/REMOVE objects, no NO_CHANGES object exists for that same book.
 
 EXAMPLE OUTPUT:
 [
