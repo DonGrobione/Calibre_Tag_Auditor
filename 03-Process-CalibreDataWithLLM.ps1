@@ -63,36 +63,6 @@ try {
     Write-Host "Target:   $OutputDir" -ForegroundColor Cyan
     Write-Host ""
 
-    function Test-ValidJson {
-        param([string]$JsonString)
-
-        # Trim whitespace
-        $cleaned = $JsonString.Trim()
-
-        # Remove possible Markdown code blocks
-        $cleaned = $cleaned -replace '^\s*```json\s*', '' -replace '^\s*```\s*', ''
-        $cleaned = $cleaned -replace '\s*```\s*$', ''
-        $cleaned = $cleaned.Trim()
-
-        # Check if starts with valid JSON delimiter
-        if ($cleaned -notmatch '^[\{\[]') {
-            return $false, "JSON must start with '{' or '[' - found: $($cleaned.Substring(0, [Math]::Min(20, $cleaned.Length)))"
-        }
-
-        # Check if ends with valid JSON delimiter
-        if ($cleaned -notmatch '[\}\]]\s*$') {
-            return $false, "JSON must end with '}' or ']'"
-        }
-
-        try {
-            $parsed = $cleaned | ConvertFrom-Json -ErrorAction Stop
-            return $true, $parsed
-        }
-        catch {
-            return $false, $_.Exception.Message
-        }
-    }
-
     function Test-AgentExists {
         param([string]$AgentId)
 
@@ -307,8 +277,7 @@ try {
 
     $counter = 0
     $total = $bookFiles.Count
-    $validJsonCount = 0
-    $invalidJsonCount = 0
+    $savedCount = 0
 
     foreach ($bookFile in $bookFiles) {
         $counter++
@@ -333,36 +302,14 @@ $bookContent
         $apiResult = Invoke-MistralRequest -PayloadText $fullPrompt
 
         if ($apiResult) {
-            # JSON VALIDATION
-            $isValid, $resultOrError = Test-ValidJson -JsonString $apiResult
+            $savedCount++
+            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM_Result_"
+            $outPath = Join-Path -Path $OutputDir -ChildPath $outName
+            [System.IO.File]::WriteAllText($outPath, $apiResult, [System.Text.Encoding]::UTF8)
+            Write-Host "  -> Saved as: $outName" -ForegroundColor Green
 
-            if (-not $isValid) {
-                $invalidJsonCount++
-                Write-Host "  -> INVALID JSON: $resultOrError" -ForegroundColor Red
-
-                # Write the raw API response directly into the JSON output file
-                $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM_Result_"
-                $outPath = Join-Path -Path $OutputDir -ChildPath $outName
-                [System.IO.File]::WriteAllText($outPath, $apiResult, [System.Text.Encoding]::UTF8)
-                Write-Host "  -> Saved invalid JSON response as: $outName" -ForegroundColor Yellow
-
-                if ($EnableDebugLogging -and $apiResult.Length -gt 200) {
-                    Write-Host "     Preview: $($apiResult.Substring(0, [Math]::Min(200, $apiResult.Length)))..." -ForegroundColor Gray
-                }
-            }
-            else {
-                $validJsonCount++
-                $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM_Result_"
-                $outPath = Join-Path -Path $OutputDir -ChildPath $outName
-
-                # Serialize the validated JSON back to string
-                $jsonString = $resultOrError | ConvertTo-Json -Depth 10
-                [System.IO.File]::WriteAllText($outPath, $jsonString, [System.Text.Encoding]::UTF8)
-                Write-Host "  -> Saved as: $outName" -ForegroundColor Green
-
-                if ($EnableDebugLogging -and $jsonString.Length -gt 200) {
-                    Write-Host "     Preview: $($jsonString.Substring(0, [Math]::Min(200, $jsonString.Length)))..." -ForegroundColor Gray
-                }
+            if ($EnableDebugLogging -and $apiResult.Length -gt 200) {
+                Write-Host "     Preview: $($apiResult.Substring(0, [Math]::Min(200, $apiResult.Length)))..." -ForegroundColor Gray
             }
         }
         else {
@@ -375,13 +322,7 @@ $bookContent
     Write-Host ""
     Write-Host "--- Processing Complete ---" -ForegroundColor Cyan
     Write-Host "Total files:     $total" -ForegroundColor Gray
-    Write-Host "Valid JSON:      $validJsonCount" -ForegroundColor Green
-    Write-Host "Invalid JSON:    $invalidJsonCount" -ForegroundColor $(if ($invalidJsonCount -gt 0) { "Red" } else { "Gray" })
-
-    if ($invalidJsonCount -gt 0) {
-        Write-Host ""
-        Write-Host "Note: Invalid responses were written directly to JSON output files." -ForegroundColor Yellow
-    }
+    Write-Host "Saved files:     $savedCount" -ForegroundColor Green
 
     if ($EnableDebugLogging) {
         Write-Host ""
