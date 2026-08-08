@@ -40,11 +40,15 @@ CHANGE TYPES:
 
 OUTPUT RULES:
 - Output ONLY a single JSON array of objects.
-- Each object contains exactly: Title, Author, Proposed_Change, Reasoning
+- Each object contains exactly: Titel, Autor, Vorgeschlagene_Änderung, Begründung
 - One change per object.
-- Books with changes → no NO_CHANGES object for that book.
-- Books without changes → one NO_CHANGES object.
-- Every book from the input must appear in the output.
+- If a book needs one or more changes (ADD/REMOVE):
+  output one object PER change. Do NOT output a NO_CHANGES object for that book.
+  Example: if a book needs 2 tags removed and 1 added, output 3 objects.
+- If a book needs NO changes at all:
+  output exactly ONE NO_CHANGES object for that book.
+- Do NOT output a NO_CHANGES object alongside ADD or REMOVE objects for the same book.
+- Every book from the input must appear in the output at least once.
 - No markdown code blocks (no ```json).
 - No introductory text, no summary, no verification line.
 - The first character of your response must be [ and the last character must be ].
