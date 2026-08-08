@@ -20,7 +20,7 @@ $AgentsUrl           = "https://api.mistral.ai/v1/agents"
 $ConversationsUrl    = "https://api.mistral.ai/v1/conversations"
 $AgentIdFile         = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_Agent_Id.txt"
 $ApiTimeoutSec       = 300
-$EnableDebugLogging  = $true
+$EnableDebugLogging  = $false
 
 # 2. Ordner & Eingabedateien prüfen
 if (-not (Test-Path -Path $OutputDir)) {
