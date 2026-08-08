@@ -77,5 +77,7 @@ catch {
     }
 
     Write-Error $errorMessage
+    Write-Host "Press Enter to close this window after reviewing the error..." -ForegroundColor Yellow
+    Read-Host | Out-Null
     throw
 }
