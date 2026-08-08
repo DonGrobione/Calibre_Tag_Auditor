@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Converts all JSON files in the Ergebnis directory to CSV format.
 
@@ -40,9 +40,7 @@
 .NOTES
     PowerShell Version: 5.1+
     Version: 1.0
-    
-    Requires: Modules\Write-Log.psm1
-    
+
     The script will skip any files that cannot be parsed as JSON.
     Each JSON file is converted to a CSV file with the same base name.
 #>
@@ -66,86 +64,52 @@ param (
     [switch]$Force
 )
 
-# Import the logging module
-$ModulePath = Join-Path -Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -ChildPath "Modules\Write-Log.psm1"
-if (Test-Path -Path $ModulePath) {
-    Import-Module -Name $ModulePath -Force -ErrorAction SilentlyContinue
-} else {
-    Write-Warning "Logging module not found at '$ModulePath'. Using native Write-Host for output."
-}
-
 # Set error action preference
 $ErrorActionPreference = "Stop"
 
-# Main execution with top-level try/catch
 try {
-    # Determine the script directory
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-    # Resolve result directory
     if ([string]::IsNullOrWhiteSpace($ResultDirectory)) {
         $ResultDir = Join-Path -Path $ScriptDir -ChildPath "Ergebnis"
     } else {
         $ResultDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ResultDirectory)
     }
 
-    # Resolve output directory
     if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
         $OutputDir = $ResultDir
     } else {
         $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
     }
 
-    # Validate paths
     if (-not (Test-Path -Path $ResultDir -PathType Container)) {
-        if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-            Write-Log -Message "Error: Result directory '$ResultDir' does not exist or is not accessible." -Level ERROR
-        } else {
-            Write-Error "Error: Result directory '$ResultDir' does not exist or is not accessible."
-        }
+        Write-Error "Error: Result directory '$ResultDir' does not exist or is not accessible."
         return
     }
 
-    # Ensure output directory exists
     if (-not (Test-Path -Path $OutputDir -PathType Container)) {
         try {
             New-Item -Path $OutputDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
-            if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                Write-Log -Message "Created output directory: $OutputDir" -Level INFO
-            }
+            Write-Host "Created output directory: $OutputDir" -ForegroundColor Green
         } catch {
-            if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                Write-Log -Message "Error: Failed to create output directory '$OutputDir': $_" -Level ERROR
-            } else {
-                Write-Error "Error: Failed to create output directory '$OutputDir': $_"
-            }
+            Write-Error "Error: Failed to create output directory '$OutputDir': $_"
             return
         }
     }
 
-    # Get JSON files
     $JsonFiles = Get-ChildItem -Path $ResultDir -Filter "*.json" -File | Sort-Object Name
 
     if ($JsonFiles.Count -eq 0) {
-        if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-            Write-Log -Message "No JSON files found in directory '$ResultDir'." -Level WARNING
-        } else {
-            Write-Host "No JSON files found in directory '$ResultDir'." -ForegroundColor Yellow
-        }
+        Write-Warning "No JSON files found in directory '$ResultDir'."
         return
     }
 
-    if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-        Write-Log -Message "Found $($JsonFiles.Count) JSON file(s) to convert." -Level INFO
-        Write-Log -Message "Result directory: $ResultDir" -Level DEBUG
-        Write-Log -Message "Output directory: $OutputDir" -Level DEBUG
-        Write-Log -Message "CSV delimiter: '$Delimiter'" -Level DEBUG
-        Write-Log -Message "Encoding: $Encoding" -Level DEBUG
-    } else {
-        Write-Host "Found $($JsonFiles.Count) JSON file(s) to convert." -ForegroundColor Cyan
-    }
+    Write-Host "Found $($JsonFiles.Count) JSON file(s) to convert." -ForegroundColor Cyan
+    Write-Host "Result directory: $ResultDir" -ForegroundColor Cyan
+    Write-Host "Output directory: $OutputDir" -ForegroundColor Cyan
+    Write-Host "CSV delimiter: '$Delimiter'" -ForegroundColor Cyan
+    Write-Host "Encoding: $Encoding" -ForegroundColor Cyan
 
-    # Process each JSON file
     $SuccessCount = 0
     $ErrorCount = 0
 
@@ -153,37 +117,25 @@ try {
         $FileName = $JsonFile.Name
         $CsvPath = Join-Path -Path $OutputDir -ChildPath ([System.IO.Path]::ChangeExtension($JsonFile.Name, ".csv"))
 
-        # Check if CSV file already exists
         if (-not $Force -and (Test-Path -Path $CsvPath)) {
-            if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                Write-Log -Message "Skipping '$FileName' - CSV file already exists. Use -Force to overwrite." -Level WARNING
-            } else {
-                Write-Host "Skipping '$FileName' - CSV file already exists. Use -Force to overwrite." -ForegroundColor Yellow
-            }
+            Write-Warning "Skipping '$FileName' - CSV file already exists. Use -Force to overwrite."
             $ErrorCount++
             continue
         }
 
-        if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-            Write-Log -Message "Converting: $FileName" -Level INFO
-        } else {
-            Write-Host "Converting: $FileName" -ForegroundColor Cyan
-        }
+        Write-Host "Converting: $FileName" -ForegroundColor Cyan
 
         try {
-            # Read and parse JSON content
             $Content = Get-Content -Path $JsonFile.FullName -Raw -Encoding UTF8 -ErrorAction Stop
-            
-            # Try to parse as JSON
             $JsonData = $null
+
             try {
                 $JsonData = $Content | ConvertFrom-Json -ErrorAction Stop
             } catch {
-                # Try to extract JSON from content (handle cases where JSON is embedded)
                 $Raw = $Content.Trim()
                 $Start = $Raw.IndexOf('[')
                 $End = $Raw.LastIndexOf(']')
-                
+
                 if ($Start -ge 0 -and $End -gt $Start) {
                     $JsonText = $Raw.Substring($Start, $End - $Start + 1)
                     $JsonData = $JsonText | ConvertFrom-Json -ErrorAction Stop
@@ -193,35 +145,20 @@ try {
             }
 
             if ($null -eq $JsonData) {
-                if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                    Write-Log -Message "Error: File '$FileName' contains no valid JSON data." -Level ERROR
-                } else {
-                    Write-Error "Error: File '$FileName' contains no valid JSON data."
-                }
+                Write-Error "Error: File '$FileName' contains no valid JSON data."
                 $ErrorCount++
                 continue
             }
 
-            # Normalize to array
-            if ($JsonData -is [System.Collections.IEnumerable] -and -not ($JsonData -is [string])) {
-                $Items = @($JsonData)
-            } else {
-                $Items = @($JsonData)
-            }
+            $Items = @($JsonData)
 
             if ($Items.Count -eq 0) {
-                if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                    Write-Log -Message "Warning: File '$FileName' contains empty JSON array." -Level WARNING
-                } else {
-                    Write-Warning "Warning: File '$FileName' contains empty JSON array."
-                }
+                Write-Warning "Warning: File '$FileName' contains empty JSON array."
                 $ErrorCount++
                 continue
             }
 
-            # Collect all property names from all items to create consistent columns
             $Columns = [System.Collections.ArrayList]@()
-            
             foreach ($Item in $Items) {
                 if ($Item -is [System.Management.Automation.PSObject]) {
                     foreach ($Prop in $Item.PSObject.Properties.Name) {
@@ -233,18 +170,12 @@ try {
             }
 
             if ($Columns.Count -eq 0) {
-                if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                    Write-Log -Message "Error: No columns found in '$FileName'." -Level ERROR
-                } else {
-                    Write-Error "Error: No columns found in '$FileName'."
-                }
+                Write-Error "Error: No columns found in '$FileName'."
                 $ErrorCount++
                 continue
             }
 
-            # Build rows with consistent columns
             $Rows = @()
-            
             foreach ($Item in $Items) {
                 $Obj = [ordered]@{}
                 foreach ($Col in $Columns) {
@@ -257,62 +188,29 @@ try {
                 $Rows += New-Object PSObject -Property $Obj
             }
 
-            # Export to CSV
             try {
                 $Rows | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding $Encoding -Delimiter $Delimiter -Force -ErrorAction Stop
-                
-                if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                    Write-Log -Message "  -> Saved as: $([System.IO.Path]::GetFileName($CsvPath))" -Level INFO
-                } else {
-                    Write-Host "  -> Saved as: $([System.IO.Path]::GetFileName($CsvPath))" -ForegroundColor Green
-                }
+                Write-Host "  -> Saved as: $([System.IO.Path]::GetFileName($CsvPath))" -ForegroundColor Green
                 $SuccessCount++
             } catch {
-                if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                    Write-Log -Message "Error writing CSV file '$CsvPath': $_" -Level ERROR
-                } else {
-                    Write-Error "Error writing CSV file '$CsvPath': $_"
-                }
+                Write-Error "Error writing CSV file '$CsvPath': $_"
                 $ErrorCount++
             }
 
         } catch {
-            if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-                Write-Log -Message "Error processing file '$FileName': $_" -Level ERROR
-            } else {
-                Write-Error "Error processing file '$FileName': $_"
-            }
+            Write-Error "Error processing file '$FileName': $_"
             $ErrorCount++
         }
     }
 
-    # Summary
-    if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-        Write-Log -Message "Conversion complete. Success: $SuccessCount, Errors: $ErrorCount" -Level INFO
-    } else {
-        Write-Host "Conversion complete. Success: $SuccessCount, Errors: $ErrorCount" -ForegroundColor Cyan
-    }
+    Write-Host "Conversion complete. Success: $SuccessCount, Errors: $ErrorCount" -ForegroundColor Cyan
 
-    # Return exit code based on results
     if ($ErrorCount -gt 0) {
-        if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-            Write-Log -Message "Completed with errors." -Level WARNING
-        }
-        # Note: Not using exit in subscript per rule #4.7
         return
     }
 
-    if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-        Write-Log -Message "All files converted successfully." -Level INFO
-    }
-
+    Write-Host "All files converted successfully." -ForegroundColor Cyan
 } catch {
-    # Top-level error handling
-    if (Get-Module -Name Write-Log -ErrorAction SilentlyContinue) {
-        Write-Log -Message "Fatal error: $_" -Level ERROR
-    } else {
-        Write-Error "Fatal error: $_"
-    }
-    # Re-throw to bubble up to orchestrator per rule #4.7
+    Write-Error "Fatal error: $_"
     throw
 }

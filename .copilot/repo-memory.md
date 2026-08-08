@@ -5,7 +5,6 @@ Collection of PowerShell scripts for managing Calibre Portable library data, inc
 
 ## Current State
 - 4 main scripts exist (all German language, violating rule #4)
-- No Modules directory exists (Write-Log.psm1 missing)
 - No Secrets directory (only .secrets with .txt files)
 - No README.md documentation
 - Scripts use numeric prefixes (1_, 2_, 3_, 4_) instead of Approved Verbs

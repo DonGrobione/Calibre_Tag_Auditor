@@ -102,7 +102,11 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 
 $FullOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
-$TempScript     = Join-Path $env:TEMP "calibre_export_temp.py"
+$TempDir = Join-Path $ScriptDir ".tmp"
+if (-not (Test-Path -Path $TempDir -PathType Container)) {
+    New-Item -Path $TempDir -ItemType Directory | Out-Null
+}
+$TempScript = Join-Path $TempDir "calibre_export_temp.py"
 
 Write-Host "Gefunden:   $CalibrePortablePath"
 Write-Host "Tool:       $($CalibreDebugExe.FullName)"

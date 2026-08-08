@@ -1,106 +1,174 @@
-<#
-.SYNOPSIS
-    Konvertiert alle JSON-Dateien im Ergebnis-Verzeichnis (ohne Unterverzeichnisse) nach CSV.
-.DESCRIPTION
-    Liest jede JSON-Datei im Ordner 'Ergebnis' und speichert sie im selben Verzeichnis
-    als CSV mit identischem Basisnamen.
-.NOTES
-    PowerShell 5.1+
-#>
+﻿param(
+    [string]$InputFolder = ".\Ergebnis",
+    [string]$OutputCsv = ".\Ergebnis\Ergebnis_All.csv"
+)
 
-$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ResultDir  = Join-Path -Path $ScriptDir -ChildPath "Ergebnis"
+function Remove-Markdown {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
 
-if (-not (Test-Path -Path $ResultDir)) {
-    Write-Error "Fehler: Verzeichnis '$ResultDir' existiert nicht."
-    exit 1
+    $clean = $Text
+    $clean = $clean -replace '(?ms)```.*?```', ''
+    $clean = $clean -replace '(?ms)~~~.*?~~~', ''
+    $clean = $clean -replace '!\[([^\]]*)\]\([^\)]*\)', '$1'
+    $clean = $clean -replace '(^|\r?\n)\s{0,3}#{1,6}\s*', '$1'
+    $clean = $clean -replace '(^|\r?\n)\s*([-+*]|\d+\.)\s+', '$1'
+    $clean = $clean -replace '(^|\r?\n)\s{0,3}>\s*', '$1'
+    $clean = $clean -replace '(\*\*|__)(.*?)\1', '$2'
+    $clean = $clean -replace '(\*|_)(.*?)\1', '$2'
+    $clean = $clean -replace '`([^`]*)`', '$1'
+    $clean = $clean -replace '\s{2,}', ' '
+    return $clean.Trim()
 }
 
-$files = Get-ChildItem -Path $ResultDir -Filter "*.json" -File | Sort-Object Name
-if ($files.Count -eq 0) {
-    Write-Host "Keine JSON-Dateien im Ordner '$ResultDir' gefunden."
-    exit 0
-}
+function Clean-JsonValues {
+    param([object]$Item)
+    if ($null -eq $Item) { return $null }
 
-foreach ($file in $files) {
-    Write-Host "Konvertiere: $($file.Name)" -ForegroundColor Cyan
-    try {
-        $content = Get-Content -Path $file.FullName -Raw -Encoding UTF8
-        $json = ConvertFrom-Json -InputObject $content
+    if ($Item -is [string]) {
+        return Remove-Markdown -Text $Item
     }
-    catch {
-        $raw = $content.Trim()
-        $start = $raw.IndexOf('[')
-        $end = $raw.LastIndexOf(']')
-        if ($start -ge 0 -and $end -gt $start) {
-            $jsonText = $raw.Substring($start, $end - $start + 1)
-            try {
-                $json = ConvertFrom-Json -InputObject $jsonText
-            }
-            catch {
-                Write-Error "Fehler beim Parsen von '$($file.Name)' (nach der Extraktion des JSON-Teils): $_"
-                continue
-            }
+
+    if ($Item -is [System.Collections.IDictionary]) {
+        foreach ($key in $Item.Keys) {
+            $Item[$key] = Clean-JsonValues -Item $Item[$key]
         }
-        else {
-            Write-Error "Fehler beim Lesen oder Parsen von '$($file.Name)': $_"
+        return $Item
+    }
+
+    if ($Item -is [System.Collections.IEnumerable] -and -not ($Item -is [string])) {
+        $list = @()
+        foreach ($element in $Item) {
+            $list += Clean-JsonValues -Item $element
+        }
+        return ,$list
+    }
+
+    return $Item
+}
+
+function Extract-JsonText {
+    param([string]$RawText)
+
+    $firstArray = $RawText.IndexOf('[')
+    $firstObj = $RawText.IndexOf('{')
+    if ($firstArray -eq -1 -and $firstObj -eq -1) { return $null }
+
+    if ($firstArray -ge 0 -and ($firstArray -le $firstObj -or $firstObj -eq -1)) {
+        $start = $firstArray
+    } else {
+        $start = $firstObj
+    }
+
+    $depth = 0
+    $inString = $false
+    $escape = $false
+
+    for ($i = $start; $i -lt $RawText.Length; $i++) {
+        $c = $RawText[$i]
+        if ($escape) {
+            $escape = $false
             continue
         }
-    }
 
-    if ($null -eq $json) {
-        Write-Error "Datei '$($file.Name)' enthält kein JSON."
-        continue
-    }
+        if ($c -eq '\\') {
+            $escape = $true
+            continue
+        }
 
-    if ($json -is [System.Collections.IEnumerable] -and -not ($json -is [string])) {
-        $items = @($json)
-    }
-    else {
-        $items = @($json)
-    }
+        if ($c -eq '"') {
+            $inString = -not $inString
+            continue
+        }
 
-    $rows = @()
-    $columns = [System.Collections.ArrayList]@()
-
-    foreach ($item in $items) {
-        if ($item -is [System.Management.Automation.PSObject]) {
-            foreach ($prop in $item.PSObject.Properties.Name) {
-                if (-not $columns.Contains($prop)) {
-                    $columns.Add($prop) | Out-Null
+        if (-not $inString) {
+            if ($c -eq '[' -or $c -eq '{') {
+                $depth++
+            } elseif ($c -eq ']' -or $c -eq '}') {
+                $depth--
+                if ($depth -eq 0) {
+                    return $RawText.Substring($start, $i - $start + 1)
                 }
             }
         }
-        else {
-            Write-Error "Objekt in '$($file.Name)' konnte nicht in ein PSObject konvertiert werden."
-        }
     }
 
-    if ($columns.Count -eq 0) {
-        Write-Error "Keine Spalten in '$($file.Name)' gefunden."
+    $lastClose = [Math]::Max($RawText.LastIndexOf(']'), $RawText.LastIndexOf('}'))
+    if ($lastClose -gt $start) {
+        return $RawText.Substring($start, $lastClose - $start + 1)
+    }
+
+    return $null
+}
+
+function Convert-ToCsvRow {
+    param(
+        [psobject]$Object,
+        [string[]]$Columns
+    )
+
+    $row = @{}
+    foreach ($col in $Columns) {
+        $value = if ($Object.PSObject.Properties.Match($col)) { $Object.$col } else { $null }
+        if ($null -ne $value -and -not ($value -is [string]) -and ($value -is [System.Collections.IEnumerable])) {
+            $value = ConvertTo-Json $value -Compress
+        }
+        $row[$col] = $value
+    }
+    return [pscustomobject]$row
+}
+
+try {
+    $inputFolderFull = Resolve-Path -Path $InputFolder -ErrorAction Stop
+} catch {
+    Write-Error "Eingabeordner nicht gefunden: $InputFolder"
+    exit 1
+}
+
+$files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
+if (-not $files) {
+    Write-Error "Keine JSON-Dateien im Ordner gefunden: $inputFolderFull"
+    exit 1
+}
+
+$allObjects = @()
+foreach ($file in $files) {
+    Write-Host "Verarbeite: $($file.Name)"
+    $raw = Get-Content -Path $file.FullName -Encoding UTF8 -Raw
+    $jsonText = Extract-JsonText -RawText $raw
+    if (-not $jsonText) {
+        Write-Warning "Keine JSON-Struktur in Datei gefunden: $($file.Name)"
         continue
     }
 
-    foreach ($item in $items) {
-        $obj = [ordered]@{}
-        foreach ($col in $columns) {
-            $value = $null
-            if ($item.PSObject.Properties.Match($col).Count -gt 0) {
-                $value = $item.$col
-            }
-            $obj[$col] = $value
-        }
-        $rows += New-Object PSObject -Property $obj
+    try {
+        $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
+    } catch {
+        Write-Warning "Fehler beim Parsen von $($file.Name): $($_.Exception.Message)"
+        continue
     }
 
-    $csvPath = [System.IO.Path]::ChangeExtension($file.FullName, ".csv")
-    try {
-        $rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8 -Delimiter ";"
-        Write-Host "  -> gespeichert als: $([System.IO.Path]::GetFileName($csvPath))" -ForegroundColor Green
-    }
-    catch {
-        Write-Error "Fehler beim Schreiben von '$($csvPath)': $_"
+    if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
+        foreach ($item in $parsed) { $allObjects += $item }
+    } else {
+        $allObjects += $parsed
     }
 }
 
-Write-Host "Konvertierung abgeschlossen." -ForegroundColor Cyan
+if (-not $allObjects) {
+    Write-Error "Es wurden keine gültigen JSON-Objekte gefunden."
+    exit 1
+}
+
+$cleanObjects = @()
+foreach ($item in $allObjects) {
+    $cleanObjects += Clean-JsonValues -Item $item
+}
+
+$allKeys = $cleanObjects | ForEach-Object { $_.PSObject.Properties.Name } | Sort-Object -Unique
+$csvRows = $cleanObjects | ForEach-Object { Convert-ToCsvRow -Object $_ -Columns $allKeys }
+
+$csvPath = Join-Path -Path (Split-Path -Path $OutputCsv -Parent) -ChildPath (Split-Path -Path $OutputCsv -Leaf)
+
+$csvRows | Export-Csv -Path $csvPath -NoTypeInformation -Force -Encoding UTF8
+Write-Host "CSV-Datei erstellt: $csvPath"
