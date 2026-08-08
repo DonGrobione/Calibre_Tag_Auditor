@@ -46,14 +46,20 @@ try {
     Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" -File |
     Remove-Item -Force
 
-    # Determine the available Calibre Portable path.
-    $CalibrePortablePath = $null
-    foreach ($Path in $CalibrePaths) {
-        if (Test-Path $Path) {
-            $CalibrePortablePath = $Path
-            break
+    function Get-FirstExistingPath {
+        param([string[]]$Paths)
+
+        foreach ($Path in $Paths) {
+            if (Test-Path -LiteralPath $Path) {
+                return $Path
+            }
         }
+
+        return $null
     }
+
+    # Determine the available Calibre Portable path.
+    $CalibrePortablePath = Get-FirstExistingPath -Paths $CalibrePaths
 
     if (-not $CalibrePortablePath) {
         throw "Calibre Portable was not found. Checked paths:`n$($CalibrePaths -join "`n")"

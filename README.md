@@ -36,8 +36,9 @@ Or run each script individually:
 
 - The LLM prompt must remain in `02-CalibreDataLLM-Prompt.txt`.
 - `02-Process-CalibreDataWithLLM.ps1` creates a fresh Mistral agent at script start, reusing no previous agent instance.
-- Each file in `02-LLM-Result` is a valid JSON wrapper with metadata fields such as `source_file`, `status`, `records`, `parse_error`, and validation fields for record counts and unique books (`input_book_count`, `input_unique_book_count`, `output_record_count`, `output_unique_book_count`, `record_count_match`, `unique_book_count_match`, `validation_error`).
+- Each file in `02-LLM-Result` is a valid JSON wrapper with metadata fields such as `source_file`, `agent_id`, `status`, `records`, `raw_response`, `parse_error`, and validation fields for unique-book counts (`input_unique_book_count`, `output_unique_book_count`, `unique_book_count_match`, `validation_error`).
 - Input-vs-output validation is performed per book export file; duplicates for the same book are collapsed before comparison, and mismatches are kept in output metadata and shown in terminal warnings.
+- The CSV converter writes UTF-8 output with a pipe delimiter and preserves German umlauts and special characters.
 - The CSV converter repairs malformed input text before export so German umlauts and special characters survive the pipeline.
 - All PowerShell scripts use top-level error handling and are compatible with PowerShell 5.1.
 - The output folder names are versioned and consistent across scripts:

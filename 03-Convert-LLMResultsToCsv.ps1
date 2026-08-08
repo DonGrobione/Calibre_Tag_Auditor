@@ -7,8 +7,9 @@
     written by the LLM step, removes Markdown formatting from string values,
     repairs mojibake from malformed input text, preserves German umlauts and
     special characters, merges the extracted records, and exports the result to
-    a single CSV file. For non-success result files, validation and parse
-    metadata are added as separate rows.
+    a single CSV file. When the default output path is used, the output file name
+    includes the timestamp from the first input file. For non-success result
+    files, validation and parse metadata are added as separate rows.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.
@@ -16,10 +17,10 @@
 .PARAMETER OutputCsv
     Path to the output CSV file. Defaults to the 03-CSV folder.
     The exported CSV uses the pipe delimiter '|'.
-    The file is written as UTF-8 with BOM so German Umlauts and special characters are preserved.
+    The file is written as UTF-8 with BOM so German umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.10
+    Version: 1.11
 #>
 
 param(
@@ -202,6 +203,24 @@ function Convert-ToCsvRow {
     return [pscustomobject]$row
 }
 
+function Get-ParsedJsonObjectFromFile {
+    param([string]$FilePath)
+
+    $rawBytes = [System.IO.File]::ReadAllBytes($FilePath)
+    $raw = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+    if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
+        $raw = $raw.Substring(1)
+    }
+
+    $jsonText = Get-JsonText -RawText $raw
+    if (-not $jsonText) {
+        throw "No JSON structure found in file: $FilePath"
+    }
+
+    $jsonText = Repair-JsonText -Text $jsonText
+    return ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
+}
+
 $ErrorActionPreference = 'Stop'
 
 try {
@@ -224,30 +243,12 @@ try {
     $allObjects = @()
     foreach ($file in $files) {
         Write-Host "Processing: $($file.Name)"
-        try {
-            $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
-        } catch {
-            Write-Warning "Failed to read $($file.Name): $($_.Exception.Message)"
-            continue
-        }
-
-        $raw = [System.Text.Encoding]::UTF8.GetString($rawBytes)
-        if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
-            $raw = $raw.Substring(1)
-        }
-
-        $jsonText = Get-JsonText -RawText $raw
-        if (-not $jsonText) {
-            Write-Warning "No JSON structure found in file: $($file.Name)"
-            continue
-        }
-
-        $jsonText = Repair-JsonText -Text $jsonText
 
         try {
-            $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
-        } catch {
-            Write-Warning "Failed to parse $($file.Name): $($_.Exception.Message)"
+            $parsed = Get-ParsedJsonObjectFromFile -FilePath $file.FullName
+        }
+        catch {
+            Write-Warning "Failed to process $($file.Name): $($_.Exception.Message)"
             continue
         }
 
@@ -262,18 +263,15 @@ try {
 
             if ($parsed.status -and $parsed.status -ne 'success') {
                 $allObjects += [pscustomobject]@{
-                    source_file         = $parsed.source_file
-                    agent_id            = $parsed.agent_id
-                    status              = $parsed.status
-                    input_book_count        = $parsed.input_book_count
+                    source_file              = $parsed.source_file
+                    agent_id                 = $parsed.agent_id
+                    status                   = $parsed.status
                     input_unique_book_count = $parsed.input_unique_book_count
-                    output_record_count     = $parsed.output_record_count
                     output_unique_book_count = $parsed.output_unique_book_count
-                    record_count_match      = $parsed.record_count_match
                     unique_book_count_match = $parsed.unique_book_count_match
-                    validation_error        = $parsed.validation_error
-                    parse_error             = $parsed.parse_error
-                    raw_response            = $parsed.raw_response
+                    validation_error         = $parsed.validation_error
+                    parse_error              = $parsed.parse_error
+                    raw_response             = $parsed.raw_response
                 }
             }
             continue

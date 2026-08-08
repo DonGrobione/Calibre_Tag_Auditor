@@ -4,14 +4,14 @@
 
 .DESCRIPTION
     Reads the latest Calibre book export and tag-definition JSON files, creates
-    or refreshes a Mistral agent for each run, sends each book export to the
-    agent together with the prompt and tag definitions, and writes the LLM
-    responses to the 02-LLM-Result folder as individual JSON files.
+    a fresh Mistral agent for each run, sends each book export to the agent
+    together with the prompt and tag definitions, and writes the LLM responses
+    to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM
     responses, and stores the validation outcome in the output metadata.
 
 .NOTES
-    Version: 2.8
+    Version: 2.9
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
     02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records,
@@ -134,11 +134,8 @@ try {
             $response = Invoke-RestMethod -Uri $script:AgentsUrl -Method Post -Headers $headers -Body $agentBody -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
 
             $agentId = $null
-            if ($null -ne $response) {
-                try {
-                    $agentId = [string]$response.id
-                }
-                catch {}
+            if ($null -ne $response -and $response.PSObject.Properties.Name -contains 'id') {
+                $agentId = [string]$response.id
             }
 
             if (-not [string]::IsNullOrWhiteSpace($agentId)) {
@@ -148,12 +145,12 @@ try {
             }
 
             $responseText = $null
-            try {
-                $responseText = $response | ConvertTo-Json -Depth 10 -Compress
-            }
-            catch {
-                if ($null -ne $response) {
-                    $responseText = $response.ToString()
+            if ($null -ne $response) {
+                try {
+                    $responseText = $response | ConvertTo-Json -Depth 10 -Compress
+                }
+                catch {
+                    $responseText = [string]$response
                 }
             }
 
@@ -164,27 +161,15 @@ try {
             throw "Agent creation failed: invalid agent ID in response. Response: $responseText"
         }
         catch {
-            $errMessage = $null
-            if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
-                $errMessage = $_.Exception.Message
-            }
-            elseif ($null -ne $_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
-                $errMessage = $_.ErrorDetails.Message
-            }
-            else {
+            $errMessage = Get-ErrorMessageFromException -ErrorRecord $_
+            if ([string]::IsNullOrWhiteSpace($errMessage)) {
                 $errMessage = $_.ToString()
             }
 
             Write-Error "Failed to create agent: $errMessage"
-            if ($null -ne $_.Exception -and $null -ne $_.Exception.Response) {
-                try {
-                    $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                    $errorBody = $reader.ReadToEnd()
-                    if (-not [string]::IsNullOrWhiteSpace($errorBody)) {
-                        Write-Error "API Response: $errorBody"
-                    }
-                }
-                catch {}
+            $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
+            if (-not [string]::IsNullOrWhiteSpace($errorBody)) {
+                Write-Error "API Response: $errorBody"
             }
             throw
         }
@@ -236,6 +221,40 @@ try {
         }
 
         return $current
+    }
+
+    function Get-ErrorMessageFromException {
+        param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+        if ($null -eq $ErrorRecord) {
+            return $null
+        }
+
+        if ($null -ne $ErrorRecord.Exception -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.Exception.Message)) {
+            return $ErrorRecord.Exception.Message
+        }
+
+        if ($null -ne $ErrorRecord.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+            return $ErrorRecord.ErrorDetails.Message
+        }
+
+        return [string]$ErrorRecord
+    }
+
+    function Get-ErrorBodyTextFromException {
+        param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+        if ($null -eq $ErrorRecord -or $null -eq $ErrorRecord.Exception -or $null -eq $ErrorRecord.Exception.Response) {
+            return $null
+        }
+
+        try {
+            $reader = New-Object System.IO.StreamReader($ErrorRecord.Exception.Response.GetResponseStream())
+            return $reader.ReadToEnd()
+        }
+        catch {
+            return $null
+        }
     }
 
     # Extract the response text from the Mistral API response regardless of the payload shape.
@@ -535,39 +554,29 @@ try {
             return [pscustomobject]$result
         }
 
-        try {
-            $parsed = ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
+        $parsed = $null
+        $candidateJsonTexts = @($jsonText)
+        if ($jsonText -match '\\"') {
+            $candidateJsonTexts += ($jsonText -replace '\\"', '"')
         }
-        catch {
-            $normalizedJsonText = $jsonText -replace '\\"', '"'
+        if ($jsonText -match '\\u') {
+            $candidateJsonTexts += [System.Text.RegularExpressions.Regex]::Unescape($jsonText)
+        }
 
-            if ($normalizedJsonText -ne $jsonText) {
-                try {
-                    $parsed = ConvertFrom-Json -InputObject $normalizedJsonText -ErrorAction Stop
-                }
-                catch {
-                    $normalizedJsonText = [System.Text.RegularExpressions.Regex]::Unescape($jsonText)
-                    try {
-                        $parsed = ConvertFrom-Json -InputObject $normalizedJsonText -ErrorAction Stop
-                    }
-                    catch {
-                        $result.status = 'error'
-                        $result.parse_error = $_.Exception.Message
-                        return [pscustomobject]$result
-                    }
-                }
+        foreach ($candidateJsonText in ($candidateJsonTexts | Select-Object -Unique)) {
+            try {
+                $parsed = ConvertFrom-Json -InputObject $candidateJsonText -ErrorAction Stop
+                break
             }
-            else {
-                $normalizedJsonText = [System.Text.RegularExpressions.Regex]::Unescape($jsonText)
-                try {
-                    $parsed = ConvertFrom-Json -InputObject $normalizedJsonText -ErrorAction Stop
-                }
-                catch {
-                    $result.status = 'error'
-                    $result.parse_error = $_.Exception.Message
-                    return [pscustomobject]$result
-                }
+            catch {
+                continue
             }
+        }
+
+        if ($null -eq $parsed) {
+            $result.status = 'error'
+            $result.parse_error = (Get-ErrorMessageFromException -ErrorRecord $_)
+            return [pscustomobject]$result
         }
 
         if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
@@ -640,18 +649,12 @@ try {
                         Write-Host "     Server error at Mistral - retry later." -ForegroundColor Yellow
                     }
 
-                    try {
-                        if ($_.Exception.Response) {
-                            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                            $errorBody = $reader.ReadToEnd()
-                            if (-not [string]::IsNullOrEmpty($errorBody)) {
-                                Write-Host "     API response body: $errorBody" -ForegroundColor DarkGray
-                            }
-                        }
+                    $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
+                    if (-not [string]::IsNullOrEmpty($errorBody)) {
+                        Write-Host "     API response body: $errorBody" -ForegroundColor DarkGray
                     }
-                    catch {}
 
-                    Write-Host "     Original error: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Write-Host "     Original error: $(Get-ErrorMessageFromException -ErrorRecord $_)" -ForegroundColor DarkGray
                     return $null
                 }
             }
