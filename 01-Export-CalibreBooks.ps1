@@ -12,7 +12,7 @@
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 2.6
+    Version: 2.6.1
 #>
 
 # Import central logging and enable script-scoped output wrappers.
@@ -84,8 +84,14 @@ try {
         "D:\HiDrive\PortableApps\Calibre Portable"
     )
 
+    <#
+    Define the library name and the maximum number of books per output file.
+    Lower the number to create more files with fewer books each, or set to 0 to export all books into a single file.
+    Lower numbers per book tend to improve LLM performance when processing the exported JSON files.
+    Previously set to 99.
+    #>
     $LibraryName = "Calibre Library"
-    $BooksPerFile = 99
+    $BooksPerFile = 50
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
