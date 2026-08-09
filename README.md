@@ -1,6 +1,6 @@
 # Calibre Tools
 
-This repository contains PowerShell scripts for exporting Calibre library metadata, extracting tag definitions, validating exported data with an LLM agent, and converting validated LLM results to CSV.
+This repository contains PowerShell scripts for exporting Calibre library metadata (book list), extracting tag definitions, validating exported data with an LLM agent, and converting validated LLM results to CSV.
 
 ## Project structure
 
@@ -84,3 +84,7 @@ Interpretation:
 - Update the comment-based help block and version in each script after modifications.
 - Update this `README.md` whenever script behavior, output format, or required files change.
 - Keep prompt text only in external `.txt` prompt files.
+
+## License & Usage
+
+This is a private project, for personal use and not intended for public use.
