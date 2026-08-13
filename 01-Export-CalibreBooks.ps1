@@ -148,6 +148,8 @@ try {
     Write-Host "Tool:       $($CalibredbExe.FullName)"
     Write-Host "Library:    $LibraryPath"
     Write-Host "Output:     $ExportDir"
+    Write-Host "Books/file: $BooksPerFile"
+    Write-Host "Changed:    $ChangedWithinDays day(s)"
 
     # Create a timestamp for the output files.
     $ExportDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
