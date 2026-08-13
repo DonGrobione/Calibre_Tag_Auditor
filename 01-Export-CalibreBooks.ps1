@@ -4,7 +4,10 @@
 
 .DESCRIPTION
     Exports title, author, series, series index, and tags from a Calibre Portable
-    library into one or more JSON files in the 01-Export directory.
+    library into one or more JSON files in the 01-Export directory. Books are
+    sorted by last modification date, newest first. By default, books modified
+    within the last day are exported. Set $ChangedWithinDays to a value greater
+    than 0 to change the number of days. Set it to 0 to export all books.
     The output file names include a timestamp and sequence number when split.
     Uses calibredb.exe from the Calibre Portable installation.
     Script output (info, warnings, and errors) is written both to terminal and
@@ -12,7 +15,7 @@
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 2.6.1
+    Version: 2.6.2
 #>
 
 # Import central logging and enable script-scoped output wrappers.
@@ -85,13 +88,20 @@ try {
     )
 
     <#
-    Define the library name and the maximum number of books per output file.
-    Lower the number to create more files with fewer books each, or set to 0 to export all books into a single file.
+    Define the library name, the maximum number of books per output file, and
+    the date filter for changed books.
+    Lower $BooksPerFile to create more files with fewer books each, or set it
+    to 0 to export all books into a single file.
+    $ChangedWithinDays controls the changed-book filter. The default is 1,
+    which exports books modified within the last day. Set it to a number
+    greater than 0 to export only books modified within that many days, or set
+    it to 0 to export all books regardless of their modification date.
     Lower numbers per book tend to improve LLM performance when processing the exported JSON files.
     Previously set to 99.
     #>
     $LibraryName = "Calibre Library"
     $BooksPerFile = 50
+    $ChangedWithinDays = 1
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
@@ -173,10 +183,11 @@ try {
         [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
     }
 
-    # Query the Calibre library via calibredb and read the relevant fields.
+    # Query the Calibre library via calibredb, including the modification date
+    # used for descending sort order and the optional date filter.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
-        --fields=title,authors,series,series_index,tags `
+        --fields=title,authors,series,series_index,tags,last_modified `
         "--with-library=$LibraryPath"
 
     if ($LASTEXITCODE -ne 0) {
@@ -184,7 +195,34 @@ try {
     }
 
     $JsonString = $JsonOutput -join "`n"
-    $Books = $JsonString | ConvertFrom-Json
+    $Books = ConvertFrom-Json -InputObject $JsonString
+
+    # Parse modification dates once so invalid values cannot abort the export.
+    # With a filter enabled, only valid dates within the configured period pass.
+    $BooksWithDates = @($Books | ForEach-Object {
+        $LastModified = [DateTimeOffset]::MinValue
+        $HasValidDate = [DateTimeOffset]::TryParse(
+            [string]$_.last_modified,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$LastModified)
+
+        [PSCustomObject]@{
+            Book          = $_
+            LastModified  = $LastModified
+            HasValidDate  = $HasValidDate
+        }
+    })
+
+    if ($ChangedWithinDays -eq 0) {
+        $Books = @($BooksWithDates | Sort-Object LastModified -Descending | ForEach-Object Book)
+    } else {
+        $CutoffDate = [DateTimeOffset]::Now.AddDays(-$ChangedWithinDays)
+        $Books = @($BooksWithDates |
+            Where-Object { $_.HasValidDate -and $_.LastModified -ge $CutoffDate } |
+            Sort-Object LastModified -Descending |
+            ForEach-Object Book)
+    }
 
     if (-not $Books -or $Books.Count -eq 0) {
         Write-Warning "No books were found in the library."

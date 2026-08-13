@@ -37,6 +37,7 @@ Or run each script individually:
 
 ## Notes
 
+- `01-Export-CalibreBooks.ps1` sorts books by modification date, newest first, and exports books modified within the last day by default. Change `$ChangedWithinDays` in the script to configure the period; `0` exports all books regardless of modification date.
 - The LLM prompt must remain in `02-CalibreDataLLM-Prompt.txt`.
 - `02-Process-CalibreDataWithLLM.ps1` creates a fresh Mistral agent at script start, reusing no previous agent instance.
 - Each file in `02-LLM-Result` is a valid JSON wrapper with metadata fields such as `source_file`, `agent_id`, `status`, `records`, `raw_response`, `parse_error`, and validation fields for unique-book counts (`input_unique_book_count`, `output_unique_book_count`, `unique_book_count_match`, `validation_error`).
