@@ -1,8 +1,11 @@
 # Copilot Project Rules
 
 ## 1. Documentation
-- Always update the README.md with the current project structure and the creation of new scripts.
-- Document every directory and file, including their purpose, in the README.md.
+- Write all README content, developer documentation, PowerShell comments, comment-based help, and user-visible PowerShell messages in English.
+- Keep `README.md` as a concise, task-oriented user guide. Use clear language and document only prerequisites, the normal workflow, outputs, and user-actionable troubleshooting.
+- Do not include implementation details, logging internals, data-wrapper schemas, or duplicate explanations in `README.md`.
+- Keep necessary technical implementation details in `.copilot/developer-documentation.md`.
+- Update the relevant user and developer documentation when script behavior, outputs, prerequisites, or required files change.
 - Every change to documentation and code must have clear commit messages.
 - After code changes, verify that all examples, file structure, and guidelines are accurate.
 
