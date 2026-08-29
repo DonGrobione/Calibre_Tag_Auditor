@@ -1,14 +1,17 @@
 # Calibre Tag Auditor
 
-Calibre Tag Auditor exports updated book data from Calibre, validates it with Mistral, and creates CSV with the results. The CSV will be converted to ODS with Libre Office. The generated ODS file serves as a review worksheet: users can inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
+Calibre Tag Auditor exports updated book data from Calibre, validates it with Mistral, and creates CSV with the results. The CSV will be converted to ODS with LibreOffice. The generated ODS file serves as a review worksheet: use it to inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
+
+I started this project, because I have several thousand books and lost track and consistency with my defined tags. Especially as metadata downloads introduce new and undefined tags to my library.
 
 ## Requirements
 
 - Windows with PowerShell 5.1 or later
-- Calibre Portable
 - LibreOffice
 - Python available through the `python` or `py` command
 - A Mistral API key in `.secrets/Mistral_API.txt`
+- Calibre Portable or fixed installation. I use portable and sync it across devices via Cloud Storage.
+- Definitions for each tag in the Calibre tag notes
 
 ## Calibre Configuration
 
