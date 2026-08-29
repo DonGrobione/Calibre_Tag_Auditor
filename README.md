@@ -13,12 +13,12 @@ Calibre Tag Auditor exports updated book data from Calibre, validates it with Mi
 The Calibre installation paths are configured in both export scripts. Update them if Calibre is installed elsewhere.
 
 ### Mistral Documentation
-https://docs.mistral.ai/models/model-cards/mistral-large-3-25-12
-https://mistral.ai/pricing/api/?capabilities=text-to-text
+- https://docs.mistral.ai/models/model-cards/mistral-large-3-25-12
+- https://mistral.ai/pricing/api/?capabilities=text-to-text
 
 ### Mistral Links
-Admin Center: https://admin.mistral.ai/organization/connectors
-API-Keys: https://console.mistral.ai/observability/traces?profile_dialog=api-keys
+- Admin Center: https://admin.mistral.ai/organization/connectors
+- API-Keys: https://console.mistral.ai/observability/traces?profile_dialog=api-keys
 
 ## Quick Start
 1. Place your Mistral API key in `.secrets/Mistral_API.txt`.
