@@ -20,8 +20,11 @@
 
 <#
     Export configuration:
+    $LibraryName controls the name of the Calibre library folder. The default is "Calibre Library".
+
     $BooksPerFile controls the maximum number of books per JSON file. Set it
-    to 0 to export all books to one file. Keep the number in the lower double digits to avoid LLM processing issues with very large files.
+    to 0 to export all books to one file. Keep the number in the lower double digits to avoid LLM processing issues with very large files. Default is 30.
+
     $ChangedWithinDays controls the changed-book filter. The default is 1,
     which exports books modified within the last day. Set it to a number
     greater than 0 to export books modified within that many days, or set it
