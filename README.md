@@ -1,6 +1,6 @@
 # Calibre Tag Auditor
 
-Calibre Tag Auditor exports updated book data from Calibre, validates it with Mistral, and creates CSV and ODS files.
+Calibre Tag Auditor exports updated book data from Calibre, validates it with Mistral, and creates CSV with the results. The CSV will be converted to ODS with Libre Office. The generated ODS file serves as a review worksheet: users can inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
 
 ## Requirements
 
