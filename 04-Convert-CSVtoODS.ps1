@@ -227,16 +227,18 @@ function Invoke-LibreOfficeCsvToOds {
         return $createdFile
     }
     finally {
-        $profileName = Split-Path -Path $temporaryProfile -Leaf
         $processIds = @()
 
         if ($libreOfficeProcess) {
             $processIds += $libreOfficeProcess.Id
-        }
 
-        $processIds += Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @('soffice.exe', 'soffice.bin') -and $_.CommandLine -like "*$profileName*" } |
-            Select-Object -ExpandProperty ProcessId
+            $processIds += Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Name -in @('soffice.exe', 'soffice.bin') -and
+                    $_.ParentProcessId -eq $libreOfficeProcess.Id
+                } |
+                Select-Object -ExpandProperty ProcessId
+        }
 
         if ($processIds) {
             $processIds | Sort-Object -Unique | Stop-Process -Force -ErrorAction SilentlyContinue
