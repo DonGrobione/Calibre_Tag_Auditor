@@ -1,4 +1,4 @@
-# Calibre Tools Developer Documentation
+# Calibre Tag Auditor Developer Documentation
 
 ## Pipeline
 

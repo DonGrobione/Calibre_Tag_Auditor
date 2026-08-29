@@ -1,4 +1,4 @@
-# Calibre Tools Project Memory
+# Calibre Tag Auditor Project Memory
 
 ## Project Overview
 Collection of PowerShell scripts for managing Calibre Portable library data, including book export, tag extraction, LLM validation, and CSV conversion.

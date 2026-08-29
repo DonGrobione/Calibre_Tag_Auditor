@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Run all Calibre Tools scripts in sequence.
+    Run all Calibre Tag Auditor scripts in sequence.
 
 .DESCRIPTION
     Executes the export, LLM processing, CSV conversion, and ODS conversion scripts in order.

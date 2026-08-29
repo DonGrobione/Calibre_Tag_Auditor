@@ -1,6 +1,6 @@
-# Calibre Tools
+# Calibre Tag Auditor
 
-Calibre Tools exports updated book data from Calibre, validates it with Mistral, and creates CSV and ODS files.
+Calibre Tag Auditor exports updated book data from Calibre, validates it with Mistral, and creates CSV and ODS files.
 
 ## Requirements
 
