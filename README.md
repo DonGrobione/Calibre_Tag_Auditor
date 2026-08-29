@@ -5,12 +5,21 @@ Calibre Tag Auditor exports updated book data from Calibre, validates it with Mi
 ## Requirements
 
 - Windows with PowerShell 5.1 or later
-- Calibre Portable with a library named `Calibre Library`
+- Calibre Portable
 - LibreOffice
 - Python available through the `python` or `py` command
 - A Mistral API key in `.secrets/Mistral_API.txt`
 
-The Calibre installation paths are configured in both export scripts. Update them if Calibre is installed elsewhere.
+## Calibre Configuration
+
+Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`:
+
+- `CalibrePaths`: Ordered list of Calibre Portable installation directories. The first existing path is used.
+- `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
+- `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `30`.
+- `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`.
+
+Update `CalibrePaths` when Calibre Portable is installed elsewhere.
 
 ### Mistral Documentation
 - https://docs.mistral.ai/models/model-cards/mistral-large-3-25-12
@@ -52,10 +61,10 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 5. `04-Convert-CSVtoODS.ps1`
 
 ## Common Issues
-- **Calibre was not found:** Update the configured Calibre paths in the export scripts.
+- **Calibre was not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
 - **The Mistral request failed:** Check the API key in `.secrets/Mistral_API.txt`.
 - **LibreOffice or Python was not found:** Install the missing application and make sure Python can be started with `python` or `py`.
-- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `$ChangedWithinDays` in `01-Export-CalibreBooks.ps1` if necessary; `0` exports all books.
+- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
 
 ## AI Usage
 This codebase was created with assistance from AI tools.

@@ -18,7 +18,7 @@
     in the 01-Export folder.
 
 .NOTES
-    Version: 2.7
+    Version: 2.8
 #>
 
 [CmdletBinding()]
@@ -84,17 +84,28 @@ Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
 Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
 Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
+$ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
+if (-not (Test-Path -LiteralPath $ConfigPath)) {
+    throw "Required configuration file not found: '$ConfigPath'"
+}
+
+try {
+    $CalibreConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+} catch {
+    throw "Unable to read Calibre configuration '$ConfigPath': $($_.Exception.Message)"
+}
+
+$CalibrePaths = @($CalibreConfig.CalibrePaths)
+$LibraryName = [string]$CalibreConfig.LibraryName
+
+if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName)) {
+    throw "Calibre configuration '$ConfigPath' must define CalibrePaths and LibraryName."
+}
+
 try {
     # Enable strict error handling for the tag export workflow.
     $ErrorActionPreference = "Stop"
 
-    # Check the known installation paths for Calibre Portable.
-    $CalibrePaths = @(
-        "E:\HiDrive\PortableApps\Calibre Portable"
-        "D:\HiDrive\PortableApps\Calibre Portable"
-    )
-
-    $LibraryName = "Calibre Library"
     $ScriptDir = $PSScriptRoot
 
     # Create the export folder and remove older tag export files.

@@ -15,25 +15,30 @@
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 2.6.3
+    Version: 2.7
 #>
 
-<#
-    Export configuration:
-    $LibraryName controls the name of the Calibre library folder. The default is "Calibre Library".
+# Central export settings and their descriptions are maintained in 01-CalibreExport.config.json.
+$ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
+if (-not (Test-Path -LiteralPath $ConfigPath)) {
+    throw "Required configuration file not found: '$ConfigPath'"
+}
 
-    $BooksPerFile controls the maximum number of books per JSON file. Set it
-    to 0 to export all books to one file. Keep the number in the lower double digits to avoid LLM processing issues with very large files. Default is 30.
+try {
+    $CalibreConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+} catch {
+    throw "Unable to read Calibre configuration '$ConfigPath': $($_.Exception.Message)"
+}
 
-    $ChangedWithinDays controls the changed-book filter. The default is 1,
-    which exports books modified within the last day. Set it to a number
-    greater than 0 to export books modified within that many days, or set it
-    to 0 to export all books regardless of their modification date.
-    Lower values for $BooksPerFile can improve LLM processing performance.
-#>
-$LibraryName = "Calibre Library"
-$BooksPerFile = 30
-$ChangedWithinDays = 1
+$CalibrePaths = @($CalibreConfig.CalibrePaths)
+$LibraryName = [string]$CalibreConfig.LibraryName
+$BooksPerFile = $CalibreConfig.BooksPerFile
+$ChangedWithinDays = $CalibreConfig.ChangedWithinDays
+
+if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName) -or
+    $null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
+    throw "Calibre configuration '$ConfigPath' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
+}
 
 
 # Import central logging and enable script-scoped output wrappers.
@@ -98,12 +103,6 @@ Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 try {
     # Enable strict error handling so problems are reported immediately.
     $ErrorActionPreference = "Stop"
-
-    # Check the known installation paths for Calibre Portable.
-    $CalibrePaths = @(
-        "E:\HiDrive\PortableApps\Calibre Portable"
-        "D:\HiDrive\PortableApps\Calibre Portable"
-    )
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
