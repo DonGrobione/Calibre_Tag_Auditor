@@ -18,6 +18,14 @@ This codebase was created with assistance from AI tools.
 
 The workflow also uses the Mistral API to validate exported Calibre book data against tag definitions. The book data processed by this step is sent to Mistral. Review the generated suggestions before applying them and ensure that sending this data complies with your privacy requirements.
 
+### Mistral Documentation
+https://docs.mistral.ai/models/model-cards/mistral-large-3-25-12
+https://mistral.ai/pricing/api/?capabilities=text-to-text
+
+### Mistral Links
+Admin Center: https://admin.mistral.ai/organization/connectors
+API-Keys: https://console.mistral.ai/observability/traces?profile_dialog=api-keys
+
 ## Quick Start
 
 1. Place your Mistral API key in `.secrets/Mistral_API.txt`.
