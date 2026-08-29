@@ -12,6 +12,12 @@ Calibre Tools exports updated book data from Calibre, validates it with Mistral,
 
 The Calibre installation paths are configured in both export scripts. Update them if Calibre is installed elsewhere.
 
+## AI Usage
+
+This codebase was created with assistance from AI tools.
+
+The workflow also uses the Mistral API to validate exported Calibre book data against tag definitions. The book data processed by this step is sent to Mistral. Review the generated suggestions before applying them and ensure that sending this data complies with your privacy requirements.
+
 ## Quick Start
 
 1. Place your Mistral API key in `.secrets/Mistral_API.txt`.
@@ -53,6 +59,6 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **LibreOffice or Python was not found:** Install the missing application and make sure Python can be started with `python` or `py`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `$ChangedWithinDays` in `01-Export-CalibreBooks.ps1` if necessary; `0` exports all books.
 
-## Usage
+## License
 
-This project is intended for private use.
+This project is licensed for private use only. See [LICENSE](LICENSE) for the full terms.
