@@ -25,8 +25,8 @@ param(
     [string]$OdsOutputFolder = ".\04-ODS"
 )
 
-# Toggle: delete the source CSV file after it was successfully converted to ODS.
-$DeleteCsvAfterConversion = $false
+# Toggle: delete the source CSV file after it was successfully converted to ODS. Default is %true.
+$DeleteCsvAfterConversion = $true
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
