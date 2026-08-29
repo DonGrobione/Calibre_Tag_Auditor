@@ -9,6 +9,9 @@
     formatting to the generated spreadsheet: automatic line breaks in all cells and
     column widths of A/B = 9 cm, C = 6 cm, D = 18 cm.
 
+    Set $DeleteCsvAfterConversion (near the top of the script) to $true to delete each
+    source CSV file after it was successfully converted and formatted as ODS.
+
 .PARAMETER CsvInputFolder
     Folder containing the source CSV files. Defaults to .\03-CSV.
 
@@ -25,9 +28,11 @@ param(
     [string]$OdsOutputFolder = ".\04-ODS"
 )
 
-# Toggle: delete the source CSV file after it was successfully converted to ODS. Default is %true.
+# Toggle: delete the source CSV file after it was successfully converted to ODS. Default is $true.
 $DeleteCsvAfterConversion = $true
 
+# Import central logging and enable script-scoped output wrappers.
+# The wrappers keep terminal behavior but additionally create structured log entries.
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
     throw "Required module not found: '$WriteLogModulePath'"
@@ -83,6 +88,7 @@ Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
 Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
 Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
+# Locate the installed soffice.exe via well-known install paths, falling back to the registry.
 function Get-LibreOfficePath {
     $candidatePaths = @(
         "$env:ProgramFiles\LibreOffice\program\soffice.exe",
@@ -118,6 +124,7 @@ function Get-LibreOfficePath {
     return $null
 }
 
+# Find the Python interpreter bundled with the LibreOffice installation.
 function Get-OfficePythonPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -141,6 +148,7 @@ function Get-OfficePythonPath {
     return $null
 }
 
+# Extract the timestamp segment from a source CSV file name so it can be reused for the ODS output.
 function Get-FileTimestamp {
     param(
         [Parameter(Mandatory = $true)]
@@ -158,6 +166,7 @@ function Get-FileTimestamp {
     return $null
 }
 
+# Run LibreOffice headless to convert one CSV file to ODS and wait until the output file appears.
 function Invoke-LibreOfficeCsvToOds {
     param(
         [Parameter(Mandatory = $true)]
@@ -207,6 +216,7 @@ function Invoke-LibreOfficeCsvToOds {
     return $createdFile
 }
 
+# Patch the generated ODS file via a Python script: enable cell wrap and set the requested column widths.
 function Format-OdsDocument {
     param(
         [Parameter(Mandatory = $true)]
@@ -321,6 +331,7 @@ if temporary.exists():
 
 $ErrorActionPreference = 'Stop'
 
+# Enable strict error handling so problems are reported immediately.
 try {
     if (-not [System.IO.Path]::IsPathRooted($CsvInputFolder)) {
         $CsvInputFolder = Join-Path -Path $PSScriptRoot -ChildPath $CsvInputFolder

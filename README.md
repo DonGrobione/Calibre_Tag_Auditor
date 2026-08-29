@@ -44,7 +44,7 @@ After a successful run, the generated files are located here:
 
 - `01-Export`: exported books and tag definitions
 - `02-LLM-Result`: Mistral validation results
-- `03-CSV`: combined CSV file
+- `03-CSV`: combined CSV file (deleted after conversion by default; see `$DeleteCsvAfterConversion` in `04-Convert-CSVtoODS.ps1`)
 - `04-ODS`: formatted ODS file for LibreOffice
 - `Logs`: logs for troubleshooting
 
