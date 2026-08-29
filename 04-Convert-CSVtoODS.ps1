@@ -177,12 +177,18 @@ function Invoke-LibreOfficeCsvToOds {
         [string]$OutputFolder
     )
 
+    $temporaryProfile = Join-Path -Path $env:TEMP -ChildPath ("LibreOfficeCsvConversion_{0}" -f [System.Guid]::NewGuid().ToString('N'))
+    $profileUri = ([System.Uri]::new($temporaryProfile)).AbsoluteUri
     $arguments = @(
         '--headless',
+        '--nologo',
+        '--nodefault',
+        '--norestore',
+        "-env:UserInstallation=$profileUri",
         '--convert-to', 'ods',
         '--infilter=CSV:124,34,76',
-        '--outdir', $OutputFolder,
-        $CsvFilePath
+        '--outdir', "`"$OutputFolder`"",
+        "`"$CsvFilePath`""
     )
 
     $expectedOdsPath = Join-Path -Path $OutputFolder -ChildPath (([System.IO.Path]::GetFileNameWithoutExtension($CsvFilePath)) + '.ods')
@@ -190,30 +196,56 @@ function Invoke-LibreOfficeCsvToOds {
         Remove-Item -Path $expectedOdsPath -Force
     }
 
-    & $LibreOfficeExe @arguments
-    $exitCode = $LASTEXITCODE
+    $libreOfficeProcess = $null
+    $exitCode = $null
 
-    $deadline = (Get-Date).AddSeconds(15)
-    $createdFile = $null
+    try {
+        $libreOfficeProcess = Start-Process -FilePath $LibreOfficeExe -ArgumentList $arguments -PassThru
+        $libreOfficeProcess.WaitForExit()
+        $exitCode = $libreOfficeProcess.ExitCode
 
-    while ((Get-Date) -lt $deadline) {
-        if (Test-Path -Path $expectedOdsPath -PathType Leaf) {
-            $createdFile = (Resolve-Path -Path $expectedOdsPath).Path
-            break
+        $deadline = (Get-Date).AddSeconds(15)
+        $createdFile = $null
+
+        while ((Get-Date) -lt $deadline) {
+            if (Test-Path -Path $expectedOdsPath -PathType Leaf) {
+                $createdFile = (Resolve-Path -Path $expectedOdsPath).Path
+                break
+            }
+
+            Start-Sleep -Seconds 1
         }
 
-        Start-Sleep -Seconds 1
-    }
+        if (-not $createdFile) {
+            throw "LibreOffice conversion failed for '$CsvFilePath' with exit code $exitCode."
+        }
 
-    if (-not $createdFile) {
-        throw "LibreOffice conversion failed for '$CsvFilePath' with exit code $exitCode."
-    }
+        if ((Get-Item -Path $createdFile).Length -le 0) {
+            throw "LibreOffice produced an empty ODS file for '$CsvFilePath' with exit code $exitCode."
+        }
 
-    if ((Get-Item -Path $createdFile).Length -le 0) {
-        throw "LibreOffice produced an empty ODS file for '$CsvFilePath' with exit code $exitCode."
+        return $createdFile
     }
+    finally {
+        $profileName = Split-Path -Path $temporaryProfile -Leaf
+        $processIds = @()
 
-    return $createdFile
+        if ($libreOfficeProcess) {
+            $processIds += $libreOfficeProcess.Id
+        }
+
+        $processIds += Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('soffice.exe', 'soffice.bin') -and $_.CommandLine -like "*$profileName*" } |
+            Select-Object -ExpandProperty ProcessId
+
+        if ($processIds) {
+            $processIds | Sort-Object -Unique | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+
+        if (Test-Path -Path $temporaryProfile -PathType Container) {
+            Remove-Item -Path $temporaryProfile -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # Patch the generated ODS file via a Python script: enable cell wrap and set the requested column widths.
@@ -390,7 +422,6 @@ try {
                 Move-Item -Path $generatedFile.FullName -Destination $targetFilePath -Force
             }
             catch {
-                Stop-Process -Name soffice* -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds 2
                 Move-Item -Path $generatedFile.FullName -Destination $targetFilePath -Force
             }
