@@ -4,7 +4,7 @@ This repository contains PowerShell scripts for exporting Calibre library metada
 
 ## Project structure
 
-- `Invoke-CalibreToolsPipeline.ps1` - Run the full pipeline in sequence: clears old LLM results, executes all scripts below in order, and waits for Enter on failures so errors remain visible.
+- `Invoke-CalibreToolsPipeline.ps1` - Run the full pipeline in sequence: clears old LLM results, executes all scripts below through ODS conversion in order, and waits for Enter on failures so errors remain visible.
 - `01-Export-CalibreBooks.ps1` - Export Calibre book metadata into JSON files in `01-Export`.
 - `01-Export-CalibreTags.ps1` - Export Calibre tag definitions into JSON files in `01-Export`.
 - `02-Process-CalibreDataWithLLM.ps1` - Validate exported Calibre data with the Mistral LLM agent, using the external prompt file `02-CalibreDataLLM-Prompt.txt`, repair mojibake in LLM responses, compare unique books from input vs. output, and save valid JSON wrapper results in `02-LLM-Result`.

@@ -3,7 +3,7 @@
     Run all Calibre Tools scripts in sequence.
 
 .DESCRIPTION
-    Executes the export, LLM processing, and CSV conversion scripts in order.
+    Executes the export, LLM processing, CSV conversion, and ODS conversion scripts in order.
     Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
     Script output (info, warnings, and errors) is written both to terminal and
@@ -12,7 +12,7 @@
     without writing a duplicate ERROR entry to the logfile.
 
 .NOTES
-    Version: 1.3
+    Version: 1.4
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
@@ -99,7 +99,8 @@ try {
         "01-Export-CalibreBooks.ps1",
         "01-Export-CalibreTags.ps1",
         "02-Process-CalibreDataWithLLM.ps1",
-        "03-Convert-LLMResultsToCsv.ps1"
+        "03-Convert-LLMResultsToCsv.ps1",
+        "04-Convert-CSVtoODS.ps1"
     )
 
     # Run each script in sequence.
