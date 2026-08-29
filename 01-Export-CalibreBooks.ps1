@@ -15,8 +15,22 @@
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 2.6.2
+    Version: 2.6.3
 #>
+
+<#
+    Export configuration:
+    $BooksPerFile controls the maximum number of books per JSON file. Set it
+    to 0 to export all books to one file.
+    $ChangedWithinDays controls the changed-book filter. The default is 1,
+    which exports books modified within the last day. Set it to a number
+    greater than 0 to export books modified within that many days, or set it
+    to 0 to export all books regardless of their modification date.
+    Lower values for $BooksPerFile can improve LLM processing performance.
+#>
+$LibraryName = "Calibre Library"
+$BooksPerFile = 50
+$ChangedWithinDays = 1
 
 # Import central logging and enable script-scoped output wrappers.
 # The wrappers keep terminal behavior but additionally create structured log entries.
@@ -86,23 +100,6 @@ try {
         "E:\HiDrive\PortableApps\Calibre Portable"
         "D:\HiDrive\PortableApps\Calibre Portable"
     )
-
-    <#
-    Define the library name, the maximum number of books per output file, and
-    the date filter for changed books.
-    Lower $BooksPerFile to create more files with fewer books each, or set it
-    to 0 to export all books into a single file.
-    $ChangedWithinDays controls the changed-book filter. The default is 1,
-    which exports books modified within the last day. Set it to a number
-    greater than 0 to export only books modified within that many days, or set
-    it to 0 to export all books regardless of their modification date.
-    Lower numbers per book tend to improve LLM performance when processing the exported JSON files.
-    Previously set to 99.
-    #>
-    $LibraryName = "Calibre Library"
-    $BooksPerFile = 50
-    $ChangedWithinDays = 1
-    #$ChangedWithinDays = 0
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
