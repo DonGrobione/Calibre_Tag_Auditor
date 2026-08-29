@@ -21,7 +21,7 @@
 <#
     Export configuration:
     $BooksPerFile controls the maximum number of books per JSON file. Set it
-    to 0 to export all books to one file.
+    to 0 to export all books to one file. Keep the number in the lower double digits to avoid LLM processing issues with very large files.
     $ChangedWithinDays controls the changed-book filter. The default is 1,
     which exports books modified within the last day. Set it to a number
     greater than 0 to export books modified within that many days, or set it
@@ -29,7 +29,7 @@
     Lower values for $BooksPerFile can improve LLM processing performance.
 #>
 $LibraryName = "Calibre Library"
-$BooksPerFile = 50
+$BooksPerFile = 30
 $ChangedWithinDays = 1
 
 # Import central logging and enable script-scoped output wrappers.
