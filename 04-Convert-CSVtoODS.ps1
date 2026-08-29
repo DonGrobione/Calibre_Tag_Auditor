@@ -16,7 +16,7 @@
     Folder where converted ODS files are written. Defaults to .\04-ODS.
 
 .NOTES
-    Version: 1.1
+    Version: 1.2
 #>
 
 [CmdletBinding()]
@@ -24,6 +24,9 @@ param(
     [string]$CsvInputFolder = ".\03-CSV",
     [string]$OdsOutputFolder = ".\04-ODS"
 )
+
+# Toggle: delete the source CSV file after it was successfully converted to ODS.
+$DeleteCsvAfterConversion = $false
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
@@ -384,6 +387,11 @@ try {
 
         Format-OdsDocument -OdsFilePath $targetFilePath
         Write-Host "Created and formatted ODS: $targetFilePath"
+
+        if ($DeleteCsvAfterConversion) {
+            Remove-Item -Path $csvFile.FullName -Force
+            Write-Host "Deleted source CSV: $($csvFile.FullName)"
+        }
     }
 }
 catch {
