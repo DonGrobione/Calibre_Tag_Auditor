@@ -102,6 +102,7 @@ try {
     $LibraryName = "Calibre Library"
     $BooksPerFile = 50
     $ChangedWithinDays = 1
+    #$ChangedWithinDays = 0
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
