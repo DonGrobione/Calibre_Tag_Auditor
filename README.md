@@ -75,4 +75,4 @@ This codebase was created with assistance from AI tools.
 The workflow also uses the Mistral API to validate exported Calibre book data against tag definitions. The book data processed by this step is sent to Mistral. Review the generated suggestions before applying them and ensure that sending this data complies with your privacy requirements.
 
 ## License
-This project is licensed for private use only. See [LICENSE](LICENSE) for the full terms.
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) license. See [LICENSE](LICENSE) for the full terms.
