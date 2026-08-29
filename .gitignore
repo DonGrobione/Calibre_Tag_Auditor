@@ -9,9 +9,13 @@ Logs/*
 
 # Generated export and result data
 01-Export/*
+!01-Export/.gitkeep
 02-LLM-Result/*
+!02-LLM-Result/.gitkeep
 03-CSV/*
+!03-CSV/.gitkeep
 04-ODS/*
+!04-ODS/.gitkeep
 
 # Backup files (Notepad++)
 *.bak
