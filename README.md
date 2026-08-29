@@ -9,6 +9,9 @@ This repository contains PowerShell scripts for exporting Calibre library metada
 - `01-Export-CalibreTags.ps1` - Export Calibre tag definitions into JSON files in `01-Export`.
 - `02-Process-CalibreDataWithLLM.ps1` - Validate exported Calibre data with the Mistral LLM agent, using the external prompt file `02-CalibreDataLLM-Prompt.txt`, repair mojibake in LLM responses, compare unique books from input vs. output, and save valid JSON wrapper results in `02-LLM-Result`.
 - `03-Convert-LLMResultsToCsv.ps1` - Convert JSON results from `02-LLM-Result` into a single timestamped CSV file in `03-CSV`, using `|` as delimiter and UTF-8 with BOM while preserving umlauts and special characters.
+- `04-Convert-CSVtoODS` - Detect the installed LibreOffice version, convert each CSV in `03-CSV` to an ODS file in `04-ODS` using a pipe delimiter, rename files to `04-ODS_Convert_<timestamp>.ods`, and apply the requested column widths and automatic text wrapping.
+
+Temporary files created during ODS formatting are stored in `$env:TEMP` and removed automatically; the script does not create temporary files in the project directory.
 - `02-CalibreDataLLM-Prompt.txt` - External prompt file used by the LLM agent.
 - `Modules/Write-Log.psm1` - Central logging module used by all scripts to mirror terminal output into a shared logfile.
 - `Modules/Clear-LogFile.psm1` - Optional helper module to remove old log entries.
@@ -34,6 +37,7 @@ Or run each script individually:
 3. Ensure `.secrets/Mistral_API.txt` contains your Mistral API key.
 4. Run `02-Process-CalibreDataWithLLM.ps1` to validate the exports with Mistral.
 5. Run `03-Convert-LLMResultsToCsv.ps1` to merge result JSON files into a CSV.
+6. Run `04-Convert-CSVtoODS` to convert the generated CSV files in `03-CSV` to ODS in `04-ODS` and format the result as requested.
 
 ## Notes
 

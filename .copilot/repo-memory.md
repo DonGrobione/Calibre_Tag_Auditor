@@ -27,6 +27,7 @@ Collection of PowerShell scripts for managing Calibre Portable library data, inc
 ## Conventions
 - PowerShell version: 5.1+
 - Encoding: UTF8
+- Temporary files must be created under `$env:TEMP` and removed after use; do not write temporary artifacts to the script root or output directories.
 - CSV delimiter: semicolon (";")
 - JSON export location: Export/ directory
 - LLM results location: Ergebnis/ directory

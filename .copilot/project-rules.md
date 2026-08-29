@@ -38,6 +38,7 @@
 - `Write-Host`, `Write-Warning`, and `Write-Error` must be wrapped or aliased so terminal output is preserved while logging the same message.
 - Every logfile entry must include the emitting script name as prefix (for example `[MyScript.ps1]`).
 - In orchestrated runs, avoid duplicate error log entries: child scripts should mark already logged exceptions, and wrappers/orchestrators must not log the same error twice.
+- Temporary files must always be created under `$env:TEMP`, never in the script root or output directories, and must be removed after use.
 
 ## 5. Copilot Memory
 - All Copilot memory relevant to this project must be written to `.copilot/repo-memory.md`, not to the local user-scoped Copilot memory system.

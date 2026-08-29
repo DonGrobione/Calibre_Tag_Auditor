@@ -11,6 +11,7 @@ Logs/*
 01-Export/*
 02-LLM-Result/*
 03-CSV/*
+04-ODS/*
 
 # Backup files (Notepad++)
 *.bak
