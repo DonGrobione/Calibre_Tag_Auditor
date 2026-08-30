@@ -29,7 +29,7 @@ The promt used to validate the Calibre expots is set in `02-CalibreDataLLM-Promp
 - https://mistral.ai/pricing/api/?capabilities=text-to-text
 
 ### Mistral Links
-- Admin Center: https://admin.mistral.ai/organization/connectors
+- Admin Center Subscriptions: https://admin.mistral.ai/subscription
 - API-Keys: https://console.mistral.ai/observability/traces?profile_dialog=api-keys
 
 ## Quick Start
