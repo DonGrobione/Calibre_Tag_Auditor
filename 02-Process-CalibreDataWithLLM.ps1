@@ -796,7 +796,6 @@ try {
             else {
                 $inputUniqueBookCount = 1
             }
-            Write-Host "  -> Input unique books: $inputUniqueBookCount" -ForegroundColor Gray
         }
         catch {
             $validationWarningText = "Validation warning in '$($bookFile.Name)': Could not parse input book JSON for count validation. $($_.Exception.Message)"
@@ -862,23 +861,24 @@ $bookContent
             $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
 
+            $inputCountText = if ($null -ne $resultObject.input_unique_book_count) { $resultObject.input_unique_book_count } else { 'n/a' }
+            $validationColor = if ($resultObject.unique_book_count_match -eq $true) { 'Green' } else { 'Yellow' }
+            Write-Host "  -> Validation check: input=$inputCountText, output=$($resultObject.output_unique_book_count)" -ForegroundColor $validationColor
+
             if ($resultObject.status -eq 'success') {
                 Write-Host "  -> Saved as: $outName" -ForegroundColor Green
-                if ($null -ne $resultObject.unique_book_count_match) {
-                    Write-Host "  -> Unique book count OK: input=$($resultObject.input_unique_book_count), output=$($resultObject.output_unique_book_count)" -ForegroundColor Green
-                }
             }
             elseif ($resultObject.status -eq 'warning') {
-                Write-Host "  -> Saved with validation warning: $outName" -ForegroundColor Yellow
                 $validationWarningText = "Validation warning in '$($bookFile.Name)': $($resultObject.validation_error)"
                 Write-Log -Message "$ScriptLogPrefix $validationWarningText" -Warn
                 Microsoft.PowerShell.Utility\Write-Warning $validationWarningText
+                Write-Host "  -> Saved with validation warning: $outName" -ForegroundColor Yellow
             }
             else {
-                Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow
                 $validationErrorText = "Validation error in '$($bookFile.Name)': $($resultObject.parse_error)"
                 Write-Log -Message "$ScriptLogPrefix $validationErrorText" -IsError
                 Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
+                Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow
             }
         }
         else {
