@@ -53,7 +53,7 @@ After a successful run, the generated files are located here:
 - `04-ODS`: formatted ODS file for LibreOffice
 - `Logs`: logs for troubleshooting
 
-The ODS file contains the columns `Titel`, `Autor`, `Vorgeschlagene_Änderung`, and `Begründung`.
+The ODS file contains the columns `Titel`, `Autor`, `Aktion`, `Tag`, and `Begründung`. `Tag` is empty when `Aktion` is `NO_CHANGES`.
 
 ## Run Individual Steps
 The quick start is normally sufficient. For troubleshooting, run the steps individually in this order:
