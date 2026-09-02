@@ -443,6 +443,17 @@ try {
     }
 
     # Extract the first valid JSON block from a text response.
+    function Repair-JsonArrayFormatting {
+        param([string]$Text)
+
+        if ([string]::IsNullOrWhiteSpace($Text)) {
+            return $Text
+        }
+
+        $repaired = [System.Text.RegularExpressions.Regex]::Replace($Text, '(?s)(\})\s*(\{)', '$1,$2')
+        return $repaired
+    }
+
     function Get-JsonText {
         param([string]$RawText)
 
@@ -602,6 +613,7 @@ try {
         }
 
         $jsonText = Repair-MojibakeText -Text (Get-JsonText -RawText $RawText)
+        $jsonText = Repair-JsonArrayFormatting -Text $jsonText
         if ([string]::IsNullOrWhiteSpace($jsonText)) {
             $result.status = 'error'
             $result.parse_error = 'No JSON structure could be extracted from the Mistral response.'

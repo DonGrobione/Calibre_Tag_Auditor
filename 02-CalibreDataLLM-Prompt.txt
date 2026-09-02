@@ -63,6 +63,8 @@ OUTPUT SCHEMA (STRICT):
 OUTPUT RULES:
 - Output ONLY a single JSON array of objects.
 - Each object contains exactly: Titel, Autor, Aktion, Tag, Begründung
+- Separate every object in the array with a comma.
+- Never place two objects directly next to each other without a comma.
 - One change per object.
 - If a book needs one or more changes (ADD/REMOVE):
   output one object PER change. Do NOT output a NO_CHANGES object for that book.
