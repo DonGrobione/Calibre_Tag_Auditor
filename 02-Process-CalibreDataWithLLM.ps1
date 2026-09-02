@@ -88,6 +88,7 @@ try {
     $ConversationsUrl = "https://api.mistral.ai/v1/conversations"
     $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_Agent_Id.txt"
     $ApiTimeoutSec = 300
+    $script:MaxContentRetries = 3
     $script:LastApiErrorMessage = $null
     $script:LastApiErrorBody = $null
 
@@ -817,8 +818,32 @@ BOOKS (from $($bookFile.Name)):
 $bookContent
 "@
 
-        # Send the prompt to the Mistral conversation endpoint.
-        $apiResult = Invoke-MistralRequest -PayloadText $fullPrompt
+        # Send the prompt to the Mistral conversation endpoint, retrying on incomplete/invalid responses
+        # (e.g. the model returning a raw tool-call marker instead of the final book data).
+        $apiResult = $null
+        $resultObject = $null
+        $contentAttempt = 0
+
+        while ($contentAttempt -lt $script:MaxContentRetries) {
+            $contentAttempt++
+            $apiResult = Invoke-MistralRequest -PayloadText $fullPrompt
+
+            if ($null -eq $apiResult) {
+                break
+            }
+
+            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedUniqueBookCount $inputUniqueBookCount
+
+            if ($resultObject.status -eq 'success') {
+                break
+            }
+
+            if ($contentAttempt -lt $script:MaxContentRetries) {
+                $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
+                Write-Warning "Invalid/incomplete response for '$($bookFile.Name)' (attempt $contentAttempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
+                Start-Sleep -Seconds 15
+            }
+        }
 
         if ($null -ne $apiResult) {
             $savedCount++
@@ -826,7 +851,6 @@ $bookContent
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
-            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedUniqueBookCount $inputUniqueBookCount
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
             $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
