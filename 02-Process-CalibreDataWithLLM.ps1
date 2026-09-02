@@ -75,6 +75,7 @@ try {
     # Enable strict error handling for the LLM workflow.
     $ErrorActionPreference = 'Stop'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $scriptStartTime = Get-Date
 
     # Resolve the script directory and required input/output paths.
     $ScriptDir = $PSScriptRoot
@@ -778,6 +779,8 @@ try {
     $counter = 0
     $total = $bookFiles.Count
     $savedCount = 0
+    $retriedFileCount = 0
+    $retriedFileSuccessCount = 0
 
     foreach ($bookFile in $bookFiles) {
         $counter++
@@ -847,8 +850,12 @@ $bookContent
             }
         }
 
-        if ($contentAttempt -gt 1 -and $null -ne $resultObject -and $resultObject.status -eq 'success') {
-            Write-HostAndLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)." -ForegroundColor Green
+        if ($contentAttempt -gt 1) {
+            $retriedFileCount++
+            if ($null -ne $resultObject -and $resultObject.status -eq 'success') {
+                $retriedFileSuccessCount++
+                Write-HostAndLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)." -ForegroundColor Green
+            }
         }
 
         if ($null -ne $apiResult) {
@@ -922,10 +929,12 @@ $bookContent
     }
 
     # Final summary for the completed run.
+    $scriptEndTime = Get-Date
+    $scriptDuration = $scriptEndTime - $scriptStartTime
     Write-Host ""
     Write-Host "--- Processing Complete ---" -ForegroundColor Cyan
-    Write-Host "Total files:     $total" -ForegroundColor Gray
-    Write-Host "Saved files:     $savedCount" -ForegroundColor Green
+    Write-Host "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
+    Write-Host "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries." -ForegroundColor Gray
 
 }
 catch {
