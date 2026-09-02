@@ -7,7 +7,7 @@
     03-CSV to ODS using the pipe delimiter, renames each result to the 04-ODS_Convert_*.
     ods pattern with the same timestamp as the source CSV, and applies the requested
     formatting to the generated spreadsheet: automatic line breaks in all cells and
-    column widths of A/B = 9 cm, C = 6 cm, D = 18 cm.
+    column widths of A/B = 9 cm, C = 4 cm, D = 6 cm, E = 18 cm.
 
     Set $DeleteCsvAfterConversion (near the top of the script) to $true to delete each
     source CSV file after it was successfully converted and formatted as ODS.
@@ -19,7 +19,7 @@
     Folder where converted ODS files are written. Defaults to .\04-ODS.
 
 .NOTES
-    Version: 1.2
+    Version: 1.3
 #>
 
 [CmdletBinding()]
@@ -307,7 +307,7 @@ for root in xml_parts.values():
             cell_props = ET.SubElement(style, f'{{{style_ns}}}table-cell-properties')
             cell_props.set(f'{{{fo_ns}}}wrap-option', 'wrap')
 
-width_map = {'co1': '9cm', 'co2': '9cm', 'co3': '6cm', 'co4': '18cm'}
+width_map = {'co1': '9cm', 'co2': '9cm', 'co3': '4cm', 'co4': '6cm', 'co5': '18cm'}
 
 for elem in xml_parts['content.xml'].iter():
     if elem.tag != f'{{{style_ns}}}style':

@@ -24,7 +24,7 @@
     The file is written as UTF-8 with BOM so German umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.13
+    Version: 1.14
 #>
 
 param(
@@ -290,33 +290,35 @@ try {
         throw "No valid JSON objects were found."
     }
 
-    # Normalize data and export only the four business columns required by the CSV consumer.
+    # Normalize data and export only the five business columns required by the CSV consumer.
     $csvRows = @()
     foreach ($item in $allObjects) {
         $cleanItem = Convert-JsonValues -Item $item
 
         $titel = if ($cleanItem.PSObject.Properties.Match('Titel')) { $cleanItem.Titel } else { $null }
         $autor = if ($cleanItem.PSObject.Properties.Match('Autor')) { $cleanItem.Autor } else { $null }
-        $vorgeschlageneAenderung = if ($cleanItem.PSObject.Properties.Match('Vorgeschlagene_Änderung')) { $cleanItem.Vorgeschlagene_Änderung } else { $null }
+        $aktion = if ($cleanItem.PSObject.Properties.Match('Aktion')) { $cleanItem.Aktion } else { $null }
+        $tag = if ($cleanItem.PSObject.Properties.Match('Tag')) { $cleanItem.Tag } else { $null }
         $begruendung = if ($cleanItem.PSObject.Properties.Match('Begründung')) { $cleanItem.Begründung } else { $null }
 
         if ([string]::IsNullOrWhiteSpace([string]$titel) -and
             [string]::IsNullOrWhiteSpace([string]$autor) -and
-            [string]::IsNullOrWhiteSpace([string]$vorgeschlageneAenderung) -and
+            [string]::IsNullOrWhiteSpace([string]$aktion) -and
             [string]::IsNullOrWhiteSpace([string]$begruendung)) {
             continue
         }
 
         $csvRows += [pscustomobject]@{
-            Titel                   = $titel
-            Autor                   = $autor
-            Vorgeschlagene_Änderung = $vorgeschlageneAenderung
-            Begründung              = $begruendung
+            Titel      = $titel
+            Autor      = $autor
+            Aktion     = $aktion
+            Tag        = $tag
+            Begründung = $begruendung
         }
     }
 
     if (-not $csvRows) {
-        Write-Error "No valid book records with Titel/Autor/Vorgeschlagene_Änderung/Begründung were found."
+        Write-Error "No valid book records with Titel/Autor/Aktion/Tag/Begründung were found."
         throw "No valid book records were found."
     }
 

@@ -36,9 +36,9 @@ PROCESS PER BOOK:
    - Flag in reasoning: "Tag [Name] has no definition"
 
 CHANGE TYPES:
-- "ADD: <tag name>"      — add (confirmed by research)
-- "REMOVE: <tag name>"   — remove (definition does not match)
-- "NO_CHANGES"           — no change needed
+- "ADD"          — add tag (confirmed by research)
+- "REMOVE"       — remove tag (definition does not match)
+- "NO_CHANGES"   — no change needed
 
 DATA FIDELITY (CRITICAL):
 - Never invent, omit, or normalize book identity fields.
@@ -50,56 +50,60 @@ DATA FIDELITY (CRITICAL):
 - Do not output null for Titel or Autor.
 
 OUTPUT SCHEMA (STRICT):
-- Allowed keys per object: Titel, Autor, Vorgeschlagene_Änderung, Begründung
+- Allowed keys per object: Titel, Autor, Aktion, Tag, Begründung
 - No additional keys are allowed.
-- Vorgeschlagene_Änderung must be exactly one of:
-  - NO_CHANGES
-  - ADD: <existing or justified new tag>
-  - REMOVE: <existing tag>
+- Aktion must be exactly one of: ADD, REMOVE, NO_CHANGES
+- Tag must contain only the tag name (no prefix, no colon):
+  - Aktion = ADD or REMOVE → Tag = the affected tag name (non-empty string)
+  - Aktion = NO_CHANGES → Tag = null
 - Begründung must be a non-empty German sentence specific to that object.
 
 OUTPUT RULES:
 - Output ONLY a single JSON array of objects.
-- Each object contains exactly: Titel, Autor, Vorgeschlagene_Änderung, Begründung
+- Each object contains exactly: Titel, Autor, Aktion, Tag, Begründung
 - One change per object.
 - If a book needs one or more changes (ADD/REMOVE):
   output one object PER change. Do NOT output a NO_CHANGES object for that book.
   Example: if a book needs 2 tags removed and 1 added, output 3 objects.
 - If a book needs NO changes at all:
-  output exactly ONE NO_CHANGES object for that book.
+  output exactly ONE NO_CHANGES object for that book, with Tag = null.
 - Do NOT output a NO_CHANGES object alongside ADD or REMOVE objects for the same book.
 - Every book from the input must appear in the output at least once.
 - No markdown code blocks (no ```json).
 - No introductory text, no summary, no verification line.
 - The first character of your response must be [ and the last character must be ].
-- Field names must be in German: Titel, Autor, Vorgeschlagene_Änderung, Begründung.
+- Field names must be in German: Titel, Autor, Aktion, Tag, Begründung.
 
 FINAL SELF-CHECK BEFORE RETURNING JSON (MANDATORY):
 1) Valid JSON array only.
-2) Every object has all 4 required keys.
+2) Every object has all 5 required keys.
 3) Titel and Autor in each object exactly match one input book pair (Title+Author).
 4) No object with missing/empty Titel or Autor.
 5) Every input book appears at least once in output.
 6) For books with ADD/REMOVE objects, no NO_CHANGES object exists for that same book.
+7) Tag is null when Aktion is NO_CHANGES, and a non-empty tag name when Aktion is ADD or REMOVE.
 
 EXAMPLE OUTPUT:
 [
   {
     "Titel": "Eisenhorn Omnibus",
     "Autor": "Dan Abnett",
-    "Vorgeschlagene_Änderung": "ADD: Science Fiction",
+    "Aktion": "ADD",
+    "Tag": "Science Fiction",
     "Begründung": "Warhammer 40k is defined as Grimdark Sci-Fi in the WH40k universe; Science Fiction as a parent category for technology-driven future scenarios is applicable"
   },
   {
     "Titel": "Eisenhorn Omnibus",
     "Autor": "Dan Abnett",
-    "Vorgeschlagene_Änderung": "REMOVE: Male Protagonist",
+    "Aktion": "REMOVE",
+    "Tag": "Male Protagonist",
     "Begründung": "Protagonist Gregor Eisenhorn is male, but the focus is on Inquisition and investigative work, not on gender identity as a defining trait"
   },
   {
     "Titel": "Gaunt's Ghosts 14: Blood Pact",
     "Autor": "Dan Abnett",
-    "Vorgeschlagene_Änderung": "NO_CHANGES",
+    "Aktion": "NO_CHANGES",
+    "Tag": null,
     "Begründung": "All tags match their definitions after review"
   }
 ]
