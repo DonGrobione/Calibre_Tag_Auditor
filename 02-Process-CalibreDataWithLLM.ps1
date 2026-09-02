@@ -838,11 +838,18 @@ $bookContent
                 break
             }
 
+            $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
             if ($contentAttempt -lt $script:MaxContentRetries) {
-                $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
                 Write-Warning "Invalid/incomplete response for '$($bookFile.Name)' (attempt $contentAttempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
                 Start-Sleep -Seconds 15
             }
+            else {
+                Write-WarningAndLog "All $($script:MaxContentRetries) attempt(s) for '$($bookFile.Name)' failed validation. Last reason: $retryReason"
+            }
+        }
+
+        if ($contentAttempt -gt 1 -and $null -ne $resultObject -and $resultObject.status -eq 'success') {
+            Write-HostAndLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)." -ForegroundColor Green
         }
 
         if ($null -ne $apiResult) {
