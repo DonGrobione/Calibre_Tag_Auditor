@@ -23,52 +23,6 @@ if (-not (Test-Path -Path $WriteLogModulePath)) {
 
 Import-Module -Name $WriteLogModulePath -Force
 
-# Prefix every log line with the current script name to simplify troubleshooting
-# when multiple scripts write into one shared logfile.
-$ScriptLogName = if ([string]::IsNullOrWhiteSpace($PSCommandPath)) { 'UnknownScript' } else { Split-Path -Path $PSCommandPath -Leaf }
-$ScriptLogPrefix = "[$ScriptLogName]"
-
-function Write-HostAndLog {
-    [CmdletBinding()]
-    param(
-        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
-        [object[]]$Object,
-        [ConsoleColor]$ForegroundColor,
-        [ConsoleColor]$BackgroundColor,
-        [switch]$NoNewline,
-        [object]$Separator
-    )
-
-    $joinSeparator = if ($PSBoundParameters.ContainsKey('Separator')) { [string]$Separator } else { ' ' }
-    $message = (($Object | ForEach-Object { [string]$_ }) -join $joinSeparator)
-    Write-Log -Message "$ScriptLogPrefix $message" -Info
-    Microsoft.PowerShell.Utility\Write-Host @PSBoundParameters
-}
-
-function Write-WarningAndLog {
-    [CmdletBinding()]
-    param(
-        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
-        [object[]]$Message
-    )
-
-    $text = ($Message | ForEach-Object { [string]$_ }) -join ' '
-    Write-Log -Message "$ScriptLogPrefix $text" -Warn
-    Microsoft.PowerShell.Utility\Write-Warning $text
-}
-
-function Write-ErrorAndLog {
-    [CmdletBinding()]
-    param(
-        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
-        [object[]]$Message
-    )
-
-    $text = ($Message | ForEach-Object { [string]$_ }) -join ' '
-    Write-Log -Message "$ScriptLogPrefix $text" -IsError
-    Microsoft.PowerShell.Utility\Write-Error $text
-}
-
 Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
 Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
 Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
@@ -804,8 +758,7 @@ try {
         }
         catch {
             $validationWarningText = "Validation warning in '$($bookFile.Name)': Could not parse input book JSON for count validation. $($_.Exception.Message)"
-            Write-Log -Message "$ScriptLogPrefix $validationWarningText" -Warn
-            Microsoft.PowerShell.Utility\Write-Warning $validationWarningText
+            Write-Warning $validationWarningText
         }
 
         $fullPrompt = @"
@@ -879,13 +832,12 @@ $bookContent
             }
             elseif ($resultObject.status -eq 'warning') {
                 $validationWarningText = "Validation warning in '$($bookFile.Name)': $($resultObject.validation_error)"
-                Write-Log -Message "$ScriptLogPrefix $validationWarningText" -Warn
-                Microsoft.PowerShell.Utility\Write-Warning $validationWarningText
+                Write-Warning $validationWarningText
                 Write-Host "  -> Saved with validation warning: $outName" -ForegroundColor Yellow
             }
             else {
                 $validationErrorText = "Validation error in '$($bookFile.Name)': $($resultObject.parse_error)"
-                Write-Log -Message "$ScriptLogPrefix $validationErrorText" -IsError
+                Write-Log -Message "$(Get-ScriptLogPrefix) $validationErrorText" -IsError
                 Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
                 Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow
             }
@@ -923,7 +875,7 @@ $bookContent
 
             Write-Host "  -> Saved with API error: $outName" -ForegroundColor Red
             $validationErrorText = "Validation error in '$($bookFile.Name)': $apiDetail"
-            Write-Log -Message "$ScriptLogPrefix $validationErrorText" -IsError
+            Write-Log -Message "$(Get-ScriptLogPrefix) $validationErrorText" -IsError
             Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
         }
 
