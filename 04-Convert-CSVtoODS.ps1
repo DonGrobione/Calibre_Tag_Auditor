@@ -10,6 +10,8 @@
     Column D: Tag,       width 4 cm
     Column E: Begründung, width 18 cm
 
+    For rows where Aktion = NO_CHANGES, Tag and Begründung are null values in the source CSV and remain empty cells in the ODS review sheet.
+
     Set $DeleteCsvAfterConversion (near the top of the script) to $true to delete each source CSV file after it was successfully converted and formatted as ODS.
 
 .PARAMETER CsvInputFolder
