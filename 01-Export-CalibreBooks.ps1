@@ -3,11 +3,12 @@
     Export Calibre Portable metadata to JSON files.
 
 .DESCRIPTION
-    Exports title, author, series, series index, and tags from a Calibre Portable
-    library into one or more JSON files in the 01-Export directory. Books are
-    sorted by last modification date, newest first. By default, books modified
-    within the last day are exported. Set $ChangedWithinDays to a value greater
-    than 0 to change the number of days. Set it to 0 to export all books.
+    Exports title, author, series, series index, tags, identifiers (IDs, e.g.
+    ISBN), publisher, and publication year from a Calibre Portable library into
+    one or more JSON files in the 01-Export directory. Books are sorted by last
+    modification date, newest first. By default, books modified within the last
+    day are exported. Set $ChangedWithinDays to a value greater than 0 to change
+    the number of days. Set it to 0 to export all books.
     The output file names include a timestamp and sequence number when split.
     Uses calibredb.exe from the Calibre Portable installation.
     Script output (info, warnings, and errors) is written both to terminal and
@@ -15,7 +16,7 @@
     logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 2.7
+    Version: 2.8
 #>
 
 # Central export settings and their descriptions are maintained in 01-CalibreExport.config.json.
@@ -190,7 +191,7 @@ try {
     # used for descending sort order and the optional date filter.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
-        --fields=title,authors,series,series_index,tags,last_modified `
+        --fields=title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
         "--with-library=$LibraryPath"
 
     if ($LASTEXITCODE -ne 0) {
@@ -249,14 +250,42 @@ try {
         return $Value
     }
 
+    function Get-ExportYear {
+        param([object]$PubDate)
+
+        $Parsed = [DateTimeOffset]::MinValue
+        $HasValidDate = [DateTimeOffset]::TryParse(
+            [string]$PubDate,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$Parsed)
+
+        if ($HasValidDate -and $Parsed.Year -gt 1) {
+            return $Parsed.Year
+        }
+
+        return $null
+    }
+
     # Transform the raw data into a simple object format for JSON export.
     $Results = foreach ($Book in $Books) {
+        # identifiers come back as a map (e.g. isbn/amazon/google) joined into a readable string
+        $IdentifierText = $null
+        if ($Book.identifiers) {
+            $IdentifierText = (($Book.identifiers.PSObject.Properties | ForEach-Object {
+                "$($_.Name):$($_.Value)"
+            }) -join ", ")
+        }
+
         [PSCustomObject]@{
             Title       = Clear-ExportText -Value $Book.title
             Author      = Clear-ExportText -Value $Book.authors
             Series      = Clear-ExportText -Value $Book.series
             SeriesIndex = Clear-ExportText -Value $Book.series_index
             Tags        = Clear-ExportText -Value ($Book.tags -join ", ")
+            IDs         = Clear-ExportText -Value $IdentifierText
+            Publisher   = Clear-ExportText -Value $Book.publisher
+            Year        = Get-ExportYear -PubDate $Book.pubdate
         }
     }
 
