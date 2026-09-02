@@ -6,10 +6,12 @@
     Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book export to the agent together with the prompt and tag definitions, and writes the LLM responses
     to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
+    If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
+    A per-file validation check and a final run summary (start/end time, duration, and retry statistics) are printed after processing.
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 3.2
+    Version: 3.3
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
 #>

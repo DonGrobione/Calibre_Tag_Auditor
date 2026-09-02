@@ -19,10 +19,10 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 - `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `30`.
 - `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`.
 
-Depending to the size of your library and tags, changing the value of `ChangedWithinDays` will use a lot more tokens.
+Depending on the size of your library and tags, changing the value of `ChangedWithinDays` will use a lot more tokens.
 
 ## Mistral
-The promt used to validate the Calibre expots is set in `02-CalibreDataLLM-Prompt.txt`. To save tokens, it is in english. But reasoning and results are in german, as this is my native language. It can be changed in the prombt.
+The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Prompt.txt`.
 
 ### Documentation
 - https://docs.mistral.ai/models/model-cards/mistral-large-3-25-12

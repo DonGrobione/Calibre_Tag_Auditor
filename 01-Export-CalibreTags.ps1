@@ -11,7 +11,7 @@
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 2.8
+    Version: 2.9
 #>
 
 [CmdletBinding()]
@@ -162,18 +162,6 @@ try {
     $FullOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
     $TempDir = $env:TEMP
     $TempScript = Join-Path $TempDir "calibre_export_temp.py"
-
-    function Write-JsonFileUtf8 {
-        param(
-            [Parameter(Mandatory = $true)]
-            [string]$Path,
-            [Parameter(Mandatory = $true)]
-            [string]$Content
-        )
-
-        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-        [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
-    }
 
     Write-Host "Found:      $CalibrePortablePath"
     Write-Host "Tool:       $($CalibreDebugExe.FullName)"
