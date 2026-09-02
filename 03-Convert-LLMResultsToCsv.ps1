@@ -288,23 +288,23 @@ try {
 
         $title = if ($cleanItem.PSObject.Properties.Match('Title')) { $cleanItem.Title } elseif ($cleanItem.PSObject.Properties.Match('Titel')) { $cleanItem.Titel } else { $null }
         $author = if ($cleanItem.PSObject.Properties.Match('Author')) { $cleanItem.Author } elseif ($cleanItem.PSObject.Properties.Match('Autor')) { $cleanItem.Autor } else { $null }
-        $action = if ($cleanItem.PSObject.Properties.Match('Action')) { $cleanItem.Action } elseif ($cleanItem.PSObject.Properties.Match('Aktion')) { $cleanItem.Aktion } else { $null }
+        $proposedAction = if ($cleanItem.PSObject.Properties.Match('ProposedAction')) { $cleanItem.ProposedAction } elseif ($cleanItem.PSObject.Properties.Match('Action')) { $cleanItem.Action } elseif ($cleanItem.PSObject.Properties.Match('Aktion')) { $cleanItem.Aktion } else { $null }
         $tag = if ($cleanItem.PSObject.Properties.Match('Tag')) { $cleanItem.Tag } else { $null }
         $reason = if ($cleanItem.PSObject.Properties.Match('Reason')) { $cleanItem.Reason } elseif ($cleanItem.PSObject.Properties.Match('Begründung')) { $cleanItem.Begründung } else { $null }
 
         if ([string]::IsNullOrWhiteSpace([string]$title) -and
             [string]::IsNullOrWhiteSpace([string]$author) -and
-            [string]::IsNullOrWhiteSpace([string]$action) -and
+            [string]::IsNullOrWhiteSpace([string]$proposedAction) -and
             [string]::IsNullOrWhiteSpace([string]$reason)) {
             continue
         }
 
         $csvRows += [pscustomobject]@{
-            Title   = $title
-            Author  = $author
-            Action  = $action
-            Tag     = $tag
-            Reason  = $reason
+            Title          = $title
+            Author         = $author
+            ProposedAction = $proposedAction
+            Tag            = $tag
+            Reason         = $reason
         }
     }
 

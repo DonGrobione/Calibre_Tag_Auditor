@@ -4,13 +4,13 @@
 
 .DESCRIPTION
     Detects the installed LibreOffice installation, converts every CSV file found in 03-CSV to ODS using the pipe delimiter, renames each result to the 04-ODS_Convert_*.ods pattern with the same timestamp as the source CSV, and applies the requested formatting to the generated spreadsheet: automatic line breaks in all cells and the column widths listed below.
-    Column A: Title,     width 9 cm
-    Column B: Author,    width 6 cm
-    Column C: Action,    width 4 cm
-    Column D: Tag,       width 4 cm
-    Column E: Reason,    width 18 cm
+    Column A: Title,          width 9 cm
+    Column B: Author,         width 6 cm
+    Column C: ProposedAction, width 4 cm
+    Column D: Tag,            width 4 cm
+    Column E: Reason,         width 18 cm
 
-    For rows where Action = NO_CHANGES, Tag and Reason are null values in the source CSV and remain empty cells in the ODS review sheet.
+    For rows where ProposedAction = NO_CHANGES, Tag and Reason are null values in the source CSV and remain empty cells in the ODS review sheet.
 
     Set $DeleteCsvAfterConversion (near the top of the script) to $true to delete each source CSV file after it was successfully converted and formatted as ODS.
 

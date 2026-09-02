@@ -52,15 +52,15 @@ DATA FIDELITY (CRITICAL):
 - Do not output null for Title or Author.
 
 OUTPUT SCHEMA (STRICT):
-- Allowed keys per object: Title, Author, Action, Tag, Reason
+- Allowed keys per object: Title, Author, ProposedAction, Tag, Reason
 - No additional keys are allowed.
-- Action must be exactly one of: ADD, REMOVE, NO_CHANGES
+- ProposedAction must be exactly one of: ADD, REMOVE, NO_CHANGES
 - Tag must contain only the tag name (no prefix, no colon):
-  - Action = ADD or REMOVE → Tag = the affected tag name (non-empty string)
-  - Action = NO_CHANGES → Tag = null
+  - ProposedAction = ADD or REMOVE → Tag = the affected tag name (non-empty string)
+  - ProposedAction = NO_CHANGES → Tag = null
 - Reason must be:
-  - Action = ADD or REMOVE → a non-empty English sentence specific to that object
-  - Action = NO_CHANGES → null
+  - ProposedAction = ADD or REMOVE → a non-empty English sentence specific to that object
+  - ProposedAction = NO_CHANGES → null
 
 REASONING LANGUAGE:
 - Think in English throughout the analysis and decision process.
@@ -69,7 +69,7 @@ REASONING LANGUAGE:
 
 OUTPUT RULES:
 - Output ONLY a single JSON array of objects.
-- Each object contains exactly: Title, Author, Action, Tag, Reason
+- Each object contains exactly: Title, Author, ProposedAction, Tag, Reason
 - Separate every object in the array with a comma.
 - Never place two objects directly next to each other without a comma.
 - One change per object.
@@ -78,14 +78,14 @@ OUTPUT RULES:
   Example: if a book needs 2 tags removed and 1 added, output 3 objects.
 - If a book needs NO changes at all:
   output exactly ONE NO_CHANGES object for that book, with Tag = null and Reason = null.
-- Do NOT output a NO_CHANGES object alongside ADD or REMOVE objects for the same book.
+- Do NOT output a NO_CHANGES object alongside ADD or REMOVE objects for that same book.
 - Every book from the input must appear in the output at least once.
 - No markdown code blocks (no ```json).
 - No introductory text, no summary, no verification line.
 - No tool-call output, no search query text, no partial results, no reasoning as plain text in the final answer.
 - After any internal tool use, return only the final JSON array and nothing else.
 - The first character of your response must be [ and the last character must be ].
-- Field names must be in English: Title, Author, Action, Tag, Reason.
+- Field names must be in English: Title, Author, ProposedAction, Tag, Reason.
 
 FINAL SELF-CHECK BEFORE RETURNING JSON (MANDATORY):
 1) Valid JSON array only.
@@ -94,29 +94,29 @@ FINAL SELF-CHECK BEFORE RETURNING JSON (MANDATORY):
 4) No object with missing/empty Title or Author.
 5) Every input book appears at least once in output.
 6) For books with ADD/REMOVE objects, no NO_CHANGES object exists for that same book.
-7) Tag is null when Action is NO_CHANGES, and a non-empty tag name when Action is ADD or REMOVE.
-8) Reason is null when Action is NO_CHANGES, and a non-empty English sentence when Action is ADD or REMOVE.
+7) Tag is null when ProposedAction is NO_CHANGES, and a non-empty tag name when ProposedAction is ADD or REMOVE.
+8) Reason is null when ProposedAction is NO_CHANGES, and a non-empty English sentence when ProposedAction is ADD or REMOVE.
 
 EXAMPLE OUTPUT:
 [
   {
     "Title": "Eisenhorn Omnibus",
     "Author": "Dan Abnett",
-    "Action": "ADD",
+    "ProposedAction": "ADD",
     "Tag": "Science Fiction",
     "Reason": "Warhammer 40k is defined as Grimdark Sci-Fi in the WH40k universe; Science Fiction as a parent category for technology-driven future scenarios is applicable"
   },
   {
     "Title": "Eisenhorn Omnibus",
     "Author": "Dan Abnett",
-    "Action": "REMOVE",
+    "ProposedAction": "REMOVE",
     "Tag": "Male Protagonist",
     "Reason": "Gregor Eisenhorn is male, but the focus is on Inquisition work rather than gender identity as the primary defining trait of the book"
   },
   {
     "Title": "Gaunt's Ghosts 14: Blood Pact",
     "Author": "Dan Abnett",
-    "Action": "NO_CHANGES",
+    "ProposedAction": "NO_CHANGES",
     "Tag": null,
     "Reason": null
   }
