@@ -80,20 +80,6 @@ $ErrorActionPreference = 'Stop'
 $startTime = Get-Date
 
 try {
-    # Set the target folder for LLM result files.
-    $llmResultDir = Join-Path -Path $PSScriptRoot -ChildPath "02-LLM-Result"
-
-    # Remove old JSON result files from a previous run so only current data remains.
-    if (Test-Path -Path $llmResultDir) {
-        $jsonFiles = Get-ChildItem -Path $llmResultDir -Filter "*.json" -File
-        if ($jsonFiles.Count -gt 0) {
-            Write-Host "Cleaning $($jsonFiles.Count) JSON file(s) from 02-LLM-Result..." -ForegroundColor Yellow
-            $jsonFiles | Remove-Item -Force
-            Write-Host "Done." -ForegroundColor Green
-            Write-Host ""
-        }
-    }
-
     # Define the order of scripts to run.
     $scripts = @(
         "01-Export-CalibreBooks.ps1",

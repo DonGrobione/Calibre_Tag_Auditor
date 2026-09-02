@@ -91,9 +91,18 @@ try {
     $script:LastApiErrorMessage = $null
     $script:LastApiErrorBody = $null
 
-    # Ensure the output folder exists before writing results.
+    # Ensure the output folder exists before writing results and remove stale JSON files from a previous run.
     if (-not (Test-Path -Path $OutputDir)) {
         New-Item -Path $OutputDir -ItemType Directory | Out-Null
+    }
+    else {
+        $jsonFiles = Get-ChildItem -Path $OutputDir -Filter "*.json" -File
+        if ($jsonFiles.Count -gt 0) {
+            Write-Host "Cleaning $($jsonFiles.Count) JSON file(s) from 02-LLM-Result..." -ForegroundColor Yellow
+            $jsonFiles | Remove-Item -Force
+            Write-Host "Done." -ForegroundColor Green
+            Write-Host ""
+        }
     }
 
     if (-not (Test-Path -Path $ApiKeyFile) -or -not (Test-Path -Path $PromptFile)) {
