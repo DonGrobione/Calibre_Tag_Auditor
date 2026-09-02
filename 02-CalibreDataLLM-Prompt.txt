@@ -14,9 +14,11 @@ PROCESS PER BOOK:
    - If the book is unknown or information is unclear, perform a web search.
    - Use the query: "[Title] [Author] content genre summary"
    - If Title/Author alone yield ambiguous or no results, refine the query using IDs (e.g. ISBN), Publisher, and/or Year, e.g. "[Title] [Author] [Year] [Publisher] ISBN [IDs] content genre summary".
+   - Use the web search tool only internally.
    - Use web search only as a tool, not automatically for every book.
    - Conflicting sources → cite both in the reasoning.
    - No or insufficient results → "Uncertainty: ... manual review recommended".
+   - After any tool call, return only the final JSON array and nothing else.
 
 2. Check each assigned tag:
    a) Does the tag have a definition in the tag definitions? → Yes
@@ -71,6 +73,8 @@ OUTPUT RULES:
 - Every book from the input must appear in the output at least once.
 - No markdown code blocks (no ```json).
 - No introductory text, no summary, no verification line.
+- No tool-call output, no search query text, no partial results, no reasoning as plain text in the final answer.
+- After any internal tool use, return only the final JSON array and nothing else.
 - The first character of your response must be [ and the last character must be ].
 - Field names must be in German: Titel, Autor, Aktion, Tag, Begründung.
 
