@@ -286,30 +286,30 @@ try {
     foreach ($item in $allObjects) {
         $cleanItem = Convert-JsonValues -Item $item
 
-        $titel = if ($cleanItem.PSObject.Properties.Match('Titel')) { $cleanItem.Titel } else { $null }
-        $autor = if ($cleanItem.PSObject.Properties.Match('Autor')) { $cleanItem.Autor } else { $null }
-        $aktion = if ($cleanItem.PSObject.Properties.Match('Aktion')) { $cleanItem.Aktion } else { $null }
+        $title = if ($cleanItem.PSObject.Properties.Match('Title')) { $cleanItem.Title } elseif ($cleanItem.PSObject.Properties.Match('Titel')) { $cleanItem.Titel } else { $null }
+        $author = if ($cleanItem.PSObject.Properties.Match('Author')) { $cleanItem.Author } elseif ($cleanItem.PSObject.Properties.Match('Autor')) { $cleanItem.Autor } else { $null }
+        $action = if ($cleanItem.PSObject.Properties.Match('Action')) { $cleanItem.Action } elseif ($cleanItem.PSObject.Properties.Match('Aktion')) { $cleanItem.Aktion } else { $null }
         $tag = if ($cleanItem.PSObject.Properties.Match('Tag')) { $cleanItem.Tag } else { $null }
-        $begruendung = if ($cleanItem.PSObject.Properties.Match('Begründung')) { $cleanItem.Begründung } else { $null }
+        $reason = if ($cleanItem.PSObject.Properties.Match('Reason')) { $cleanItem.Reason } elseif ($cleanItem.PSObject.Properties.Match('Begründung')) { $cleanItem.Begründung } else { $null }
 
-        if ([string]::IsNullOrWhiteSpace([string]$titel) -and
-            [string]::IsNullOrWhiteSpace([string]$autor) -and
-            [string]::IsNullOrWhiteSpace([string]$aktion) -and
-            [string]::IsNullOrWhiteSpace([string]$begruendung)) {
+        if ([string]::IsNullOrWhiteSpace([string]$title) -and
+            [string]::IsNullOrWhiteSpace([string]$author) -and
+            [string]::IsNullOrWhiteSpace([string]$action) -and
+            [string]::IsNullOrWhiteSpace([string]$reason)) {
             continue
         }
 
         $csvRows += [pscustomobject]@{
-            Titel      = $titel
-            Autor      = $autor
-            Aktion     = $aktion
-            Tag        = $tag
-            Begründung = $begruendung
+            Title   = $title
+            Author  = $author
+            Action  = $action
+            Tag     = $tag
+            Reason  = $reason
         }
     }
 
     if (-not $csvRows) {
-        Write-Error "No valid book records with Titel/Autor/Aktion/Tag/Begründung were found."
+        Write-Error "No valid book records with Title/Author/Action/Tag/Reason were found."
         throw "No valid book records were found."
     }
 

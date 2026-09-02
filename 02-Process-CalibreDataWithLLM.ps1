@@ -673,7 +673,7 @@ try {
             $result.records = @($parsed)
         }
 
-        $result.output_unique_book_count = Get-UniqueBookCount -Items $result.records -TitlePropertyName 'Titel' -AuthorPropertyName 'Autor'
+        $result.output_unique_book_count = Get-UniqueBookCount -Items $result.records -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
 
         $validationMessages = @()
 
