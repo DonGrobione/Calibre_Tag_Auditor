@@ -9,7 +9,7 @@
     formatting to the generated spreadsheet: automatic line breaks in all cells and
     the column widths listed below.
     Column A: Titel,     width 9 cm
-    Column B: Autor,     width 9 cm
+    Column B: Autor,     width 6 cm
     Column C: Aktion,    width 4 cm
     Column D: Tag,       width 4 cm
     Column E: Begründung, width 18 cm
@@ -312,7 +312,7 @@ for root in xml_parts.values():
             cell_props = ET.SubElement(style, f'{{{style_ns}}}table-cell-properties')
             cell_props.set(f'{{{fo_ns}}}wrap-option', 'wrap')
 
-width_map = {'co1': '9cm', 'co2': '9cm', 'co3': '4cm', 'co4': '4cm', 'co5': '18cm'}
+width_map = {'co1': '9cm', 'co2': '6cm', 'co3': '4cm', 'co4': '4cm', 'co5': '18cm'}
 
 for elem in xml_parts['content.xml'].iter():
     if elem.tag != f'{{{style_ns}}}style':
