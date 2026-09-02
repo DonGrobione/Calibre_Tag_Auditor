@@ -3,19 +3,14 @@
     Convert CSV files from 03-CSV to ODS files in 04-ODS and apply formatting.
 
 .DESCRIPTION
-    Detects the installed LibreOffice installation, converts every CSV file found in
-    03-CSV to ODS using the pipe delimiter, renames each result to the 04-ODS_Convert_*.
-    ods pattern with the same timestamp as the source CSV, and applies the requested
-    formatting to the generated spreadsheet: automatic line breaks in all cells and
-    the column widths listed below.
+    Detects the installed LibreOffice installation, converts every CSV file found in 03-CSV to ODS using the pipe delimiter, renames each result to the 04-ODS_Convert_*.ods pattern with the same timestamp as the source CSV, and applies the requested formatting to the generated spreadsheet: automatic line breaks in all cells and the column widths listed below.
     Column A: Titel,     width 9 cm
     Column B: Autor,     width 6 cm
     Column C: Aktion,    width 4 cm
     Column D: Tag,       width 4 cm
     Column E: Begründung, width 18 cm
 
-    Set $DeleteCsvAfterConversion (near the top of the script) to $true to delete each
-    source CSV file after it was successfully converted and formatted as ODS.
+    Set $DeleteCsvAfterConversion (near the top of the script) to $true to delete each source CSV file after it was successfully converted and formatted as ODS.
 
 .PARAMETER CsvInputFolder
     Folder containing the source CSV files. Defaults to .\03-CSV.

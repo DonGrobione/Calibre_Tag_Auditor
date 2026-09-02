@@ -3,17 +3,8 @@
     Convert JSON result files into a single CSV output.
 
 .DESCRIPTION
-    Reads all JSON files from the input folder, unwraps the JSON result payloads
-    written by the LLM step, repairs mojibake from malformed input text,
-    preserves German umlauts and special characters, merges the extracted
-    records, and exports the result to a single CSV file. When the default
-    output path is used, the output file name
-    includes the timestamp from the first input file. Only book result records
-    are exported to CSV. Metadata fields (status, validation details, parse
-    details, raw_response) are intentionally ignored during CSV conversion.
-    Script output (info, warnings, and errors) is written both to terminal and
-    to the central log via Modules\Write-Log.psm1. Errors are marked as already
-    logged before rethrowing so wrapper scripts can avoid duplicate log entries.
+    Reads all JSON files from the input folder, unwraps the JSON result payloads written by the LLM step, repairs mojibake from malformed input text, preserves German umlauts and special characters, merges the extracted records, and exports the result to a single CSV file. When the default output path is used, the output file name includes the timestamp from the first input file. Only book result records are exported to CSV. Metadata fields (status, validation details, parse details, raw_response) are intentionally ignored during CSV conversion.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert.

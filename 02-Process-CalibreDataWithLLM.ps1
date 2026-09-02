@@ -3,23 +3,15 @@
     Validate Calibre export data with the Mistral API.
 
 .DESCRIPTION
-    Reads the latest Calibre book export and tag-definition JSON files, creates
-    a fresh Mistral agent for each run, sends each book export to the agent
-    together with the prompt and tag definitions, and writes the LLM responses
+    Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book export to the agent together with the prompt and tag definitions, and writes the LLM responses
     to the 02-LLM-Result folder as individual JSON files.
-    It validates unique-book counts per file, repairs mojibake in LLM
-    responses, and stores the validation outcome in the output metadata.
-    Script output (info, warnings, and errors) is written both to terminal and
-    to the central log via Modules\Write-Log.psm1. Errors are marked as already
-    logged before rethrowing so wrapper scripts can avoid duplicate log entries.
+    It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
     Version: 3.2
-    Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named
-    02-CalibreDataLLM-Prompt.txt in the script folder.
-    Each output file is written as a valid JSON object with metadata, records,
-    the raw response text, parse errors, and validation details for unique-book
-    counts.
+    Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
+    Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
