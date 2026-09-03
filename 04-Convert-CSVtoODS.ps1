@@ -31,7 +31,8 @@ param(
 )
 
 # Toggle: delete the source CSV file after it was successfully converted to ODS. Default is $true.
-$DeleteCsvAfterConversion = $true
+#$DeleteCsvAfterConversion = $true
+$DeleteCsvAfterConversion = $false
 
 # Import central logging and enable script-scoped output wrappers.
 # The wrappers keep terminal behavior but additionally create structured log entries.
@@ -203,18 +204,58 @@ function Format-OdsDocument {
         co5 = '18cm'
     }
 
-    $zipStream = $null
-    $zipArchive = $null
+    if ([string]::IsNullOrWhiteSpace($env:TEMP) -or -not (Test-Path -Path $env:TEMP -PathType Container)) {
+        throw "The TEMP environment variable must point to an existing directory."
+    }
+
+    $tempZipPath = Join-Path -Path $env:TEMP -ChildPath ("FormatOds_{0}.ods.tmp" -f [System.Guid]::NewGuid().ToString('N'))
+
+    $sourceStream = $null
+    $sourceArchive = $null
+    $targetStream = $null
+    $targetArchive = $null
+
+    $entryDataByName = @{}
+    $entryOrder = @()
 
     try {
         Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-        $zipStream = [System.IO.File]::Open($sourcePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-        $zipArchive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Update, $false)
+        $sourceStream = [System.IO.File]::Open($sourcePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        $sourceArchive = New-Object System.IO.Compression.ZipArchive($sourceStream, [System.IO.Compression.ZipArchiveMode]::Read, $false)
+
+        foreach ($entry in $sourceArchive.Entries) {
+            if ([string]::IsNullOrWhiteSpace($entry.FullName)) {
+                continue
+            }
+
+            $entryName = $entry.FullName
+            $entryOrder += $entryName
+
+            if ($entryName.EndsWith('/')) {
+                $entryDataByName[$entryName] = [byte[]]@()
+                continue
+            }
+
+            $entryStream = $entry.Open()
+            try {
+                $memoryStream = New-Object System.IO.MemoryStream
+                try {
+                    $entryStream.CopyTo($memoryStream)
+                    $entryDataByName[$entryName] = $memoryStream.ToArray()
+                }
+                finally {
+                    $memoryStream.Dispose()
+                }
+            }
+            finally {
+                $entryStream.Dispose()
+            }
+        }
 
         foreach ($entryName in @('content.xml', 'styles.xml')) {
-            $entry = $zipArchive.GetEntry($entryName)
+            $entry = $sourceArchive.GetEntry($entryName)
             if ($null -eq $entry) {
                 throw "Required ODS entry '$entryName' not found in '$OdsFilePath'."
             }
@@ -244,11 +285,9 @@ function Format-OdsDocument {
             $cellStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-cell']", $nsManager)
             foreach ($cellStyle in $cellStyleNodes) {
                 $cellProps = $cellStyle.SelectSingleNode('style:table-cell-properties', $nsManager)
-                if ($null -eq $cellProps) {
-                    $cellProps = $xmlDoc.CreateElement('style', 'table-cell-properties', $styleNs)
-                    [void]$cellStyle.AppendChild($cellProps)
+                if ($null -ne $cellProps) {
+                    [void]$cellProps.SetAttribute('wrap-option', $foNs, 'wrap')
                 }
-                [void]$cellProps.SetAttribute('wrap-option', $foNs, 'wrap')
             }
 
             if ($entryName -eq 'content.xml') {
@@ -256,50 +295,103 @@ function Format-OdsDocument {
                     $columnStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-column' and @style:name='$styleName']", $nsManager)
                     foreach ($columnStyle in $columnStyleNodes) {
                         $columnProps = $columnStyle.SelectSingleNode('style:table-column-properties', $nsManager)
-                        if ($null -eq $columnProps) {
-                            $columnProps = $xmlDoc.CreateElement('style', 'table-column-properties', $styleNs)
-                            [void]$columnStyle.AppendChild($columnProps)
+                        if ($null -ne $columnProps) {
+                            [void]$columnProps.SetAttribute('column-width', $styleNs, [string]$widthMap[$styleName])
                         }
-                        [void]$columnProps.SetAttribute('column-width', $styleNs, [string]$widthMap[$styleName])
                     }
                 }
             }
 
-            $stringBuilder = New-Object System.Text.StringBuilder
-            $stringWriter = New-Object System.IO.StringWriter($stringBuilder)
-            $xmlWriterSettings = New-Object System.Xml.XmlWriterSettings
-            $xmlWriterSettings.OmitXmlDeclaration = $false
-            $xmlWriterSettings.Indent = $false
-            $xmlWriterSettings.NewLineHandling = [System.Xml.NewLineHandling]::None
-
-            $xmlWriter = [System.Xml.XmlWriter]::Create($stringWriter, $xmlWriterSettings)
+            $xmlMemoryStream = New-Object System.IO.MemoryStream
             try {
-                $xmlDoc.Save($xmlWriter)
+                $xmlWriterSettings = New-Object System.Xml.XmlWriterSettings
+                $xmlWriterSettings.OmitXmlDeclaration = $false
+                $xmlWriterSettings.Indent = $false
+                $xmlWriterSettings.NewLineHandling = [System.Xml.NewLineHandling]::None
+                $xmlWriterSettings.Encoding = New-Object System.Text.UTF8Encoding($false)
+
+                $xmlWriter = [System.Xml.XmlWriter]::Create($xmlMemoryStream, $xmlWriterSettings)
+                try {
+                    $xmlDoc.Save($xmlWriter)
+                }
+                finally {
+                    $xmlWriter.Dispose()
+                }
+
+                $entryDataByName[$entryName] = $xmlMemoryStream.ToArray()
             }
             finally {
-                $xmlWriter.Dispose()
-                $stringWriter.Dispose()
-            }
-
-            $updatedXml = $stringBuilder.ToString()
-
-            $entry.Delete()
-            $newEntry = $zipArchive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
-            $entryWriter = New-Object System.IO.StreamWriter($newEntry.Open(), (New-Object System.Text.UTF8Encoding($false)))
-            try {
-                $entryWriter.Write($updatedXml)
-            }
-            finally {
-                $entryWriter.Dispose()
+                $xmlMemoryStream.Dispose()
             }
         }
+
+        $targetStream = [System.IO.File]::Open($tempZipPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $targetArchive = New-Object System.IO.Compression.ZipArchive($targetStream, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+
+        if ($entryDataByName.ContainsKey('mimetype')) {
+            $mimeEntry = $targetArchive.CreateEntry('mimetype', [System.IO.Compression.CompressionLevel]::NoCompression)
+            $mimeStream = $mimeEntry.Open()
+            try {
+                $mimeBytes = [byte[]]$entryDataByName['mimetype']
+                $mimeStream.Write($mimeBytes, 0, $mimeBytes.Length)
+            }
+            finally {
+                $mimeStream.Dispose()
+            }
+        }
+
+        foreach ($entryName in $entryOrder) {
+            if ($entryName -eq 'mimetype') {
+                continue
+            }
+
+            if (-not $entryDataByName.ContainsKey($entryName)) {
+                continue
+            }
+
+            $bytes = [byte[]]$entryDataByName[$entryName]
+            $compressionLevel = if ($entryName.EndsWith('/')) { [System.IO.Compression.CompressionLevel]::NoCompression } else { [System.IO.Compression.CompressionLevel]::Optimal }
+            $targetEntry = $targetArchive.CreateEntry($entryName, $compressionLevel)
+
+            if ($entryName.EndsWith('/')) {
+                continue
+            }
+
+            $targetEntryStream = $targetEntry.Open()
+            try {
+                $targetEntryStream.Write($bytes, 0, $bytes.Length)
+            }
+            finally {
+                $targetEntryStream.Dispose()
+            }
+        }
+
+        $targetArchive.Dispose()
+        $targetArchive = $null
+        $targetStream.Dispose()
+        $targetStream = $null
+        $sourceArchive.Dispose()
+        $sourceArchive = $null
+        $sourceStream.Dispose()
+        $sourceStream = $null
+
+        [System.IO.File]::Copy($tempZipPath, $sourcePath, $true)
     }
     finally {
-        if ($null -ne $zipArchive) {
-            $zipArchive.Dispose()
+        if ($null -ne $targetArchive) {
+            $targetArchive.Dispose()
         }
-        if ($null -ne $zipStream) {
-            $zipStream.Dispose()
+        if ($null -ne $targetStream) {
+            $targetStream.Dispose()
+        }
+        if ($null -ne $sourceArchive) {
+            $sourceArchive.Dispose()
+        }
+        if ($null -ne $sourceStream) {
+            $sourceStream.Dispose()
+        }
+        if (Test-Path -Path $tempZipPath -PathType Leaf) {
+            Remove-Item -Path $tempZipPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
