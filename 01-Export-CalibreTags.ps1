@@ -11,7 +11,7 @@
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 2.9
+    Version: 3.0
 #>
 
 [CmdletBinding()]
@@ -22,7 +22,7 @@ param (
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '$WriteLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
 }
 
 Import-Module -Name $WriteLogModulePath -Force
@@ -33,20 +33,20 @@ Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
 $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
-    throw "Required configuration file not found: '$ConfigPath'"
+    throw "Required configuration file not found: '.\\01-CalibreExport.config.json'"
 }
 
 try {
     $CalibreConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 } catch {
-    throw "Unable to read Calibre configuration '$ConfigPath': $($_.Exception.Message)"
+    throw "Unable to read Calibre configuration '.\\01-CalibreExport.config.json': $($_.Exception.Message)"
 }
 
 $CalibrePaths = @($CalibreConfig.CalibrePaths)
 $LibraryName = [string]$CalibreConfig.LibraryName
 
 if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName)) {
-    throw "Calibre configuration '$ConfigPath' must define CalibrePaths and LibraryName."
+    throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths and LibraryName."
 }
 
 try {
@@ -80,19 +80,20 @@ try {
     $CalibrePortablePath = Get-FirstExistingPath -Paths $CalibrePaths
 
     if (-not $CalibrePortablePath) {
-        throw "Calibre Portable was not found. Checked paths:`n$($CalibrePaths -join "`n")"
+        $displayCalibrePaths = @($CalibrePaths | ForEach-Object { ConvertTo-DisplayPath -Path $_ -BasePath $PSScriptRoot })
+        throw "Calibre Portable was not found. Checked paths:`n$($displayCalibrePaths -join "`n")"
     }
 
     $LibraryPath = Join-Path $CalibrePortablePath $LibraryName
     if (-not (Test-Path $LibraryPath)) {
-        throw "Library path not found: '$LibraryPath'"
+        throw "Library path not found: '$(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)'"
     }
 
     $CalibreDebugExe = Get-ChildItem -Path $CalibrePortablePath -Filter "calibre-debug.exe" -Recurse -ErrorAction SilentlyContinue |
         Select-Object -First 1
 
     if (-not $CalibreDebugExe) {
-        throw "calibre-debug.exe was not found in '$CalibrePortablePath'."
+        throw "calibre-debug.exe was not found in '$(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)'."
     }
 
     # Define the paths to the Calibre metadata database and notes database.
@@ -100,11 +101,11 @@ try {
     $FullNotesDb = Join-Path $LibraryPath ".calnotes\notes.db"
 
     if (-not (Test-Path $FullMetaDb)) {
-        throw "The file 'metadata.db' was not found: '$FullMetaDb'"
+        throw "The file 'metadata.db' was not found: '$(ConvertTo-DisplayPath -Path $FullMetaDb -BasePath $PSScriptRoot)'"
     }
 
     if (-not (Test-Path $FullNotesDb)) {
-        throw "The file 'notes.db' was not found: '$FullNotesDb'"
+        throw "The file 'notes.db' was not found: '$(ConvertTo-DisplayPath -Path $FullNotesDb -BasePath $PSScriptRoot)'"
     }
 
     if ([string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -117,12 +118,12 @@ try {
     $TempDir = $env:TEMP
     $TempScript = Join-Path $TempDir "calibre_export_temp.py"
 
-    Write-Host "Found:      $CalibrePortablePath"
-    Write-Host "Tool:       $($CalibreDebugExe.FullName)"
-    Write-Host "Library:    $LibraryPath"
-    Write-Host "Metadata:   $FullMetaDb"
-    Write-Host "Notes DB:   $FullNotesDb"
-    Write-Host "Output:     $FullOutputPath"
+    Write-Host "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
+    Write-Host "Tool:       $(ConvertTo-DisplayPath -Path $CalibreDebugExe.FullName -BasePath $PSScriptRoot)"
+    Write-Host "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
+    Write-Host "Metadata:   $(ConvertTo-DisplayPath -Path $FullMetaDb -BasePath $PSScriptRoot)"
+    Write-Host "Notes DB:   $(ConvertTo-DisplayPath -Path $FullNotesDb -BasePath $PSScriptRoot)"
+    Write-Host "Output:     $(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)"
 
     # The Python code reads the tag notes from the Calibre database and writes them as JSON.
     $PythonScriptContent = @"
@@ -196,7 +197,7 @@ except Exception as e:
     if ($Result -like "*SUCCESS:*") {
         $Count = ($Result -split "SUCCESS:")[1].Trim()
         Write-Host ""
-        Write-Host "Export completed successfully. $Count entries saved to '$FullOutputPath'."
+        Write-Host "Export completed successfully. $Count entries saved to '$(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)'."
     } else {
         throw "Data export failed: $Result"
     }

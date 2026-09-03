@@ -15,7 +15,7 @@
     The file is written as UTF-8 with BOM so German umlauts and special characters are preserved.
 
 .NOTES
-    Version: 1.14
+    Version: 1.15
 #>
 
 param(
@@ -25,7 +25,7 @@ param(
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '$WriteLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
 }
 
 Import-Module -Name $WriteLogModulePath -Force
@@ -174,7 +174,7 @@ function Get-ParsedJsonObjectFromFile {
 
     $jsonText = Get-JsonText -RawText $raw
     if (-not $jsonText) {
-        throw "No JSON structure found in file: $FilePath"
+        throw "No JSON structure found in file: $(ConvertTo-DisplayPath -Path $FilePath -BasePath $PSScriptRoot)"
     }
 
     $jsonText = Repair-JsonText -Text $jsonText
@@ -189,7 +189,7 @@ try {
 
     $files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
     if (-not $files) {
-        Write-Error "No JSON files found in folder: $inputFolderFull"
+        Write-Error "No JSON files found in folder: $(ConvertTo-DisplayPath -Path $inputFolderFull -BasePath $PSScriptRoot)"
         throw "No JSON input files found."
     }
 
@@ -277,7 +277,7 @@ try {
     # Write the combined data as UTF-8 CSV with a pipe delimiter.
     $csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
     $csvContent | Out-File -FilePath $csvPath -Encoding UTF8 -Force
-    Write-Host "CSV file created: $csvPath"
+    Write-Host "CSV file created: $(ConvertTo-DisplayPath -Path $csvPath -BasePath $PSScriptRoot)"
 }
 catch {
     Write-Error "CSV conversion failed: $($_.Exception.Message)"

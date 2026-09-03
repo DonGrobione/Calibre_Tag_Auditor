@@ -21,7 +21,7 @@
     Folder where converted ODS files are written. Defaults to .\04-ODS.
 
 .NOTES
-    Version: 1.5
+    Version: 1.6
 #>
 
 [CmdletBinding()]
@@ -38,7 +38,7 @@ $DeleteCsvAfterConversion = $false
 # The wrappers keep terminal behavior but additionally create structured log entries.
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '$WriteLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
 }
 
 Import-Module -Name $WriteLogModulePath -Force
@@ -152,11 +152,11 @@ function Invoke-LibreOfficeCsvToOds {
         }
 
         if (-not $createdFile) {
-            throw "LibreOffice conversion failed for '$CsvFilePath' with exit code $exitCode."
+            throw "LibreOffice conversion failed for '$(ConvertTo-DisplayPath -Path $CsvFilePath -BasePath $PSScriptRoot)' with exit code $exitCode."
         }
 
         if ((Get-Item -Path $createdFile).Length -le 0) {
-            throw "LibreOffice produced an empty ODS file for '$CsvFilePath' with exit code $exitCode."
+            throw "LibreOffice produced an empty ODS file for '$(ConvertTo-DisplayPath -Path $CsvFilePath -BasePath $PSScriptRoot)' with exit code $exitCode."
         }
 
         return $createdFile
@@ -261,7 +261,7 @@ function Format-OdsDocument {
         foreach ($entryName in @('content.xml', 'styles.xml', 'settings.xml')) {
             $entry = $sourceArchive.GetEntry($entryName)
             if ($null -eq $entry) {
-                throw "Required ODS entry '$entryName' not found in '$OdsFilePath'."
+                throw "Required ODS entry '$entryName' not found in '$(ConvertTo-DisplayPath -Path $OdsFilePath -BasePath $PSScriptRoot)'."
             }
 
             $xmlText = $null
@@ -592,7 +592,7 @@ try {
     $CsvInputFolder = (Resolve-Path -Path $CsvInputFolder).Path
 
     if (-not (Test-Path -Path $CsvInputFolder -PathType Container)) {
-        throw "CSV input folder not found: $CsvInputFolder"
+        throw "CSV input folder not found: $(ConvertTo-DisplayPath -Path $CsvInputFolder -BasePath $PSScriptRoot)"
     }
 
     if (-not (Test-Path -Path $OdsOutputFolder -PathType Container)) {
@@ -604,11 +604,11 @@ try {
         throw "LibreOffice installation not found. Please install LibreOffice or add it to the default installation paths."
     }
 
-    Write-Host "Detected LibreOffice: $libreOfficeExe"
+    Write-Host "Detected LibreOffice: $(ConvertTo-DisplayPath -Path $libreOfficeExe -BasePath $PSScriptRoot)"
 
     $csvFiles = Get-ChildItem -Path $CsvInputFolder -Filter *.csv -File | Sort-Object Name
     if (-not $csvFiles) {
-        throw "No CSV files found in folder: $CsvInputFolder"
+        throw "No CSV files found in folder: $(ConvertTo-DisplayPath -Path $CsvInputFolder -BasePath $PSScriptRoot)"
     }
 
     foreach ($csvFile in $csvFiles) {
@@ -644,11 +644,11 @@ try {
         }
 
         Format-OdsDocument -OdsFilePath $targetFilePath
-        Write-Host "Created and formatted ODS: $targetFilePath"
+        Write-Host "Created and formatted ODS: $(ConvertTo-DisplayPath -Path $targetFilePath -BasePath $PSScriptRoot)"
 
         if ($DeleteCsvAfterConversion) {
             Remove-Item -Path $csvFile.FullName -Force
-            Write-Host "Deleted source CSV: $($csvFile.FullName)"
+            Write-Host "Deleted source CSV: $(ConvertTo-DisplayPath -Path $csvFile.FullName -BasePath $PSScriptRoot)"
         }
     }
 }

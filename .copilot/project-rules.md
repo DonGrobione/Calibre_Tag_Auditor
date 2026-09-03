@@ -41,6 +41,8 @@
 - `Write-Host`, `Write-Warning`, and `Write-Error` must be wrapped or aliased so terminal output is preserved while logging the same message.
 - Every logfile entry must include the emitting script name as prefix (for example `[MyScript.ps1]`).
 - In orchestrated runs, avoid duplicate error log entries: child scripts should mark already logged exceptions, and wrappers/orchestrators must not log the same error twice.
+- In terminal and logfile messages, display project-internal paths as relative paths from the repository root (for example `.\04-ODS\file.ods`).
+- Exception: paths under `$env:TEMP` must be logged as absolute paths.
 - Temporary files must always be created under `$env:TEMP`, never in the script root or output directories, and must be removed after use.
 
 ## 5. Copilot Memory

@@ -12,16 +12,16 @@
     without writing a duplicate ERROR entry to the logfile.
 
 .NOTES
-    Version: 1.5
+    Version: 1.6
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 $ClearLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Clear-LogFile.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '$WriteLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
 }
 if (-not (Test-Path -Path $ClearLogModulePath)) {
-    throw "Required module not found: '$ClearLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Clear-LogFile.psm1'"
 }
 
 Import-Module -Name $WriteLogModulePath -Force

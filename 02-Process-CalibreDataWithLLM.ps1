@@ -11,14 +11,14 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 3.3
+    Version: 3.4
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '$WriteLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
 }
 
 Import-Module -Name $WriteLogModulePath -Force
@@ -86,7 +86,7 @@ try {
                  Sort-Object -Property Name
 
     if (-not $tagFile -or $bookFiles.Count -eq 0) {
-        throw "Tag or book export JSON files are missing in the folder '$ExportDir'."
+        throw "Tag or book export JSON files are missing in the folder '$(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)'."
     }
 
     # Load the tag definitions and print a short summary for the run.
@@ -94,7 +94,7 @@ try {
 
     Write-Host "Tag file: $($tagFile.Name)" -ForegroundColor Cyan
     Write-Host "Found:    $($bookFiles.Count) book export files" -ForegroundColor Cyan
-    Write-Host "Target:   $OutputDir" -ForegroundColor Cyan
+    Write-Host "Target:   $(ConvertTo-DisplayPath -Path $OutputDir -BasePath $PSScriptRoot)" -ForegroundColor Cyan
     Write-Host ""
 
     # Check whether a previously stored agent ID still resolves to a real Mistral agent.

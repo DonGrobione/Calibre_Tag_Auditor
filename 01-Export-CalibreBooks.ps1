@@ -9,19 +9,19 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 2.8
+    Version: 2.9
 #>
 
 # Central export settings and their descriptions are maintained in 01-CalibreExport.config.json.
 $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
-    throw "Required configuration file not found: '$ConfigPath'"
+    throw "Required configuration file not found: '.\\01-CalibreExport.config.json'"
 }
 
 try {
     $CalibreConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 } catch {
-    throw "Unable to read Calibre configuration '$ConfigPath': $($_.Exception.Message)"
+    throw "Unable to read Calibre configuration '.\\01-CalibreExport.config.json': $($_.Exception.Message)"
 }
 
 $CalibrePaths = @($CalibreConfig.CalibrePaths)
@@ -31,7 +31,7 @@ $ChangedWithinDays = $CalibreConfig.ChangedWithinDays
 
 if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName) -or
     $null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
-    throw "Calibre configuration '$ConfigPath' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
+    throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
 }
 
 
@@ -39,7 +39,7 @@ if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName) -or
 # and mirror terminal output into the central log file.
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '$WriteLogModulePath'"
+    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
 }
 
 Import-Module -Name $WriteLogModulePath -Force
@@ -78,25 +78,26 @@ try {
     $CalibrePortablePath = Get-FirstExistingPath -Paths $CalibrePaths
 
     if (-not $CalibrePortablePath) {
-        throw "Calibre Portable was not found. Checked paths:`n$($CalibrePaths -join "`n")"
+        $displayCalibrePaths = @($CalibrePaths | ForEach-Object { ConvertTo-DisplayPath -Path $_ -BasePath $PSScriptRoot })
+        throw "Calibre Portable was not found. Checked paths:`n$($displayCalibrePaths -join "`n")"
     }
 
     $LibraryPath = Join-Path $CalibrePortablePath $LibraryName
     if (-not (Test-Path $LibraryPath)) {
-        throw "Library path not found: '$LibraryPath'"
+        throw "Library path not found: '$(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)'"
     }
 
     $CalibredbExe = Get-ChildItem -Path $CalibrePortablePath -Filter "calibredb.exe" -Recurse -ErrorAction SilentlyContinue |
         Select-Object -First 1
 
     if (-not $CalibredbExe) {
-        throw "calibredb.exe was not found in '$CalibrePortablePath'."
+        throw "calibredb.exe was not found in '$(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)'."
     }
 
-    Write-Host "Found:      $CalibrePortablePath"
-    Write-Host "Tool:       $($CalibredbExe.FullName)"
-    Write-Host "Library:    $LibraryPath"
-    Write-Host "Output:     $ExportDir"
+    Write-Host "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
+    Write-Host "Tool:       $(ConvertTo-DisplayPath -Path $CalibredbExe.FullName -BasePath $PSScriptRoot)"
+    Write-Host "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
+    Write-Host "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
     Write-Host "Books/file: $BooksPerFile"
     Write-Host "Changed:    $ChangedWithinDays day(s)"
 
@@ -244,7 +245,7 @@ try {
         Write-Host ""
         Write-Host "Export complete:"
         Write-Host ("  Books: {0}" -f $Results.Count)
-        Write-Host ("  File:  {0}" -f $JsonFile)
+        Write-Host ("  File:  {0}" -f (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
     } else {
         $FileCount = [Math]::Ceiling($TotalBooks / $BooksPerFile)
         $PadWidth = [Math]::Max(2, $FileCount.ToString().Length)
@@ -261,7 +262,7 @@ try {
             Write-JsonFile -Path $JsonFile -InputObject $Batch -Depth 10
 
             Write-Host ("  File {0}/{1}: Books {2}-{3} ({4}) -> {5}" -f `
-                $CurrentFile, $FileCount, ($StartIndex + 1), ($EndIndex + 1), $Batch.Count, $JsonFile)
+                $CurrentFile, $FileCount, ($StartIndex + 1), ($EndIndex + 1), $Batch.Count, (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
 
             $StartIndex += $BooksPerFile
         }

@@ -44,11 +44,64 @@
     The file name is based on the computer's hostname.
 
     Filename: Modules\Write-Log.psm1
-    Version: 1.2.0
+    Version: 1.3.0
 #>
 
 # The log file is created in the 'Logs' directory in the project root.
 $logsDir = ".\Logs"
+
+function ConvertTo-DisplayPath {
+    # Convert absolute paths to relative paths for user output, except TEMP paths.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Path,
+        [string]$BasePath = $PSScriptRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    try {
+        $normalizedBase = $BasePath
+        if ([string]::IsNullOrWhiteSpace($normalizedBase)) {
+            $normalizedBase = (Get-Location).Path
+        }
+
+        $resolvedPath = $Path
+        if ([System.IO.Path]::IsPathRooted($resolvedPath)) {
+            $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath)
+        }
+        else {
+            return $Path
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
+            $tempRoot = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+            if ($resolvedPath.StartsWith($tempRoot + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+                $resolvedPath.Equals($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $resolvedPath
+            }
+        }
+
+        $baseFullPath = [System.IO.Path]::GetFullPath($normalizedBase).TrimEnd('\')
+
+        if ($resolvedPath.Equals($baseFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return '.\'
+        }
+
+        if ($resolvedPath.StartsWith($baseFullPath + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relativePath = $resolvedPath.Substring($baseFullPath.Length + 1)
+            return '.\' + $relativePath
+        }
+
+        return $resolvedPath
+    }
+    catch {
+        return $Path
+    }
+}
 
 function Write-Log {
     # Writes a log entry to the log file with a timestamp and log level.
@@ -153,4 +206,4 @@ function Write-ErrorAndLog {
     Microsoft.PowerShell.Utility\Write-Error $text
 }
 
-Export-ModuleMember -Function Write-Log, Write-HostAndLog, Write-WarningAndLog, Write-ErrorAndLog, Get-ScriptLogPrefix
+Export-ModuleMember -Function Write-Log, Write-HostAndLog, Write-WarningAndLog, Write-ErrorAndLog, Get-ScriptLogPrefix, ConvertTo-DisplayPath
