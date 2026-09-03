@@ -372,7 +372,6 @@ function Format-OdsDocument {
                             continue
                         }
 
-                        $databaseRangeIndex++
                         $escapedSheetName = $sheetName.Replace("'", "''")
                         $targetRangeAddress = "'$escapedSheetName'.A1:'$escapedSheetName'.E$rowCount"
 
@@ -380,7 +379,9 @@ function Format-OdsDocument {
                         [void]$databaseRangeNode.SetAttribute('name', $tableNs, "__Anonymous_Sheet_DB__$databaseRangeIndex")
                         [void]$databaseRangeNode.SetAttribute('target-range-address', $tableNs, $targetRangeAddress)
                         [void]$databaseRangeNode.SetAttribute('display-filter-buttons', $tableNs, 'true')
+
                         [void]$databaseRangesNode.AppendChild($databaseRangeNode)
+                        $databaseRangeIndex++
                     }
                 }
 
