@@ -31,8 +31,8 @@ param(
 )
 
 # Toggle: delete the source CSV file after it was successfully converted to ODS. Default is $true.
-#$DeleteCsvAfterConversion = $true
-$DeleteCsvAfterConversion = $false
+$DeleteCsvAfterConversion = $true
+#$DeleteCsvAfterConversion = $false
 
 # Import central logging and enable script-scoped output wrappers.
 # The wrappers keep terminal behavior but additionally create structured log entries.

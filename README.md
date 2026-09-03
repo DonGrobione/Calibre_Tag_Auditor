@@ -7,7 +7,8 @@ I started this project, because I have several thousand books and lost track and
 - Windows with PowerShell 5.1 or later
 - LibreOffice (current standard installation; headless conversion support required)
 - Calibre's embedded Python is used for the tag export step
-- A Mistral account with access to the Mistral Large 3 model and an API key stored in `.secrets/Mistral_API.txt`
+- No separate system Python installation is required for CSV to ODS conversion
+- A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `.secrets/Mistral_API.txt`
 - Calibre Portable or fixed installation. I use portable and sync it across devices via Cloud Storage.
 - Every Calibre tag must have a definition in the tag notes.
 
@@ -49,7 +50,7 @@ After a successful run, the generated files are located here:
 
 - `01-Export`: exported books and tag definitions
 - `02-LLM-Result`: Mistral validation results
-- `03-CSV`: combined CSV file (deleted after conversion by default; see `$DeleteCsvAfterConversion` in `04-Convert-CSVtoODS.ps1`)
+- `03-CSV`: combined CSV file (kept by default; set `$DeleteCsvAfterConversion = $true` in `04-Convert-CSVtoODS.ps1` to delete after conversion)
 - `04-ODS`: formatted ODS file for LibreOffice
 - `Logs`: logs for troubleshooting
 
@@ -67,7 +68,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 ## Common Issues
 - **Calibre was not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
 - **The Mistral request failed:** Check the API key in `.secrets/Mistral_API.txt`.
-- **LibreOffice or Python was not found:** Install the missing application and make sure Python can be started with `python` or `py`.
+- **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
 
 ## AI Usage
