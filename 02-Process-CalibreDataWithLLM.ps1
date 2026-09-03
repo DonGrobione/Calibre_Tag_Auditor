@@ -684,6 +684,12 @@ try {
                     Write-Warning "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
+                elseif ($statusCode -eq 503) {
+                    $retryCount++
+                    $waitTime = 5
+                    Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries)"
+                    Start-Sleep -Seconds $waitTime
+                }
                 else {
                     Write-Warning "API request failed: HTTP $statusCode"
 
@@ -693,7 +699,7 @@ try {
                     elseif ($statusCode -eq 401) {
                         Write-Warning "Possible cause: API key is invalid or expired."
                     }
-                    elseif ($statusCode -eq 500 -or $statusCode -eq 502 -or $statusCode -eq 503) {
+                    elseif ($statusCode -eq 500 -or $statusCode -eq 502) {
                         Write-Warning "Server error at Mistral - retry later."
                     }
 
