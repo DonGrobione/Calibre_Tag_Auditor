@@ -684,10 +684,11 @@ try {
                     Write-Warning "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
-                elseif ($statusCode -eq 503) {
+                elseif ($statusCode -eq 503 -or $statusCode -eq 504) {
                     $retryCount++
                     $waitTime = [math]::Min(60, [math]::Pow(2, $retryCount) * 5)
-                    Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
+                    $statusText = if ($statusCode -eq 504) { 'Gateway timeout (504)' } else { 'Service unavailable (503)' }
+                    Write-Warning "$statusText. Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
                     Start-Sleep -Seconds $waitTime
                 }
                 else {
