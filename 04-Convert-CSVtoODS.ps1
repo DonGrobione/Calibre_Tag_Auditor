@@ -335,6 +335,55 @@ function Format-OdsDocument {
                     [void]$headerRowsNode.AppendChild($firstRowNode)
                 }
 
+                # Ensure AutoFilter is enabled for row 1 (header) across columns A-E.
+                $spreadsheetNode = $xmlDoc.SelectSingleNode('//office:body/office:spreadsheet', $nsManager)
+                if ($null -ne $spreadsheetNode) {
+                    $existingDatabaseRanges = $spreadsheetNode.SelectSingleNode('table:database-ranges', $nsManager)
+                    if ($null -ne $existingDatabaseRanges) {
+                        [void]$spreadsheetNode.RemoveChild($existingDatabaseRanges)
+                    }
+
+                    $databaseRangesNode = $xmlDoc.CreateElement('table', 'database-ranges', $tableNs)
+                    [void]$spreadsheetNode.AppendChild($databaseRangesNode)
+
+                    $databaseRangeIndex = 0
+                    foreach ($tableNode in $tableNodes) {
+                        $sheetName = $tableNode.GetAttribute('name', $tableNs)
+                        if ([string]::IsNullOrWhiteSpace($sheetName)) {
+                            continue
+                        }
+
+                        $rowCount = 0
+                        $rowNodes = $tableNode.SelectNodes('.//table:table-row', $nsManager)
+                        foreach ($rowNode in $rowNodes) {
+                            $repeatCount = 1
+                            $repeatValue = $rowNode.GetAttribute('number-rows-repeated', $tableNs)
+                            if (-not [string]::IsNullOrWhiteSpace($repeatValue)) {
+                                [int]$parsedRepeatCount = 0
+                                if ([int]::TryParse($repeatValue, [ref]$parsedRepeatCount) -and $parsedRepeatCount -gt 0) {
+                                    $repeatCount = $parsedRepeatCount
+                                }
+                            }
+
+                            $rowCount += $repeatCount
+                        }
+
+                        if ($rowCount -lt 1) {
+                            continue
+                        }
+
+                        $databaseRangeIndex++
+                        $escapedSheetName = $sheetName.Replace("'", "''")
+                        $targetRangeAddress = "'$escapedSheetName'.A1:'$escapedSheetName'.E$rowCount"
+
+                        $databaseRangeNode = $xmlDoc.CreateElement('table', 'database-range', $tableNs)
+                        [void]$databaseRangeNode.SetAttribute('name', $tableNs, "__Anonymous_Sheet_DB__$databaseRangeIndex")
+                        [void]$databaseRangeNode.SetAttribute('target-range-address', $tableNs, $targetRangeAddress)
+                        [void]$databaseRangeNode.SetAttribute('display-filter-buttons', $tableNs, 'true')
+                        [void]$databaseRangesNode.AppendChild($databaseRangeNode)
+                    }
+                }
+
                 foreach ($styleName in $widthMap.Keys) {
                     $columnStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-column' and @style:name='$styleName']", $nsManager)
                     foreach ($columnStyle in $columnStyleNodes) {
