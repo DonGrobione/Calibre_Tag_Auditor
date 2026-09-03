@@ -196,6 +196,9 @@ function Format-OdsDocument {
 
     $styleNs = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
     $foNs = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
+    $tableNs = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0'
+    $officeNs = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
+    $configNs = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
     $widthMap = @{
         co1 = '9cm'
         co2 = '6cm'
@@ -203,6 +206,7 @@ function Format-OdsDocument {
         co4 = '4cm'
         co5 = '18cm'
     }
+    $sheetNameForFreeze = $null
 
     if ([string]::IsNullOrWhiteSpace($env:TEMP) -or -not (Test-Path -Path $env:TEMP -PathType Container)) {
         throw "The TEMP environment variable must point to an existing directory."
@@ -254,7 +258,7 @@ function Format-OdsDocument {
             }
         }
 
-        foreach ($entryName in @('content.xml', 'styles.xml')) {
+        foreach ($entryName in @('content.xml', 'styles.xml', 'settings.xml')) {
             $entry = $sourceArchive.GetEntry($entryName)
             if ($null -eq $entry) {
                 throw "Required ODS entry '$entryName' not found in '$OdsFilePath'."
@@ -276,6 +280,9 @@ function Format-OdsDocument {
             $nsManager = New-Object System.Xml.XmlNamespaceManager($xmlDoc.NameTable)
             $nsManager.AddNamespace('style', $styleNs)
             $nsManager.AddNamespace('fo', $foNs)
+            $nsManager.AddNamespace('table', $tableNs)
+            $nsManager.AddNamespace('office', $officeNs)
+            $nsManager.AddNamespace('config', $configNs)
 
             $cellPropertyNodes = $xmlDoc.SelectNodes('//style:table-cell-properties', $nsManager)
             foreach ($cellProps in $cellPropertyNodes) {
@@ -303,6 +310,31 @@ function Format-OdsDocument {
             }
 
             if ($entryName -eq 'content.xml') {
+                # Mark the first row as header row so it stays fixed as a sheet header row.
+                $tableNodes = $xmlDoc.SelectNodes('//table:table', $nsManager)
+                foreach ($tableNode in $tableNodes) {
+                    if ([string]::IsNullOrWhiteSpace($sheetNameForFreeze)) {
+                        $detectedSheetName = $tableNode.GetAttribute('name', $tableNs)
+                        if (-not [string]::IsNullOrWhiteSpace($detectedSheetName)) {
+                            $sheetNameForFreeze = $detectedSheetName
+                        }
+                    }
+
+                    $existingHeaderRows = $tableNode.SelectSingleNode('table:table-header-rows', $nsManager)
+                    if ($null -ne $existingHeaderRows) {
+                        continue
+                    }
+
+                    $firstRowNode = $tableNode.SelectSingleNode('table:table-row', $nsManager)
+                    if ($null -eq $firstRowNode) {
+                        continue
+                    }
+
+                    $headerRowsNode = $xmlDoc.CreateElement('table', 'table-header-rows', $tableNs)
+                    [void]$tableNode.InsertBefore($headerRowsNode, $firstRowNode)
+                    [void]$headerRowsNode.AppendChild($firstRowNode)
+                }
+
                 foreach ($styleName in $widthMap.Keys) {
                     $columnStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-column' and @style:name='$styleName']", $nsManager)
                     foreach ($columnStyle in $columnStyleNodes) {
@@ -311,6 +343,93 @@ function Format-OdsDocument {
                             [void]$columnProps.SetAttribute('column-width', $styleNs, [string]$widthMap[$styleName])
                         }
                     }
+                }
+            }
+
+            if ($entryName -eq 'settings.xml') {
+                if ([string]::IsNullOrWhiteSpace($sheetNameForFreeze)) {
+                    $sheetNameForFreeze = 'Sheet1'
+                }
+
+                function Set-ConfigItemValue {
+                    param(
+                        [Parameter(Mandatory = $true)]
+                        [System.Xml.XmlElement]$Parent,
+                        [Parameter(Mandatory = $true)]
+                        [System.Xml.XmlDocument]$Document,
+                        [Parameter(Mandatory = $true)]
+                        [System.Xml.XmlNamespaceManager]$NamespaceManager,
+                        [Parameter(Mandatory = $true)]
+                        [string]$ConfigNamespace,
+                        [Parameter(Mandatory = $true)]
+                        [string]$Name,
+                        [Parameter(Mandatory = $true)]
+                        [string]$Type,
+                        [Parameter(Mandatory = $true)]
+                        [string]$Value
+                    )
+
+                    $node = $Parent.SelectSingleNode("config:config-item[@config:name='$Name']", $NamespaceManager)
+                    if ($null -eq $node) {
+                        $node = $Document.CreateElement('config', 'config-item', $ConfigNamespace)
+                        [void]$node.SetAttribute('name', $ConfigNamespace, $Name)
+                        [void]$node.SetAttribute('type', $ConfigNamespace, $Type)
+                        [void]$Parent.AppendChild($node)
+                    }
+                    else {
+                        [void]$node.SetAttribute('type', $ConfigNamespace, $Type)
+                    }
+
+                    $node.InnerText = $Value
+                }
+
+                $viewSettingsSet = $xmlDoc.SelectSingleNode("//office:settings/config:config-item-set[@config:name='ooo:view-settings']", $nsManager)
+                if ($null -ne $viewSettingsSet) {
+                    $viewsNode = $viewSettingsSet.SelectSingleNode("config:config-item-map-indexed[@config:name='Views']", $nsManager)
+                    if ($null -eq $viewsNode) {
+                        $viewsNode = $xmlDoc.CreateElement('config', 'config-item-map-indexed', $configNs)
+                        [void]$viewsNode.SetAttribute('name', $configNs, 'Views')
+                        [void]$viewSettingsSet.AppendChild($viewsNode)
+                    }
+
+                    $viewEntry = $viewsNode.SelectSingleNode('config:config-item-map-entry', $nsManager)
+                    if ($null -eq $viewEntry) {
+                        $viewEntry = $xmlDoc.CreateElement('config', 'config-item-map-entry', $configNs)
+                        [void]$viewsNode.AppendChild($viewEntry)
+                    }
+
+                    Set-ConfigItemValue -Parent $viewEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ViewId' -Type 'string' -Value 'view1'
+                    Set-ConfigItemValue -Parent $viewEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ActiveTable' -Type 'string' -Value $sheetNameForFreeze
+
+                    $tablesNode = $viewEntry.SelectSingleNode("config:config-item-map-named[@config:name='Tables']", $nsManager)
+                    if ($null -eq $tablesNode) {
+                        $tablesNode = $xmlDoc.CreateElement('config', 'config-item-map-named', $configNs)
+                        [void]$tablesNode.SetAttribute('name', $configNs, 'Tables')
+                        [void]$viewEntry.AppendChild($tablesNode)
+                    }
+
+                    $tableEntry = $tablesNode.SelectSingleNode("config:config-item-map-entry[@config:name='$sheetNameForFreeze']", $nsManager)
+                    if ($null -eq $tableEntry) {
+                        $tableEntry = $xmlDoc.CreateElement('config', 'config-item-map-entry', $configNs)
+                        [void]$tableEntry.SetAttribute('name', $configNs, $sheetNameForFreeze)
+                        [void]$tablesNode.AppendChild($tableEntry)
+                    }
+
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'CursorPositionX' -Type 'int' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'CursorPositionY' -Type 'int' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'HorizontalSplitMode' -Type 'short' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'VerticalSplitMode' -Type 'short' -Value '2'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'HorizontalSplitPosition' -Type 'int' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'VerticalSplitPosition' -Type 'int' -Value '1'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ActiveSplitRange' -Type 'short' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionLeft' -Type 'int' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionRight' -Type 'int' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionTop' -Type 'int' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionBottom' -Type 'int' -Value '1'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ZoomType' -Type 'short' -Value '0'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ZoomValue' -Type 'int' -Value '100'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PageViewZoomValue' -Type 'int' -Value '60'
+                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ShowGrid' -Type 'boolean' -Value 'true'
                 }
             }
 
