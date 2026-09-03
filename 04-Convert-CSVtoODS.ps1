@@ -21,7 +21,7 @@
     Folder where converted ODS files are written. Defaults to .\04-ODS.
 
 .NOTES
-    Version: 1.3
+    Version: 1.5
 #>
 
 [CmdletBinding()]
@@ -76,30 +76,6 @@ function Get-LibreOfficePath {
             if (Test-Path -Path $candidate -PathType Leaf) {
                 return (Resolve-Path -Path $candidate).Path
             }
-        }
-    }
-
-    return $null
-}
-
-# Find the Python interpreter bundled with the LibreOffice installation.
-function Get-OfficePythonPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$LibreOfficeExe
-    )
-
-    $binDir = Split-Path -Parent -Path $LibreOfficeExe
-    $candidatePaths = @(
-        (Join-Path -Path $binDir -ChildPath 'python.exe'),
-        (Join-Path -Path $binDir -ChildPath 'python.bat'),
-        (Join-Path -Path $binDir -ChildPath 'python3.exe'),
-        (Join-Path -Path $binDir -ChildPath 'python3.bat')
-    )
-
-    foreach ($candidate in $candidatePaths) {
-        if ($candidate -and (Test-Path -Path $candidate -PathType Leaf)) {
-            return $candidate
         }
     }
 
@@ -208,7 +184,7 @@ function Invoke-LibreOfficeCsvToOds {
     }
 }
 
-# Patch the generated ODS file via a Python script: enable cell wrap and set the requested column widths.
+# Patch the generated ODS file with PowerShell/.NET only: enable cell wrap and set the requested column widths.
 function Format-OdsDocument {
     param(
         [Parameter(Mandatory = $true)]
@@ -216,107 +192,114 @@ function Format-OdsDocument {
     )
 
     $sourcePath = (Resolve-Path -Path $OdsFilePath).Path
-    if ([string]::IsNullOrWhiteSpace($env:TEMP) -or -not (Test-Path -Path $env:TEMP -PathType Container)) {
-        throw "The TEMP environment variable must point to an existing directory."
+
+    $styleNs = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
+    $foNs = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
+    $widthMap = @{
+        co1 = '9cm'
+        co2 = '6cm'
+        co3 = '4cm'
+        co4 = '4cm'
+        co5 = '18cm'
     }
 
-    $temporaryFileName = "FormatOds_{0}.ods.tmp" -f [System.Guid]::NewGuid().ToString('N')
-    $tempZipPath = Join-Path -Path $env:TEMP -ChildPath $temporaryFileName
-    $tempScript = Join-Path -Path $env:TEMP -ChildPath ("FormatOds_{0}.py" -f [System.Guid]::NewGuid().ToString('N'))
+    $zipStream = $null
+    $zipArchive = $null
 
     try {
-        $python = Get-Command python -ErrorAction SilentlyContinue
-        if (-not $python) {
-            $python = Get-Command py -ErrorAction SilentlyContinue
-        }
-        if (-not $python) {
-            throw "Python is required to patch the generated ODS file."
-        }
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-        $pythonScript = @"
-import zipfile
-import xml.etree.ElementTree as ET
-import shutil
-from pathlib import Path
+        $zipStream = [System.IO.File]::Open($sourcePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $zipArchive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Update, $false)
 
-source = Path(r'$sourcePath')
-temporary = Path(r'$tempZipPath')
+        foreach ($entryName in @('content.xml', 'styles.xml')) {
+            $entry = $zipArchive.GetEntry($entryName)
+            if ($null -eq $entry) {
+                throw "Required ODS entry '$entryName' not found in '$OdsFilePath'."
+            }
 
-style_ns = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
-fo_ns = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
+            $xmlText = $null
+            $entryReader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8, $true)
+            try {
+                $xmlText = $entryReader.ReadToEnd()
+            }
+            finally {
+                $entryReader.Dispose()
+            }
 
-with zipfile.ZipFile(source, 'r') as zin:
-    xml_parts = {
-        'content.xml': ET.fromstring(zin.read('content.xml')),
-        'styles.xml': ET.fromstring(zin.read('styles.xml')),
-    }
+            $xmlDoc = New-Object System.Xml.XmlDocument
+            $xmlDoc.PreserveWhitespace = $true
+            $xmlDoc.LoadXml($xmlText)
 
-for root in xml_parts.values():
-    for cell_props in root.iter():
-        if cell_props.tag == f'{{{style_ns}}}table-cell-properties':
-            cell_props.set(f'{{{fo_ns}}}wrap-option', 'wrap')
+            $nsManager = New-Object System.Xml.XmlNamespaceManager($xmlDoc.NameTable)
+            $nsManager.AddNamespace('style', $styleNs)
+            $nsManager.AddNamespace('fo', $foNs)
 
-    for style in root.iter():
-        if style.tag != f'{{{style_ns}}}style':
-            continue
-        if style.get(f'{{{style_ns}}}family') != 'table-cell':
-            continue
-        if style.find(f'{{{style_ns}}}table-cell-properties') is None:
-            cell_props = ET.SubElement(style, f'{{{style_ns}}}table-cell-properties')
-            cell_props.set(f'{{{fo_ns}}}wrap-option', 'wrap')
+            $cellPropertyNodes = $xmlDoc.SelectNodes('//style:table-cell-properties', $nsManager)
+            foreach ($cellProps in $cellPropertyNodes) {
+                [void]$cellProps.SetAttribute('wrap-option', $foNs, 'wrap')
+            }
 
-width_map = {'co1': '9cm', 'co2': '6cm', 'co3': '4cm', 'co4': '4cm', 'co5': '18cm'}
+            $cellStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-cell']", $nsManager)
+            foreach ($cellStyle in $cellStyleNodes) {
+                $cellProps = $cellStyle.SelectSingleNode('style:table-cell-properties', $nsManager)
+                if ($null -eq $cellProps) {
+                    $cellProps = $xmlDoc.CreateElement('style', 'table-cell-properties', $styleNs)
+                    [void]$cellStyle.AppendChild($cellProps)
+                }
+                [void]$cellProps.SetAttribute('wrap-option', $foNs, 'wrap')
+            }
 
-for elem in xml_parts['content.xml'].iter():
-    if elem.tag != f'{{{style_ns}}}style':
-        continue
+            if ($entryName -eq 'content.xml') {
+                foreach ($styleName in $widthMap.Keys) {
+                    $columnStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-column' and @style:name='$styleName']", $nsManager)
+                    foreach ($columnStyle in $columnStyleNodes) {
+                        $columnProps = $columnStyle.SelectSingleNode('style:table-column-properties', $nsManager)
+                        if ($null -eq $columnProps) {
+                            $columnProps = $xmlDoc.CreateElement('style', 'table-column-properties', $styleNs)
+                            [void]$columnStyle.AppendChild($columnProps)
+                        }
+                        [void]$columnProps.SetAttribute('column-width', $styleNs, [string]$widthMap[$styleName])
+                    }
+                }
+            }
 
-    style_name = elem.get(f'{{{style_ns}}}name')
-    style_family = elem.get(f'{{{style_ns}}}family')
-    if style_name not in width_map or style_family != 'table-column':
-        continue
+            $stringBuilder = New-Object System.Text.StringBuilder
+            $stringWriter = New-Object System.IO.StringWriter($stringBuilder)
+            $xmlWriterSettings = New-Object System.Xml.XmlWriterSettings
+            $xmlWriterSettings.OmitXmlDeclaration = $false
+            $xmlWriterSettings.Indent = $false
+            $xmlWriterSettings.NewLineHandling = [System.Xml.NewLineHandling]::None
 
-    col_props = elem.find(f'{{{style_ns}}}table-column-properties')
-    if col_props is None:
-        col_props = ET.SubElement(elem, f'{{{style_ns}}}table-column-properties')
-    col_props.set(f'{{{style_ns}}}column-width', width_map[style_name])
+            $xmlWriter = [System.Xml.XmlWriter]::Create($stringWriter, $xmlWriterSettings)
+            try {
+                $xmlDoc.Save($xmlWriter)
+            }
+            finally {
+                $xmlWriter.Dispose()
+                $stringWriter.Dispose()
+            }
 
-content_root = xml_parts['content.xml']
+            $updatedXml = $stringBuilder.ToString()
 
-serialized_parts = {
-    name: ET.tostring(root, encoding='utf-8', xml_declaration=True)
-    for name, root in xml_parts.items()
-}
-
-with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
-    with zipfile.ZipFile(source, 'r') as zin:
-        for entry in zin.infolist():
-            data = zin.read(entry.filename)
-            if entry.filename in serialized_parts:
-                data = serialized_parts[entry.filename]
-            zout.writestr(entry, data)
-
-if source.exists():
-    source.unlink()
-
-if temporary.exists():
-    shutil.copy2(temporary, source)
-    temporary.unlink()
-"@
-
-        $pythonScript | Set-Content -Path $tempScript -Encoding UTF8
-
-        & $python.Source $tempScript
-        if ($LASTEXITCODE -ne 0) {
-            throw "ODS formatting patch failed for '$OdsFilePath' with exit code $LASTEXITCODE."
+            $entry.Delete()
+            $newEntry = $zipArchive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $entryWriter = New-Object System.IO.StreamWriter($newEntry.Open(), (New-Object System.Text.UTF8Encoding($false)))
+            try {
+                $entryWriter.Write($updatedXml)
+            }
+            finally {
+                $entryWriter.Dispose()
+            }
         }
     }
     finally {
-        if (Test-Path -Path $tempZipPath) {
-            Remove-Item -Path $tempZipPath -Force -ErrorAction SilentlyContinue
+        if ($null -ne $zipArchive) {
+            $zipArchive.Dispose()
         }
-        if (Test-Path -Path $tempScript) {
-            Remove-Item -Path $tempScript -Force -ErrorAction SilentlyContinue
+        if ($null -ne $zipStream) {
+            $zipStream.Dispose()
         }
     }
 }
