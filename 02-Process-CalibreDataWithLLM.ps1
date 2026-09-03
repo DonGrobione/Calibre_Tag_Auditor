@@ -11,7 +11,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
 .NOTES
-    Version: 3.4
+    Version: 3.5
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
 #>
@@ -686,8 +686,8 @@ try {
                 }
                 elseif ($statusCode -eq 503) {
                     $retryCount++
-                    $waitTime = 5
-                    Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries)"
+                    $waitTime = [math]::Min(60, [math]::Pow(2, $retryCount) * 5)
+                    Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
                     Start-Sleep -Seconds $waitTime
                 }
                 else {
