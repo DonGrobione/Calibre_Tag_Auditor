@@ -290,6 +290,18 @@ function Format-OdsDocument {
                 }
             }
 
+            if ($entryName -eq 'styles.xml') {
+                $defaultCellStyle = $xmlDoc.SelectSingleNode("//style:style[@style:family='table-cell' and @style:name='Default']", $nsManager)
+                if ($null -ne $defaultCellStyle) {
+                    $defaultCellProps = $defaultCellStyle.SelectSingleNode('style:table-cell-properties', $nsManager)
+                    if ($null -eq $defaultCellProps) {
+                        $defaultCellProps = $xmlDoc.CreateElement('style', 'table-cell-properties', $styleNs)
+                        [void]$defaultCellStyle.AppendChild($defaultCellProps)
+                    }
+                    [void]$defaultCellProps.SetAttribute('wrap-option', $foNs, 'wrap')
+                }
+            }
+
             if ($entryName -eq 'content.xml') {
                 foreach ($styleName in $widthMap.Keys) {
                     $columnStyleNodes = $xmlDoc.SelectNodes("//style:style[@style:family='table-column' and @style:name='$styleName']", $nsManager)
