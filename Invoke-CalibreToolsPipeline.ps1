@@ -12,15 +12,20 @@
     without writing a duplicate ERROR entry to the logfile.
 
 .NOTES
-    Version: 1.4
+    Version: 1.5
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
+$ClearLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Clear-LogFile.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
     throw "Required module not found: '$WriteLogModulePath'"
 }
+if (-not (Test-Path -Path $ClearLogModulePath)) {
+    throw "Required module not found: '$ClearLogModulePath'"
+}
 
 Import-Module -Name $WriteLogModulePath -Force
+Import-Module -Name $ClearLogModulePath -Force
 
 Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
 Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
@@ -34,6 +39,18 @@ $ErrorActionPreference = 'Stop'
 $startTime = Get-Date
 
 try {
+    # Clean old log entries before the pipeline starts.
+    try {
+        Push-Location -Path $PSScriptRoot
+        Clear-LogFile
+    }
+    catch {
+        Write-Warning "Log cleanup failed: $($_.Exception.Message). Pipeline continues."
+    }
+    finally {
+        Pop-Location
+    }
+
     # Define the order of scripts to run.
     $scripts = @(
         "01-Export-CalibreBooks.ps1",
