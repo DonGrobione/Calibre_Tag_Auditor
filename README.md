@@ -32,6 +32,7 @@ The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Pro
 ### Mistral Links
 - Admin Center Subscriptions: https://admin.mistral.ai/subscription
 - API-Keys: https://console.mistral.ai/observability/traces?profile_dialog=api-keys
+- Mistral Status: https://status.mistral.ai/
 
 ## Quick Start
 1. Open `01-CalibreExport.config.json` and change `CalibrePaths` with the path where your Calibre is located and update `LibraryName` with the name of your library.
