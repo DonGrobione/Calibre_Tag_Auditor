@@ -17,10 +17,24 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 
 - `CalibrePaths`: Ordered list of Calibre Portable installation directories. The first existing path is used.
 - `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
-- `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `30`.
+- `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`.
 - `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`.
 
 Depending on the size of your library and tags, changing the value of `ChangedWithinDays` will use a lot more tokens.
+
+## Exported Calibre Fields
+The book export contains the following fields from Calibre:
+
+- `Title`: Book title
+- `Author`: Author or authors
+- `Series`: Series name
+- `SeriesIndex`: Position of the book within the series
+- `Tags`: Calibre tags, combined into a comma-separated value
+- `Identifiers`: Available identifiers, such as ISBN, Amazon, or Google IDs
+- `Publisher`: Publisher name
+- `Year`: Publication year, extracted from the publication date
+
+The Calibre field `last_modified` is used only to sort the books and apply the `ChangedWithinDays` filter. It is not included in the exported book JSON files.
 
 ## Mistral
 The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Prompt.txt`.

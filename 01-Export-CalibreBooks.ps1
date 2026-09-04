@@ -3,8 +3,7 @@
     Export Calibre Portable metadata to JSON files.
 
 .DESCRIPTION
-    Exports title, author, series, series index, tags, identifiers (IDs, e.g. ISBN), publisher, and publication year from a Calibre Portable library into one or more JSON files in the 01-Export directory. Books are sorted by last modification date, newest first. By default, books modified within the last day are exported. Set ChangedWithinDays in 01-CalibreExport.config.json to a value greater than 0 to change the number of days. Set it to 0 to export all books.
-    The output file names include a timestamp and sequence number when split.
+    The export is configured through 01-CalibreExport.config.json. See README.md for the configuration and behavior details.
     Uses calibredb.exe from the Calibre Portable installation.
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
 
