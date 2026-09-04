@@ -40,6 +40,7 @@ function Get-CalibreConfiguration {
         LibraryName       = $libraryName
         BooksPerFile      = $configuration.BooksPerFile
         ChangedWithinDays = $configuration.ChangedWithinDays
+        DebugBookExport   = ($configuration.DebugBookExport -eq $true)
     }
 }
 

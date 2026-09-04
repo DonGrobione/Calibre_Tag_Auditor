@@ -19,6 +19,7 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 - `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
 - `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`.
 - `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`.
+- `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export the 20 most recently changed books in four JSON files with five books per file. Books without a valid modification date are excluded. Default: `false`.
 
 Depending on the size of your library and tags, changing the value of `ChangedWithinDays` will use a lot more tokens.
 

@@ -23,9 +23,14 @@ $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.
 $CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
 $BooksPerFile = $CalibreConfig.BooksPerFile
 $ChangedWithinDays = $CalibreConfig.ChangedWithinDays
+$DebugBookExport = $CalibreConfig.DebugBookExport
 
 if ($null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
     throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
+}
+
+if ($DebugBookExport) {
+    $BooksPerFile = 5
 }
 
 
@@ -67,6 +72,9 @@ try {
     Write-Host "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
     Write-Host "Books/file: $BooksPerFile"
     Write-Host "Changed:    $ChangedWithinDays day(s)"
+    if ($DebugBookExport) {
+        Write-Host "Debug:      20 books, 5 books/file"
+    }
 
     # Create a timestamp for the output files.
     $ExportDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
@@ -133,7 +141,13 @@ try {
         }
     })
 
-    if ($ChangedWithinDays -eq 0) {
+    if ($DebugBookExport) {
+        $Books = @($BooksWithDates |
+            Where-Object HasValidDate |
+            Sort-Object LastModified -Descending |
+            Select-Object -First 20 |
+            ForEach-Object Book)
+    } elseif ($ChangedWithinDays -eq 0) {
         $Books = @($BooksWithDates | Sort-Object LastModified -Descending | ForEach-Object Book)
     } else {
         $CutoffDate = [DateTimeOffset]::Now.AddDays(-$ChangedWithinDays)
