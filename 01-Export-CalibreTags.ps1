@@ -27,27 +27,19 @@ if (-not (Test-Path -Path $WriteLogModulePath)) {
 
 Import-Module -Name $WriteLogModulePath -Force
 
+$CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
+if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Environment.psm1'"
+}
+
+Import-Module -Name $CalibreEnvironmentModulePath -Force
+
 Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
 Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
 Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
 $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
-if (-not (Test-Path -LiteralPath $ConfigPath)) {
-    throw "Required configuration file not found: '.\\01-CalibreExport.config.json'"
-}
-
-try {
-    $CalibreConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-} catch {
-    throw "Unable to read Calibre configuration '.\\01-CalibreExport.config.json': $($_.Exception.Message)"
-}
-
-$CalibrePaths = @($CalibreConfig.CalibrePaths)
-$LibraryName = [string]$CalibreConfig.LibraryName
-
-if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName)) {
-    throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths and LibraryName."
-}
+$CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
 
 try {
     # Enable strict error handling for the tag export workflow.
@@ -64,41 +56,14 @@ try {
     Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" -File |
     Remove-Item -Force
 
-    function Get-FirstExistingPath {
-        param([string[]]$Paths)
-
-        foreach ($Path in $Paths) {
-            if (Test-Path -LiteralPath $Path) {
-                return $Path
-            }
-        }
-
-        return $null
-    }
-
-    # Determine the available Calibre Portable path.
-    $CalibrePortablePath = Get-FirstExistingPath -Paths $CalibrePaths
-
-    if (-not $CalibrePortablePath) {
-        $displayCalibrePaths = @($CalibrePaths | ForEach-Object { ConvertTo-DisplayPath -Path $_ -BasePath $PSScriptRoot })
-        throw "Calibre Portable was not found. Checked paths:`n$($displayCalibrePaths -join "`n")"
-    }
-
-    $LibraryPath = Join-Path $CalibrePortablePath $LibraryName
-    if (-not (Test-Path $LibraryPath)) {
-        throw "Library path not found: '$(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)'"
-    }
-
-    $CalibreDebugExe = Get-ChildItem -Path $CalibrePortablePath -Filter "calibre-debug.exe" -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-
-    if (-not $CalibreDebugExe) {
-        throw "calibre-debug.exe was not found in '$(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)'."
-    }
+    $CalibreEnvironment = Get-CalibreEnvironment -Configuration $CalibreConfig
+    $CalibrePortablePath = $CalibreEnvironment.PortablePath
+    $LibraryPath = $CalibreEnvironment.LibraryPath
+    $CalibreDebugExe = Get-CalibreExecutable -CalibrePath $CalibrePortablePath -Name 'calibre-debug.exe'
 
     # Define the paths to the Calibre metadata database and notes database.
-    $FullMetaDb = Join-Path $LibraryPath "metadata.db"
-    $FullNotesDb = Join-Path $LibraryPath ".calnotes\notes.db"
+    $FullMetaDb = $CalibreEnvironment.MetadataDbPath
+    $FullNotesDb = $CalibreEnvironment.NotesDbPath
 
     if (-not (Test-Path $FullMetaDb)) {
         throw "The file 'metadata.db' was not found: '$(ConvertTo-DisplayPath -Path $FullMetaDb -BasePath $PSScriptRoot)'"

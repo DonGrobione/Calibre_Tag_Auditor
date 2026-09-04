@@ -11,25 +11,20 @@
     Version: 3.0
 #>
 
+$CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
+if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Environment.psm1'"
+}
+
+Import-Module -Name $CalibreEnvironmentModulePath -Force
+
 # Central export settings and their descriptions are maintained in 01-CalibreExport.config.json.
 $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
-if (-not (Test-Path -LiteralPath $ConfigPath)) {
-    throw "Required configuration file not found: '.\\01-CalibreExport.config.json'"
-}
-
-try {
-    $CalibreConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-} catch {
-    throw "Unable to read Calibre configuration '.\\01-CalibreExport.config.json': $($_.Exception.Message)"
-}
-
-$CalibrePaths = @($CalibreConfig.CalibrePaths)
-$LibraryName = [string]$CalibreConfig.LibraryName
+$CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
 $BooksPerFile = $CalibreConfig.BooksPerFile
 $ChangedWithinDays = $CalibreConfig.ChangedWithinDays
 
-if ($CalibrePaths.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LibraryName) -or
-    $null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
+if ($null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
     throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
 }
 
@@ -61,37 +56,10 @@ try {
     Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" -File |
     Remove-Item -Force
 
-    function Get-FirstExistingPath {
-        param([string[]]$Paths)
-
-        foreach ($Path in $Paths) {
-            if (Test-Path -LiteralPath $Path) {
-                return $Path
-            }
-        }
-
-        return $null
-    }
-
-    # Determine the available Calibre Portable path.
-    $CalibrePortablePath = Get-FirstExistingPath -Paths $CalibrePaths
-
-    if (-not $CalibrePortablePath) {
-        $displayCalibrePaths = @($CalibrePaths | ForEach-Object { ConvertTo-DisplayPath -Path $_ -BasePath $PSScriptRoot })
-        throw "Calibre Portable was not found. Checked paths:`n$($displayCalibrePaths -join "`n")"
-    }
-
-    $LibraryPath = Join-Path $CalibrePortablePath $LibraryName
-    if (-not (Test-Path $LibraryPath)) {
-        throw "Library path not found: '$(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)'"
-    }
-
-    $CalibredbExe = Get-ChildItem -Path $CalibrePortablePath -Filter "calibredb.exe" -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-
-    if (-not $CalibredbExe) {
-        throw "calibredb.exe was not found in '$(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)'."
-    }
+    $CalibreEnvironment = Get-CalibreEnvironment -Configuration $CalibreConfig
+    $CalibrePortablePath = $CalibreEnvironment.PortablePath
+    $LibraryPath = $CalibreEnvironment.LibraryPath
+    $CalibredbExe = Get-CalibreExecutable -CalibrePath $CalibrePortablePath -Name 'calibredb.exe'
 
     Write-Host "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
     Write-Host "Tool:       $(ConvertTo-DisplayPath -Path $CalibredbExe.FullName -BasePath $PSScriptRoot)"
