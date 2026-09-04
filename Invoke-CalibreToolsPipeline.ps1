@@ -56,8 +56,7 @@ try {
         "01-Export-CalibreBooks.ps1",
         "01-Export-CalibreTags.ps1",
         "02-Process-CalibreDataWithLLM.ps1",
-        "03-Convert-LLMResultsToCsv.ps1",
-        "04-Convert-CSVtoODS.ps1"
+        "03-Convert-LLMResults2ODS.ps1"
     )
 
     # Run each script in sequence.

@@ -42,3 +42,10 @@ Collection of PowerShell scripts for managing Calibre Portable library data, inc
 - The 4_Ergebnis_csv_convert.ps1 script is the simplest and a good candidate for first refactoring
 - All existing scripts need significant refactoring to comply with project rules
 - No git repository exists for this project currently
+
+## Encoding Gotcha (2026-09-04)
+- All `.ps1` files in the repo are saved as UTF-8 **with BOM** (`EF BB BF`) because scripts contain non-ASCII literals (e.g. `'Ã|Â'`, `Begründung`). Saving/creating a `.ps1` file as UTF-8 without BOM breaks PowerShell 5.1 parsing of those literals with confusing tokenizer errors.
+- When creating or fully rewriting a `.ps1` file, verify/re-apply the BOM afterwards, e.g.:
+  `[System.IO.File]::WriteAllText($path, (Get-Content $path -Raw -Encoding UTF8), (New-Object System.Text.UTF8Encoding($true)))`
+  and validate with `[System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors)`.
+- `03-Convert-LLMResultsToCsv.ps1` and `04-Convert-CSVtoODS.ps1` were merged into a single `03-Convert-LLMResults2ODS.ps1` (2026-09-04). It reads `02-LLM-Result` JSON, writes a temporary pipe-delimited CSV to `$env:TEMP`, converts it with LibreOffice, and writes the formatted `03-ODS_Convert_<timestamp>.ods` to `03-ODS`. The `03-CSV` and `04-ODS` folders/scripts no longer exist.

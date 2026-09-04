@@ -1,5 +1,5 @@
 # Calibre Tag Auditor
-Calibre Tag Auditor exports (updated) book data from Calibre, validates it with Mistral, and creates CSV with the results. The CSV will be converted to ODS with LibreOffice. The generated ODS file serves as a review worksheet: use it to inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
+Calibre Tag Auditor exports (updated) book data from Calibre, validates it with Mistral, and converts the results directly into an ODS review worksheet with LibreOffice. The generated ODS file serves as a review worksheet: use it to inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
 
 I started this project, because I have several thousand books and lost track and consistency with my defined tags. Especially as metadata downloads introduce new and undefined tags to my library.
 
@@ -7,7 +7,7 @@ I started this project, because I have several thousand books and lost track and
 - Windows with PowerShell 5.1 or later
 - LibreOffice (current standard installation; headless conversion support required)
 - Calibre's embedded Python is used for the tag export step
-- No separate system Python installation is required for CSV to ODS conversion
+- No separate system Python installation is required for ODS conversion
 - A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `.secrets/Mistral_API.txt`
 - Calibre Portable or fixed installation. I use portable and sync it across devices via Cloud Storage.
 - Every Calibre tag must have a definition in the tag notes.
@@ -58,15 +58,14 @@ The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Pro
 .\Invoke-CalibreToolsPipeline.ps1
 ```
 
-The script exports books and tags, validates the data with Mistral, and then creates CSV and ODS files.
+The script exports books and tags, validates the data with Mistral, and then creates the ODS review file.
 
 ## Results
 After a successful run, the generated files are located here:
 
 - `01-Export`: exported books and tag definitions
 - `02-LLM-Result`: Mistral validation results
-- `03-CSV`: combined CSV file (kept by default; set `$DeleteCsvAfterConversion = $true` in `04-Convert-CSVtoODS.ps1` to delete after conversion)
-- `04-ODS`: formatted ODS file for LibreOffice
+- `03-ODS`: formatted ODS file for LibreOffice
 - `Logs`: logs for troubleshooting
 
 The ODS file contains the columns `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason`. For `ProposedAction = NO_CHANGES`, both `Tag` and `Reason` are `null`.
@@ -77,8 +76,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 1. `01-Export-CalibreBooks.ps1`
 2. `01-Export-CalibreTags.ps1`
 3. `02-Process-CalibreDataWithLLM.ps1`
-4. `03-Convert-LLMResultsToCsv.ps1`
-5. `04-Convert-CSVtoODS.ps1`
+4. `03-Convert-LLMResults2ODS.ps1`
 
 ## Common Issues
 - **Calibre was not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.

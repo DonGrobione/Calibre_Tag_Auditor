@@ -7,8 +7,7 @@
 1. `01-Export-CalibreBooks.ps1`
 2. `01-Export-CalibreTags.ps1`
 3. `02-Process-CalibreDataWithLLM.ps1`
-4. `03-Convert-LLMResultsToCsv.ps1`
-5. `04-Convert-CSVtoODS.ps1`
+4. `03-Convert-LLMResults2ODS.ps1`
 
 Before starting, the pipeline removes previous JSON files from `02-LLM-Result`. Each child script logs its own errors and marks rethrown exceptions so the pipeline does not create duplicate error log entries.
 
@@ -18,14 +17,13 @@ Before starting, the pipeline removes previous JSON files from `02-LLM-Result`. 
 - Tag definitions are written to `01-Export/02-Export-CalibreTags_<timestamp>.json`.
 - The LLM processor reads the current book exports and the latest tag export. It writes one JSON wrapper per book export to `02-LLM-Result`.
 - A result wrapper contains processing metadata, `records`, the original `raw_response`, parsing diagnostics, and unique-book count validation fields.
-- The CSV converter reads `records` and exports only `Titel`, `Autor`, `Vorgeschlagene_Änderung`, and `Begründung` as UTF-8 CSV with `|` as delimiter.
-- The ODS converter processes timestamped CSV files, uses LibreOffice with the pipe delimiter, and writes `04-ODS_Convert_<timestamp>.ods` to `04-ODS`.
+- The ODS converter reads `records`, merges them into `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason` columns, writes a temporary pipe-delimited UTF-8 CSV to `$env:TEMP`, converts it with LibreOffice, and writes the formatted result as `03-ODS_Convert_<timestamp>.ods` to `03-ODS`.
 
 ## External Dependencies
 
 - Calibre Portable supplies `calibredb.exe` and `calibre-debug.exe`.
 - The tag export uses Calibre's embedded Python to query the Calibre databases.
-- The ODS formatter requires a separate `python` or `py` command available on `PATH`.
+- The ODS formatter uses only PowerShell/.NET (ZipArchive + XmlDocument); no separate Python installation is required.
 - The LLM processor reads the API key from `.secrets/Mistral_API.txt` and its instructions from `02-CalibreDataLLM-Prompt.txt`.
 
 ## Maintenance Rules
