@@ -8,7 +8,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 3.0
+    Version: 3.1
 #>
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
@@ -18,7 +18,7 @@ if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) 
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
 
-# Central export settings and their descriptions are maintained in 01-CalibreExport.config.json.
+# Central export settings are maintained in 01-CalibreExport.config.json.
 $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
 $CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
 $BooksPerFile = $CalibreConfig.BooksPerFile

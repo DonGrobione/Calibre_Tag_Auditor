@@ -14,6 +14,7 @@ Before starting, the pipeline removes previous JSON files from `02-LLM-Result`. 
 ## Inputs and Outputs
 
 - Book exports are written to `01-Export/01-Export-CalibreBooks_<sequence>_<timestamp>.json`.
+- With `DebugBookExport: true`, the book export ignores `ChangedWithinDays`, selects up to the 20 most recently changed books with valid modification dates, and writes five books per JSON file.
 - Tag definitions are written to `01-Export/02-Export-CalibreTags_<timestamp>.json`.
 - The LLM processor reads the current book exports and the latest tag export. It writes one JSON wrapper per book export to `02-LLM-Result`.
 - A result wrapper contains processing metadata, `records`, the original `raw_response`, parsing diagnostics, and unique-book count validation fields.
@@ -25,6 +26,7 @@ Before starting, the pipeline removes previous JSON files from `02-LLM-Result`. 
 - The tag export uses Calibre's embedded Python to query the Calibre databases.
 - The ODS formatter uses only PowerShell/.NET (ZipArchive + XmlDocument); no separate Python installation is required.
 - The LLM processor reads the API key from `.secrets/Mistral_API.txt` and its instructions from `02-CalibreDataLLM-Prompt.txt`.
+- Log modules resolve the central log directory from the project root, independent of the current working directory.
 
 ## Maintenance Rules
 

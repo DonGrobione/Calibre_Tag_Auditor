@@ -22,7 +22,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.1
+    Version: 1.2
 #>
 
 [CmdletBinding()]
@@ -143,7 +143,7 @@ function Get-JsonText {
             continue
         }
 
-        if ($c -eq '\\') {
+        if ($c -eq '\') {
             $escape = $true
             continue
         }

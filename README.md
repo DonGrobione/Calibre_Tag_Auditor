@@ -31,7 +31,7 @@ The book export contains the following fields from Calibre:
 - `Series`: Series name
 - `SeriesIndex`: Position of the book within the series
 - `Tags`: Calibre tags, combined into a comma-separated value
-- `Identifiers`: Available identifiers, such as ISBN, Amazon, or Google IDs
+- `IDs`: Available identifiers, such as ISBN, Amazon, or Google IDs
 - `Publisher`: Publisher name
 - `Year`: Publication year, extracted from the publication date
 
@@ -69,7 +69,7 @@ After a successful run, the generated files are located here:
 - `03-ODS`: formatted ODS file for LibreOffice
 - `Logs`: logs for troubleshooting
 
-The ODS file contains the columns `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason`. For `ProposedAction = NO_CHANGES`, both `Tag` and `Reason` are `null`.
+The ODS file contains the columns `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason`. For `ProposedAction = NO_CHANGES`, `Tag` and `Reason` are empty cells.
 
 ## Run Individual Steps
 The quick start is normally sufficient. For troubleshooting, run the steps individually in this order:

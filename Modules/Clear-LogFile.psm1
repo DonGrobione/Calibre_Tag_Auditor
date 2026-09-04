@@ -24,12 +24,18 @@
     The log file is determined based on the computer's hostname.
 
     Filename: Modules\Clear-LogFile.psm1
-    Version: 1.0.0
+    Version: 1.1.0
 #>
 
-# Folder for Logs
-$logsDir = "Logs"
+# The module is stored in the Modules folder below the project root.
+$logsDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Logs'
 
+<#
+.SYNOPSIS
+    Removes log entries older than the requested retention period.
+.PARAMETER Days
+    Number of days of log entries to retain.
+#>
 function Clear-LogFile {
     # Clears the log file by removing entries older than a specified number of days.
     [CmdletBinding()]
@@ -64,7 +70,8 @@ function Clear-LogFile {
         }
     }
 
-    Set-Content -Path $logPath -Value $filtered
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllLines($logPath, [string[]]$filtered, $utf8NoBom)
     Write-Output "Logfile cleaned: Entries older than $Days days have been removed."
 }
 

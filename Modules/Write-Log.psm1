@@ -44,12 +44,16 @@
     The file name is based on the computer's hostname.
 
     Filename: Modules\Write-Log.psm1
-    Version: 1.3.0
+    Version: 1.4.0
 #>
 
-# The log file is created in the 'Logs' directory in the project root.
-$logsDir = ".\Logs"
+# The module is stored in the Modules folder below the project root.
+$logsDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Logs'
 
+<#
+.SYNOPSIS
+    Converts an absolute path to a readable project-relative path.
+#>
 function ConvertTo-DisplayPath {
     # Convert absolute paths to relative paths for user output, except TEMP paths.
     [CmdletBinding()]
@@ -103,6 +107,12 @@ function ConvertTo-DisplayPath {
     }
 }
 
+<#
+.SYNOPSIS
+    Writes one timestamped entry to the central log file.
+.PARAMETER Message
+    Message text to write.
+#>
 function Write-Log {
     # Writes a log entry to the log file with a timestamp and log level.
     [CmdletBinding()]
@@ -133,13 +143,13 @@ function Write-Log {
 
     $maxAttempts = 5
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $fileStream = $null
+        $writer = $null
         try {
             $fileStream = [System.IO.File]::Open($logPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
-            $writer = New-Object System.IO.StreamWriter($fileStream)
+            $writer = [System.IO.StreamWriter]::new($fileStream, [System.Text.UTF8Encoding]::new($false))
             $writer.WriteLine($entry)
             $writer.Flush()
-            $writer.Close()
-            $fileStream.Close()
             break
         }
         catch [System.IO.IOException] {
@@ -148,10 +158,22 @@ function Write-Log {
             }
             Start-Sleep -Milliseconds 200
         }
+        finally {
+            if ($null -ne $writer) {
+                $writer.Dispose()
+            }
+            elseif ($null -ne $fileStream) {
+                $fileStream.Dispose()
+            }
+        }
     }
 }
 
 # Walk the call stack to find the first frame outside this module, i.e. the calling script file.
+<#
+.SYNOPSIS
+    Returns the calling script name used in log prefixes.
+#>
 function Get-ScriptLogPrefix {
     $modulePath = $PSCommandPath
     foreach ($frame in (Get-PSCallStack)) {
@@ -162,6 +184,10 @@ function Get-ScriptLogPrefix {
     return '[UnknownScript]'
 }
 
+<#
+.SYNOPSIS
+    Mirrors Write-Host output to the central log file.
+#>
 function Write-HostAndLog {
     # Drop-in replacement for Write-Host that also writes an INFO log entry.
     [CmdletBinding()]
@@ -180,6 +206,10 @@ function Write-HostAndLog {
     Microsoft.PowerShell.Utility\Write-Host @PSBoundParameters
 }
 
+<#
+.SYNOPSIS
+    Mirrors Write-Warning output to the central log file.
+#>
 function Write-WarningAndLog {
     # Drop-in replacement for Write-Warning that also writes a WARN log entry.
     [CmdletBinding()]
@@ -193,6 +223,10 @@ function Write-WarningAndLog {
     Microsoft.PowerShell.Utility\Write-Warning $text
 }
 
+<#
+.SYNOPSIS
+    Mirrors Write-Error output to the central log file.
+#>
 function Write-ErrorAndLog {
     # Drop-in replacement for Write-Error that also writes an ERROR log entry.
     [CmdletBinding()]

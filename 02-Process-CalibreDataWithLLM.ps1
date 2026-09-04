@@ -12,7 +12,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 3.7
+    Version: 3.8
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
 #>
@@ -472,7 +472,7 @@ try {
                 continue
             }
 
-            if ($character -eq '\\') {
+            if ($character -eq '\') {
                 $escape = $true
                 continue
             }
