@@ -13,7 +13,7 @@
 
     For rows where ProposedAction = NO_CHANGES, Tag and Reason are empty cells in the review sheet.
     The final ODS file is written to the output folder using the naming pattern 03-ODS_Convert_<timestamp>.ods, where <timestamp> is taken from the first input JSON file. All temporary files are created under $env:TEMP and removed after use.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert. Defaults to .\02-LLM-Result.
@@ -22,7 +22,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.0
+    Version: 1.1
 #>
 
 [CmdletBinding()]
@@ -857,10 +857,9 @@ try {
 }
 catch {
     Write-Error "LLM result to ODS conversion failed: $($_.Exception.Message)"
-    # Mark exception as already logged in this script so pipeline wrappers do not
-    # write the same error to log a second time.
-    if ($null -ne $_.Exception) {
-        $_.Exception.Data['LoggedByScript'] = $true
-    }
     throw
+}
+finally {
+    # Remove the logging aliases so they cannot leak into the caller's scope.
+    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
 }

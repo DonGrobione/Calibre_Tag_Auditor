@@ -5,10 +5,10 @@
 .DESCRIPTION
     The export is configured through 01-CalibreExport.config.json. See README.md for the configuration and behavior details.
     Uses calibredb.exe from the Calibre Portable installation.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 2.9
+    Version: 3.0
 #>
 
 # Central export settings and their descriptions are maintained in 01-CalibreExport.config.json.
@@ -274,10 +274,8 @@ try {
     }
 } catch {
     Write-Error $_.Exception.Message
-    # Mark exception as already logged in this script so pipeline wrappers do not
-    # write the same error to log a second time.
-    if ($null -ne $_.Exception) {
-        $_.Exception.Data['LoggedByScript'] = $true
-    }
     throw
+} finally {
+    # Remove the logging aliases so they cannot leak into the caller's scope.
+    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
 }

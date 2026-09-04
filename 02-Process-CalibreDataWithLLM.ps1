@@ -6,12 +6,13 @@
     Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book export to the agent together with the prompt and tag definitions, and writes the LLM responses
     to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
+    Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
     A per-file validation check and a final run summary (start/end time, duration, and retry statistics) are printed after processing.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 3.5
+    Version: 3.7
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
 #>
@@ -77,16 +78,24 @@ try {
     $ApiKey = (Get-Content -Path $ApiKeyFile -Raw -Encoding UTF8).Trim()
     $PromptSystem = (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim()
 
+    # Require the export folder and both export types before contacting the API.
+    if (-not (Test-Path -Path $ExportDir -PathType Container)) {
+        throw "Export folder not found: '$(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)'. Run 01-Export-CalibreBooks.ps1 and 01-Export-CalibreTags.ps1 first."
+    }
+
     # Find the latest tag-definition file and the available book export files.
-    $tagFile = Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" |
+    $tagFile = Get-ChildItem -Path $ExportDir -Filter "02-Export-CalibreTags_*.json" -ErrorAction SilentlyContinue |
                Sort-Object -Property LastWriteTime -Descending |
                Select-Object -First 1
 
-    $bookFiles = Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" |
+    $bookFiles = Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" -ErrorAction SilentlyContinue |
                  Sort-Object -Property Name
 
     if (-not $tagFile -or $bookFiles.Count -eq 0) {
-        throw "Tag or book export JSON files are missing in the folder '$(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)'."
+        $missingParts = @()
+        if (-not $tagFile) { $missingParts += "tag export file(s) (02-Export-CalibreTags_*.json) - run 01-Export-CalibreTags.ps1" }
+        if ($bookFiles.Count -eq 0) { $missingParts += "book export file(s) (01-Export-CalibreBooks_*.json) - run 01-Export-CalibreBooks.ps1" }
+        throw "Missing required export file(s) in folder '$(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)': $($missingParts -join '; and ')."
     }
 
     # Load the tag definitions and print a short summary for the run.
@@ -910,11 +919,10 @@ catch {
         $errorMessage = $_.ToString()
     }
 
-    # Log error exactly once in this script and mark it before rethrowing so
-    # upstream wrappers can show the error in terminal without duplicate logging.
     Write-Error $errorMessage
-    if ($null -ne $_.Exception) {
-        $_.Exception.Data['LoggedByScript'] = $true
-    }
     throw
+}
+finally {
+    # Remove the logging aliases so they cannot leak into the caller's scope.
+    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
 }

@@ -3,16 +3,17 @@
     Run all Calibre Tag Auditor scripts in sequence.
 
 .DESCRIPTION
-    Executes the export, LLM processing, CSV conversion, and ODS conversion scripts in order.
+    Executes the export, LLM processing, and ODS conversion scripts in order.
     Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
     Script output (info, warnings, and errors) is written both to terminal and
-    to the central log via Modules\Write-Log.psm1. If a child script already
-    logged an error and marked it, the pipeline shows the error in terminal
-    without writing a duplicate ERROR entry to the logfile.
+    to the central log via Modules\Write-Log.psm1. Every child script already logs
+    and rethrows its own errors, so on failure the pipeline only prints the error to
+    the terminal (never writes a second logfile entry) and exits with code 1 instead
+    of rethrowing, avoiding stray failure entries from the host's own error handling.
 
 .NOTES
-    Version: 1.6
+    Version: 1.7
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
@@ -83,13 +84,11 @@ try {
     Write-Host "Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
 }
 catch {
-    # Report the error and stop execution.
+    # Report the error and stop execution. Every child script already logs and
+    # rethrows its own errors, so this catch only prints to terminal (with -ErrorAction
+    # Continue, so it cannot itself abort before the "Press Enter" prompt below) and
+    # never writes a second logfile entry for the same failure.
     $errorMessage = $null
-    $alreadyLoggedByChildScript = $false
-
-    if ($null -ne $_.Exception -and $null -ne $_.Exception.Data -and $_.Exception.Data.Contains('LoggedByScript')) {
-        $alreadyLoggedByChildScript = [bool]$_.Exception.Data['LoggedByScript']
-    }
 
     if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
         $errorMessage = $_.Exception.Message
@@ -101,15 +100,13 @@ catch {
         $errorMessage = $_.ToString()
     }
 
-    # Avoid duplicate logfile entries: if the child script already logged this
-    # error, print it to terminal directly without invoking the logging alias.
-    if ($alreadyLoggedByChildScript) {
-        Microsoft.PowerShell.Utility\Write-Error $errorMessage
-    }
-    else {
-        Write-Error $errorMessage
-    }
+    Microsoft.PowerShell.Utility\Write-Error $errorMessage -ErrorAction Continue
     Write-Host "Press Enter to close this window after reviewing the error..." -ForegroundColor Yellow
     Read-Host | Out-Null
-    throw
+    # Exit the orchestrator directly instead of rethrowing, so no uncaught
+    # exception reaches the host and triggers spurious failure log entries.
+    exit 1
+}
+finally {
+    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
 }

@@ -5,13 +5,13 @@
 .DESCRIPTION
     Connects Calibre .calnotes/notes.db with the library metadata.db and exports tag notes as JSON. The first line of each note is removed so the output contains only the tag definition.
     Uses calibre-debug.exe (Calibre's embedded Python interpreter) to query both SQLite databases via ATTACH. The temporary Python script is written to $env:TEMP and deleted after execution.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Errors are marked as already logged before rethrowing so wrapper scripts can avoid duplicate log entries.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .PARAMETER OutputPath
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.0
+    Version: 3.1
 #>
 
 [CmdletBinding()]
@@ -204,15 +204,12 @@ except Exception as e:
 }
 catch {
     Write-Error $_.Exception.Message
-    # Mark exception as already logged in this script so pipeline wrappers do not
-    # write the same error to log a second time.
-    if ($null -ne $_.Exception) {
-        $_.Exception.Data['LoggedByScript'] = $true
-    }
     throw
 }
 finally {
     if (Test-Path -Path $TempScript) {
         Remove-Item -Path $TempScript -Force -ErrorAction SilentlyContinue
     }
+    # Remove the logging aliases so they cannot leak into the caller's scope.
+    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
 }

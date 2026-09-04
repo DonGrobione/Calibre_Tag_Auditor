@@ -9,7 +9,7 @@
 3. `02-Process-CalibreDataWithLLM.ps1`
 4. `03-Convert-LLMResults2ODS.ps1`
 
-Before starting, the pipeline removes previous JSON files from `02-LLM-Result`. Each child script logs its own errors and marks rethrown exceptions so the pipeline does not create duplicate error log entries.
+Before starting, the pipeline removes previous JSON files from `02-LLM-Result`. Each child script logs and rethrows its own errors; the pipeline's own catch block only prints the error to terminal (never re-logs it) and exits with code 1.
 
 ## Inputs and Outputs
 
