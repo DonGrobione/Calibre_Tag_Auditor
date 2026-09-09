@@ -12,9 +12,10 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 3.8
+    Version: 3.9
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, the raw response text, parse errors, and validation details for unique-book counts.
+    All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
@@ -46,7 +47,17 @@ try {
     $ConversationsUrl = "https://api.mistral.ai/v1/conversations"
     $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_Agent_Id.txt"
     $ApiTimeoutSec = 300
-    $script:MaxContentRetries = 3
+
+    # Retry/backoff configuration for all retry activities in this script.
+    $script:MaxRequestRetries = 3                       # Max retries per API request on 429/503/504 errors.
+    $script:RateLimitRetryBaseSeconds = 30               # 429: base seconds for exponential backoff (wait = base * 2^attempt).
+    $script:ServiceUnavailableRetryBaseSeconds = 5        # 503: base seconds for exponential backoff.
+    $script:ServiceUnavailableRetryMaxSeconds = 60        # 503: cap (seconds) for exponential backoff.
+    $script:GatewayTimeoutRetryIntervalSeconds = 300      # 504: fixed wait interval (seconds) between retries.
+    $script:MaxContentRetries = 3                         # Max retries per file for invalid/incomplete LLM responses.
+    $script:ContentRetryDelaySeconds = 15                 # Wait (seconds) between content-validation retries.
+    $script:InterFileDelaySeconds = 15                    # Wait (seconds) between processing each book file.
+
     $script:LastApiErrorMessage = $null
     $script:LastApiErrorBody = $null
 
@@ -672,7 +683,7 @@ try {
             store    = $false
         } | ConvertTo-Json -Depth 10
 
-        $maxRetries = 3
+        $maxRetries = $script:MaxRequestRetries
         $retryCount = 0
 
         while ($retryCount -lt $maxRetries) {
@@ -689,15 +700,20 @@ try {
 
                 if ($statusCode -eq 429) {
                     $retryCount++
-                    $waitTime = [math]::Pow(2, $retryCount) * 30
+                    $waitTime = [math]::Pow(2, $retryCount) * $script:RateLimitRetryBaseSeconds
                     Write-Warning "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
-                elseif ($statusCode -eq 503 -or $statusCode -eq 504) {
+                elseif ($statusCode -eq 503) {
                     $retryCount++
-                    $waitTime = [math]::Min(60, [math]::Pow(2, $retryCount) * 5)
-                    $statusText = if ($statusCode -eq 504) { 'Gateway timeout (504)' } else { 'Service unavailable (503)' }
-                    Write-Warning "$statusText. Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
+                    $waitTime = [math]::Min($script:ServiceUnavailableRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ServiceUnavailableRetryBaseSeconds)
+                    Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
+                    Start-Sleep -Seconds $waitTime
+                }
+                elseif ($statusCode -eq 504) {
+                    $retryCount++
+                    $waitTime = $script:GatewayTimeoutRetryIntervalSeconds
+                    Write-Warning "Gateway timeout (504). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
                 else {
@@ -814,7 +830,7 @@ $bookContent
             $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
             if ($contentAttempt -lt $script:MaxContentRetries) {
                 Write-Warning "Invalid/incomplete response for '$($bookFile.Name)' (attempt $contentAttempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
-                Start-Sleep -Seconds 15
+                Start-Sleep -Seconds $script:ContentRetryDelaySeconds
             }
             else {
                 Write-WarningAndLog "All $($script:MaxContentRetries) attempt(s) for '$($bookFile.Name)' failed validation. Last reason: $retryReason"
@@ -895,7 +911,7 @@ $bookContent
             Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
         }
 
-        Start-Sleep -Seconds 15
+        Start-Sleep -Seconds $script:InterFileDelaySeconds
     }
 
     # Final summary for the completed run.
