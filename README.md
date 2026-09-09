@@ -9,7 +9,7 @@ I started this project, because I have several thousand books and lost track and
 - Calibre's embedded Python is used for the tag export step
 - No separate system Python installation is required for ODS conversion
 - A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `.secrets/Mistral_API.txt`
-- Calibre Portable or fixed installation. I use portable and sync it across devices via Cloud Storage.
+- Calibre Portable or fixed installation. I use the portable version and sync it across devices via cloud storage.
 - Every Calibre tag must have a definition in the tag notes.
 
 ## Calibre Configuration
@@ -17,11 +17,11 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 
 - `CalibrePaths`: Ordered list of Calibre Portable installation directories. The first existing path is used.
 - `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
-- `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`.
+- `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`. Keep this number low to prevent timeouts or other LLM processing issues.
 - `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`.
 - `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export the 20 most recently changed books in four JSON files with five books per file. Books without a valid modification date are excluded. Default: `false`.
 
-Depending on the size of your library and tags, changing the value of `ChangedWithinDays` will use a lot more tokens.
+Depending on the size of your library and number of tags, changing the value of `ChangedWithinDays` may use a lot more tokens, especially if many web calls or searches are required.
 
 ## Exported Calibre Fields
 The book export contains the following fields from Calibre:
@@ -80,7 +80,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 4. `03-Convert-LLMResults2ODS.ps1`
 
 ## Common Issues
-- **Calibre was not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
+- **Calibre is not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
 - **The Mistral request failed:** Check the API key in `.secrets/Mistral_API.txt`.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
