@@ -3,14 +3,10 @@
     Run all Calibre Tag Auditor scripts in sequence.
 
 .DESCRIPTION
-    Executes the export, LLM processing, and ODS conversion scripts in order.
-    Each script must complete successfully before the next one starts.
+    Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
-    Script output (info, warnings, and errors) is written both to terminal and
-    to the central log via Modules\Write-Log.psm1. Every child script already logs
-    and rethrows its own errors, so on failure the pipeline only prints the error to
-    the terminal (never writes a second logfile entry) and exits with code 1 instead
-    of rethrowing, avoiding stray failure entries from the host's own error handling.
+    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
+    On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
 
 .NOTES
     Version: 1.7
@@ -89,7 +85,7 @@ try {
             }
         }
     }
-        $totalTokens = $totalPromptTokens + $totalCompletionTokens
+    $totalTokens = $totalPromptTokens + $totalCompletionTokens
 
     # Print a summary when the pipeline finishes successfully.
     Write-Host "--- Pipeline complete ---" -ForegroundColor Cyan
