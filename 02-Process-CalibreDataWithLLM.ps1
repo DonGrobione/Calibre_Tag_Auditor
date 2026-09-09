@@ -298,6 +298,46 @@ try {
         }
     }
 
+    function Get-TokenUsageFromResponse {
+        param($Response)
+
+        if ($null -eq $Response -or $null -eq $Response.usage) {
+            return $null
+        }
+
+        $usage = $Response.usage
+        $promptTokens = $null
+        $completionTokens = $null
+        $totalTokens = $null
+
+        if ($usage.PSObject.Properties.Name -contains 'prompt_tokens') {
+            $promptTokens = [int64]$usage.prompt_tokens
+        }
+        elseif ($usage.PSObject.Properties.Name -contains 'input_tokens') {
+            $promptTokens = [int64]$usage.input_tokens
+        }
+
+        if ($usage.PSObject.Properties.Name -contains 'completion_tokens') {
+            $completionTokens = [int64]$usage.completion_tokens
+        }
+        elseif ($usage.PSObject.Properties.Name -contains 'output_tokens') {
+            $completionTokens = [int64]$usage.output_tokens
+        }
+
+        if ($usage.PSObject.Properties.Name -contains 'total_tokens') {
+            $totalTokens = [int64]$usage.total_tokens
+        }
+        elseif ($null -ne $promptTokens -and $null -ne $completionTokens) {
+            $totalTokens = $promptTokens + $completionTokens
+        }
+
+        return [pscustomobject]@{
+            PromptTokens     = $promptTokens
+            CompletionTokens = $completionTokens
+            TotalTokens      = $totalTokens
+        }
+    }
+
     # Extract the response text from the Mistral API response regardless of the payload shape.
     function Get-MistralResponseText {
         param($Response)
@@ -690,7 +730,10 @@ try {
             try {
                 $response = Invoke-RestMethod -Uri $script:ConversationsUrl -Method Post -Headers $headers -Body $body -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
                 $text = Get-MistralResponseText -Response $response
-                return $text
+                return [pscustomobject]@{
+                    Text        = $text
+                    TokenUsage  = Get-TokenUsageFromResponse -Response $response
+                }
             }
             catch {
                 $statusCode = $null
@@ -769,6 +812,9 @@ try {
     $savedCount = 0
     $retriedFileCount = 0
     $retriedFileSuccessCount = 0
+    $totalPromptTokens = [int64]0
+    $totalCompletionTokens = [int64]0
+    $totalTokens = [int64]0
 
     foreach ($bookFile in $bookFiles) {
         $counter++
@@ -812,13 +858,31 @@ $bookContent
         $apiResult = $null
         $resultObject = $null
         $contentAttempt = 0
+        $filePromptTokens = [int64]0
+        $fileCompletionTokens = [int64]0
+        $fileTotalTokens = [int64]0
+        $fileTokenUsageAvailable = $false
 
         while ($contentAttempt -lt $script:MaxContentRetries) {
             $contentAttempt++
-            $apiResult = Invoke-MistralRequest -PayloadText $fullPrompt
+            $requestResult = Invoke-MistralRequest -PayloadText $fullPrompt
 
-            if ($null -eq $apiResult) {
+            if ($null -eq $requestResult) {
                 break
+            }
+
+            $apiResult = $requestResult.Text
+            if ($null -ne $requestResult.TokenUsage) {
+                $fileTokenUsageAvailable = $true
+                if ($null -ne $requestResult.TokenUsage.PromptTokens) {
+                    $filePromptTokens += $requestResult.TokenUsage.PromptTokens
+                }
+                if ($null -ne $requestResult.TokenUsage.CompletionTokens) {
+                    $fileCompletionTokens += $requestResult.TokenUsage.CompletionTokens
+                }
+                if ($null -ne $requestResult.TokenUsage.TotalTokens) {
+                    $fileTotalTokens += $requestResult.TokenUsage.TotalTokens
+                }
             }
 
             $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedUniqueBookCount $inputUniqueBookCount
@@ -845,7 +909,24 @@ $bookContent
             }
         }
 
+        if ($fileTokenUsageAvailable) {
+            $totalPromptTokens += $filePromptTokens
+            $totalCompletionTokens += $fileCompletionTokens
+            $totalTokens += $fileTotalTokens
+            Write-Host "  -> Token usage for $($bookFile.Name): prompt=$filePromptTokens, completion=$fileCompletionTokens, total=$fileTotalTokens" -ForegroundColor Gray
+        }
+        else {
+            Write-Host "  -> Token usage for $($bookFile.Name): unavailable" -ForegroundColor DarkGray
+        }
+
+        $tokenUsage = [ordered]@{
+            prompt_tokens     = if ($fileTokenUsageAvailable) { $filePromptTokens } else { $null }
+            completion_tokens = if ($fileTokenUsageAvailable) { $fileCompletionTokens } else { $null }
+            total_tokens      = if ($fileTokenUsageAvailable) { $fileTotalTokens } else { $null }
+        }
+
         if ($null -ne $apiResult) {
+            $resultObject.token_usage = $tokenUsage
             $savedCount++
             $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
@@ -897,6 +978,7 @@ $bookContent
                 unique_book_count_match  = $null
                 validation_error         = $null
                 records                  = @()
+                token_usage              = $tokenUsage
                 raw_response             = if (-not [string]::IsNullOrWhiteSpace($script:LastApiErrorBody)) { $script:LastApiErrorBody } else { $apiDetail }
                 parse_error              = $apiDetail
             }
@@ -921,6 +1003,7 @@ $bookContent
     Write-Host "--- Processing Complete ---" -ForegroundColor Cyan
     Write-Host "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
     Write-Host "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries." -ForegroundColor Gray
+    Write-Host "Total token usage: prompt=$totalPromptTokens, completion=$totalCompletionTokens, total=$totalTokens" -ForegroundColor Gray
 
 }
 catch {

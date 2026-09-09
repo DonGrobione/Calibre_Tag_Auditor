@@ -75,6 +75,21 @@ try {
         Write-Host ""
     }
 
+    $totalPromptTokens = [int64]0
+    $totalCompletionTokens = [int64]0
+    $llmResultFiles = Get-ChildItem -Path (Join-Path $PSScriptRoot "02-LLM-Result") -Filter "LLM-Result_*.json" -File -ErrorAction SilentlyContinue
+    foreach ($resultFile in $llmResultFiles) {
+        $result = Get-Content -Path $resultFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -ne $result.token_usage) {
+            if ($null -ne $result.token_usage.prompt_tokens) {
+                $totalPromptTokens += [int64]$result.token_usage.prompt_tokens
+            }
+            if ($null -ne $result.token_usage.completion_tokens) {
+                $totalCompletionTokens += [int64]$result.token_usage.completion_tokens
+            }
+        }
+    }
+
     # Print a summary when the pipeline finishes successfully.
     Write-Host "--- Pipeline complete ---" -ForegroundColor Cyan
     $endTime = Get-Date
@@ -82,6 +97,8 @@ try {
     Write-Host "Start:    $($startTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
     Write-Host "End:      $($endTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
     Write-Host "Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
+    Write-Host "Prompt tokens:     $totalPromptTokens" -ForegroundColor Gray
+    Write-Host "Completion tokens: $totalCompletionTokens" -ForegroundColor Gray
 }
 catch {
     # Report the error and stop execution. Every child script already logs and
