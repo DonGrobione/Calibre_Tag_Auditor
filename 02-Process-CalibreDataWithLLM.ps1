@@ -913,7 +913,7 @@ $bookContent
             $totalPromptTokens += $filePromptTokens
             $totalCompletionTokens += $fileCompletionTokens
             $totalTokens += $fileTotalTokens
-            Write-Host "  -> Token usage for $($bookFile.Name): prompt=$filePromptTokens, completion=$fileCompletionTokens, total=$fileTotalTokens" -ForegroundColor Gray
+            Write-Host "  -> Token usage for $($bookFile.Name): prompt=$($filePromptTokens.ToString('N0')), completion=$($fileCompletionTokens.ToString('N0')), total=$($fileTotalTokens.ToString('N0'))" -ForegroundColor Gray
         }
         else {
             Write-Host "  -> Token usage for $($bookFile.Name): unavailable" -ForegroundColor DarkGray
@@ -1003,7 +1003,7 @@ $bookContent
     Write-Host "--- Processing Complete ---" -ForegroundColor Cyan
     Write-Host "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
     Write-Host "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries." -ForegroundColor Gray
-    Write-Host "Total token usage: prompt=$totalPromptTokens, completion=$totalCompletionTokens, total=$totalTokens" -ForegroundColor Gray
+    Write-Host "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))" -ForegroundColor Gray
 
 }
 catch {

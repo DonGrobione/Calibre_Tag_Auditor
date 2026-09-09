@@ -97,8 +97,8 @@ try {
     Write-Host "Start:    $($startTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
     Write-Host "End:      $($endTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
     Write-Host "Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
-    Write-Host "Prompt tokens:     $totalPromptTokens" -ForegroundColor Gray
-    Write-Host "Completion tokens: $totalCompletionTokens" -ForegroundColor Gray
+    Write-Host "Prompt tokens:     $($totalPromptTokens.ToString('N0'))" -ForegroundColor Gray
+    Write-Host "Completion tokens: $($totalCompletionTokens.ToString('N0'))" -ForegroundColor Gray
 }
 catch {
     # Report the error and stop execution. Every child script already logs and
