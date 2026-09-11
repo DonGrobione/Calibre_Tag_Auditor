@@ -41,10 +41,11 @@
 
 .NOTES
     The log file is automatically created in the 'Logs' directory of the project root.
-    The file name is based on the computer's hostname.
+    The file name is based on the current date (yyyy-MM-dd.log). Entries are always
+    appended, existing log files are never overwritten.
 
     Filename: Modules\Write-Log.psm1
-    Version: 1.4.0
+    Version: 1.5.0
 #>
 
 # The module is stored in the Modules folder below the project root.
@@ -124,8 +125,6 @@ function Write-Log {
         [switch]$IsError
     )
 
-    $hostname = $env:COMPUTERNAME
-
     # Determine log level
     $logLevel = "INFO"
     if ($Warn) { $logLevel = "WARN" }
@@ -136,8 +135,9 @@ function Write-Log {
         New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
     }
 
-    # Use simplified log file name with only hostname
-    $logPath = [System.IO.Path]::Combine($logsDir, "$hostname.log")
+    # One log file per day, e.g. 2026-09-11.log. Entries are always appended.
+    $logFileName = Get-Date -Format "yyyy-MM-dd"
+    $logPath = [System.IO.Path]::Combine($logsDir, "$logFileName.log")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $entry = "$timestamp [$logLevel] $Message"
 

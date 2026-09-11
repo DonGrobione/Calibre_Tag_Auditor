@@ -36,18 +36,6 @@ $ErrorActionPreference = 'Stop'
 $startTime = Get-Date
 
 try {
-    # Clean old log entries before the pipeline starts.
-    try {
-        Push-Location -Path $PSScriptRoot
-        Clear-LogFile
-    }
-    catch {
-        Write-Warning "Log cleanup failed: $($_.Exception.Message). Pipeline continues."
-    }
-    finally {
-        Pop-Location
-    }
-
     # Define the order of scripts to run.
     $scripts = @(
         "01-Export-CalibreBooks.ps1",
@@ -98,6 +86,18 @@ try {
     Write-Host "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))" -ForegroundColor Gray
     Write-Host "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))" -ForegroundColor Gray
     Write-Host "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))" -ForegroundColor Gray
+
+    # Clean up old log files after the pipeline finishes successfully.
+    try {
+        Push-Location -Path $PSScriptRoot
+        Clear-LogFile
+    }
+    catch {
+        Write-Warning "Log cleanup failed: $($_.Exception.Message). Pipeline continues."
+    }
+    finally {
+        Pop-Location
+    }
 }
 catch {
     # Report the error and stop execution. Every child script already logs and

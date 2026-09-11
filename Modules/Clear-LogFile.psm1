@@ -1,30 +1,29 @@
 <#
 .SYNOPSIS
-    Cleans the log file by removing old entries.
+    Cleans up old log files, keeping only the most recent ones.
 
 .DESCRIPTION
-    Cleans the log file by removing entries older than
-    a configurable number of days (default: 30 days).
+    Log files are stored one per day (e.g. 2026-09-11.log) in the 'Logs'
+    directory. This function keeps only the newest N log files (by date in
+    the file name) and deletes the rest.
 
-.PARAMETER Days
-    Number of days to keep entries.
-    Default: 30 days.
+.PARAMETER KeepCount
+    Number of most recent log files to keep.
+    Default: 5.
 
 .EXAMPLE
-    Clear-LogFile -Days 14
+    Clear-LogFile -KeepCount 10
 
-    Cleans the log file and removes all entries older than 14 days.
+    Keeps the 10 most recent log files and deletes older ones.
 
 .EXAMPLE
     Clear-LogFile
 
-    Cleans the log file and removes all entries older than 30 days.
+    Keeps the 5 most recent log files and deletes older ones.
 
 .NOTES
-    The log file is determined based on the computer's hostname.
-
     Filename: Modules\Clear-LogFile.psm1
-    Version: 1.1.0
+    Version: 2.0.0
 #>
 
 # The module is stored in the Modules folder below the project root.
@@ -32,47 +31,37 @@ $logsDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Logs'
 
 <#
 .SYNOPSIS
-    Removes log entries older than the requested retention period.
-.PARAMETER Days
-    Number of days of log entries to retain.
+    Deletes all but the newest N log files.
+.PARAMETER KeepCount
+    Number of most recent log files to retain.
 #>
 function Clear-LogFile {
-    # Clears the log file by removing entries older than a specified number of days.
+    # Keeps only the newest N log files (one file per day) and deletes older ones.
     [CmdletBinding()]
     param (
         [Parameter(Position = 0)]
-        [int]$Days = 30
+        [int]$KeepCount = 5
     )
 
-    $hostname = $env:COMPUTERNAME
-    $logPath = [System.IO.Path]::Combine($logsDir, "$hostname.log")
-
-    if (-not (Test-Path $logPath)) {
-        Write-Error "Logfile not found: $logPath"
+    if (-not (Test-Path $logsDir)) {
+        Write-Error "Logs directory not found: $logsDir"
         return
     }
 
-    $cutoff = (Get-Date).AddDays(-$Days)
-    $lines = Get-Content $logPath
+    $logFiles = Get-ChildItem -Path $logsDir -Filter '*.log' -File |
+        Sort-Object -Property Name -Descending
 
-    $filtered = $lines | Where-Object {
-        #Date is assumed to be at the beginning of the line in the format yyyy-MM-dd HH:mm:ss
-        if ($_.Length -ge 19) {
-            $dateStr = $_.Substring(0, 19)
-            try {
-                $date = [datetime]::ParseExact($dateStr, 'yyyy-MM-dd HH:mm:ss', $null)
-                $date -ge $cutoff
-            } catch {
-                $true # Keep lines that do not match the date format (e.g., multi-line log entries)
-            }
-        } else {
-            $true # Keep short lines (likely multi-line log entries)
-        }
+    if ($logFiles.Count -le $KeepCount) {
+        Write-Output "No cleanup needed: $($logFiles.Count) log file(s) found, $KeepCount allowed."
+        return
     }
 
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllLines($logPath, [string[]]$filtered, $utf8NoBom)
-    Write-Output "Logfile cleaned: Entries older than $Days days have been removed."
+    $filesToRemove = $logFiles | Select-Object -Skip $KeepCount
+    foreach ($file in $filesToRemove) {
+        Remove-Item -Path $file.FullName -Force
+    }
+
+    Write-Output "Logfile cleanup: kept the $KeepCount newest log file(s), removed $($filesToRemove.Count) older log file(s)."
 }
 
 Export-ModuleMember -Function Clear-LogFile
