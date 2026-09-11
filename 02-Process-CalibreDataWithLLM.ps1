@@ -641,6 +641,7 @@ try {
             unique_book_count_match = $null
             validation_error        = $null
             records                 = @()
+            token_usage             = $null
             raw_response            = $RawText
             parse_error             = $null
         }
