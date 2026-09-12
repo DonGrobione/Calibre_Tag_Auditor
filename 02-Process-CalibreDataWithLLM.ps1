@@ -3,8 +3,7 @@
     Validate Calibre export data with the Mistral API.
 
 .DESCRIPTION
-    Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book export to the agent together with the prompt and tag definitions, and writes the LLM responses
-    to the 02-LLM-Result folder as individual JSON files.
+    Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book export to the agent together with the prompt and tag definitions, and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
@@ -12,7 +11,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 4
+    Version: 4.1
     Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -264,6 +263,7 @@ try {
         return $current
     }
 
+    # Extracts a human-readable error message string from an ErrorRecord object.
     function Get-ErrorMessageFromException {
         param([System.Management.Automation.ErrorRecord]$ErrorRecord)
 
@@ -282,6 +282,7 @@ try {
         return [string]$ErrorRecord
     }
 
+    # Reads the HTTP error response body stream from an ErrorRecord object.
     function Get-ErrorBodyTextFromException {
         param([System.Management.Automation.ErrorRecord]$ErrorRecord)
 
@@ -298,6 +299,7 @@ try {
         }
     }
 
+    # Extracts prompt, completion, and total token usage from an API response object.
     function Get-TokenUsageFromResponse {
         param($Response)
 
@@ -347,6 +349,7 @@ try {
             return $null
         }
 
+        # Recursively extracts text from message content structures in the API response.
         function Get-TextFromContent {
             param($Content)
 
@@ -386,6 +389,7 @@ try {
             return $null
         }
 
+        # Extracts text content from a single output entry object.
         function Get-TextFromOutputEntry {
             param($Entry)
 
@@ -469,7 +473,7 @@ try {
         return $Response | ConvertTo-Json -Depth 3
     }
 
-    # Extract the first valid JSON block from a text response.
+    # Removes markdown code block delimiters and repairs missing comma separators between JSON objects in array text.
     function Repair-JsonArrayFormatting {
         param([string]$Text)
 
@@ -491,6 +495,7 @@ try {
         return $repaired
     }
 
+    # Extracts the first valid JSON array or object substring from a raw text payload.
     function Get-JsonText {
         param([string]$RawText)
 
@@ -554,6 +559,7 @@ try {
         return $null
     }
 
+    # Generates a normalized identity key string for a book object using its title, author, and series metadata.
     function Get-BookIdentityKey {
         param(
             [object]$Book,
@@ -595,6 +601,7 @@ try {
         return ($normalizedParts -join '|')
     }
 
+    # Counts the number of unique book records in an array by computing normalized identity keys.
     function Get-UniqueBookCount {
         param(
             [object[]]$Items,
@@ -624,6 +631,7 @@ try {
         return $keys.Count
     }
 
+    # Parses raw LLM text response into a structured result object with book records and validation metadata.
     function Convert-ResponseTextToResultObject {
         param(
             [string]$RawText,
@@ -711,6 +719,7 @@ try {
         return [pscustomobject]$result
     }
 
+    # Sends a prompt payload to the Mistral conversation endpoint with automatic retry on rate limits and HTTP server errors.
     function Invoke-MistralRequest {
         param([string]$PayloadText)
 

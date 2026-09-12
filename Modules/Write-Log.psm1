@@ -1,15 +1,9 @@
-<#
+﻿<#
 .SYNOPSIS
     Writes messages with various log levels to a central log file.
 
 .DESCRIPTION
-    Writes messages with various log levels (INFO, WARN, ERROR)
-    to a central log file in the 'Logs' directory in the project root.
-    Also provides Write-HostAndLog, Write-WarningAndLog, and Write-ErrorAndLog,
-    drop-in replacements for Write-Host/Write-Warning/Write-Error that mirror
-    every message into the log file. Calling scripts alias the native cmdlets
-    to these functions (see .EXAMPLE) so no per-script logging boilerplate is needed.
-    The log entry is automatically prefixed with the name of the calling script file.
+    Writes messages with various log levels (INFO, WARN, ERROR) to a central log file in the 'Logs' directory in the project root. Also provides Write-HostAndLog, Write-WarningAndLog, and Write-ErrorAndLog, drop-in replacements for Write-Host/Write-Warning/Write-Error that mirror every message into the log file. Calling scripts alias the native cmdlets to these functions so no per-script logging boilerplate is needed. The log entry is automatically prefixed with the name of the calling script file.
 
 .PARAMETER Message
     The message to be logged.
@@ -40,23 +34,17 @@
     Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
 
 .NOTES
-    The log file is automatically created in the 'Logs' directory of the project root.
-    The file name is based on the current date (yyyy-MM-dd.log). Entries are always
-    appended, existing log files are never overwritten.
+    The log file is automatically created in the 'Logs' directory of the project root. The file name is based on the current date (yyyy-MM-dd.log). Entries are always appended, existing log files are never overwritten.
 
     Filename: Modules\Write-Log.psm1
-    Version: 1.5.0
+    Version: 1.6.0
 #>
 
 # The module is stored in the Modules folder below the project root.
 $logsDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Logs'
 
-<#
-.SYNOPSIS
-    Converts an absolute path to a readable project-relative path.
-#>
+# Converts an absolute path to a readable project-relative path, excluding temporary directory paths.
 function ConvertTo-DisplayPath {
-    # Convert absolute paths to relative paths for user output, except TEMP paths.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
@@ -108,14 +96,8 @@ function ConvertTo-DisplayPath {
     }
 }
 
-<#
-.SYNOPSIS
-    Writes one timestamped entry to the central log file.
-.PARAMETER Message
-    Message text to write.
-#>
+# Writes one timestamped entry to the central log file with retry logic for file locking.
 function Write-Log {
-    # Writes a log entry to the log file with a timestamp and log level.
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true, Position = 0)]
@@ -169,11 +151,7 @@ function Write-Log {
     }
 }
 
-# Walk the call stack to find the first frame outside this module, i.e. the calling script file.
-<#
-.SYNOPSIS
-    Returns the calling script name used in log prefixes.
-#>
+# Walks the call stack to find the calling script file name used as a log prefix.
 function Get-ScriptLogPrefix {
     $modulePath = $PSCommandPath
     foreach ($frame in (Get-PSCallStack)) {
@@ -184,12 +162,8 @@ function Get-ScriptLogPrefix {
     return '[UnknownScript]'
 }
 
-<#
-.SYNOPSIS
-    Mirrors Write-Host output to the central log file.
-#>
+# Mirrors Write-Host output to both the console and the central log file.
 function Write-HostAndLog {
-    # Drop-in replacement for Write-Host that also writes an INFO log entry.
     [CmdletBinding()]
     param(
         [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
@@ -206,12 +180,8 @@ function Write-HostAndLog {
     Microsoft.PowerShell.Utility\Write-Host @PSBoundParameters
 }
 
-<#
-.SYNOPSIS
-    Mirrors Write-Warning output to the central log file.
-#>
+# Mirrors Write-Warning output to both the console warning stream and the central log file.
 function Write-WarningAndLog {
-    # Drop-in replacement for Write-Warning that also writes a WARN log entry.
     [CmdletBinding()]
     param(
         [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
@@ -223,12 +193,8 @@ function Write-WarningAndLog {
     Microsoft.PowerShell.Utility\Write-Warning $text
 }
 
-<#
-.SYNOPSIS
-    Mirrors Write-Error output to the central log file.
-#>
+# Mirrors Write-Error output to both the console error stream and the central log file.
 function Write-ErrorAndLog {
-    # Drop-in replacement for Write-Error that also writes an ERROR log entry.
     [CmdletBinding()]
     param(
         [Parameter(Position = 0, ValueFromRemainingArguments = $true)]

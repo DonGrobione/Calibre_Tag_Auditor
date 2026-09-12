@@ -1,15 +1,12 @@
-<#
+﻿<#
 .SYNOPSIS
     Cleans up old log files, keeping only the most recent ones.
 
 .DESCRIPTION
-    Log files are stored one per day (e.g. 2026-09-11.log) in the 'Logs'
-    directory. This function keeps only the newest N log files (by date in
-    the file name) and deletes the rest.
+    Log files are stored one per day (e.g. 2026-09-11.log) in the 'Logs' directory. This function keeps only the newest N log files (by date in the file name) and deletes the rest.
 
 .PARAMETER KeepCount
-    Number of most recent log files to keep.
-    Default: 5.
+    Number of most recent log files to keep. Default: 5.
 
 .EXAMPLE
     Clear-LogFile -KeepCount 10
@@ -23,20 +20,14 @@
 
 .NOTES
     Filename: Modules\Clear-LogFile.psm1
-    Version: 2.0.0
+    Version: 2.1.0
 #>
 
 # The module is stored in the Modules folder below the project root.
 $logsDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Logs'
 
-<#
-.SYNOPSIS
-    Deletes all but the newest N log files.
-.PARAMETER KeepCount
-    Number of most recent log files to retain.
-#>
+# Deletes all but the newest N log files from the Logs directory.
 function Clear-LogFile {
-    # Keeps only the newest N log files (one file per day) and deletes older ones.
     [CmdletBinding()]
     param (
         [Parameter(Position = 0)]

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Export Calibre Portable metadata to JSON files.
 
@@ -34,8 +34,7 @@ if ($DebugBookExport) {
 }
 
 
-# Import central logging. Write-HostAndLog/WarningAndLog/ErrorAndLog live in the module
-# and mirror terminal output into the central log file.
+# Import central logging module to mirror terminal output into the central log file.
 $WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
 if (-not (Test-Path -Path $WriteLogModulePath)) {
     throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
@@ -79,6 +78,7 @@ try {
     # Create a timestamp for the output files.
     $ExportDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 
+    # Converts an input object to a JSON string with unescaped UTF-8 unicode characters.
     function ConvertTo-JsonUtf8 {
         param(
             [Parameter(Mandatory = $true)]
@@ -96,6 +96,7 @@ try {
         return $json
     }
 
+    # Writes an object to a JSON file using UTF-8 encoding without BOM.
     function Write-JsonFile {
         param(
             [Parameter(Mandatory = $true)]
@@ -110,8 +111,7 @@ try {
         [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
     }
 
-    # Query the Calibre library via calibredb, including the modification date
-    # used for descending sort order and the optional date filter.
+    # Query the Calibre library via calibredb, including the modification date used for descending sort order and the optional date filter.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
         --fields=title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
@@ -165,6 +165,7 @@ try {
     $TotalBooks = $Books.Count
     $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
 
+    # Removes invisible formatting characters and soft hyphens from a string.
     function Clear-ExportText {
         param([object]$Value)
 
@@ -179,6 +180,7 @@ try {
         return $Value
     }
 
+    # Extracts the publication year from a date string if valid.
     function Get-ExportYear {
         param([object]$PubDate)
 

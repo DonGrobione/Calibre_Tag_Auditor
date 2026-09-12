@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Run all Calibre Tag Auditor scripts in sequence.
 
@@ -100,10 +100,7 @@ try {
     }
 }
 catch {
-    # Report the error and stop execution. Every child script already logs and
-    # rethrows its own errors, so this catch only prints to terminal (with -ErrorAction
-    # Continue, so it cannot itself abort before the "Press Enter" prompt below) and
-    # never writes a second logfile entry for the same failure.
+    # Report the error and stop execution. Every child script already logs and rethrows its own errors, so this catch block only prints to terminal and never writes a second logfile entry for the same failure.
     $errorMessage = $null
 
     if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
@@ -119,8 +116,7 @@ catch {
     Microsoft.PowerShell.Utility\Write-Error $errorMessage -ErrorAction Continue
     Write-Host "Press Enter to close this window after reviewing the error..." -ForegroundColor Yellow
     Read-Host | Out-Null
-    # Exit the orchestrator directly instead of rethrowing, so no uncaught
-    # exception reaches the host and triggers spurious failure log entries.
+    # Exit the orchestrator directly instead of rethrowing, so no uncaught exception reaches the host and triggers spurious failure log entries.
     exit 1
 }
 finally {

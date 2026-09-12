@@ -173,6 +173,7 @@ function Get-JsonText {
     return $null
 }
 
+# Reads a file as UTF-8 text and parses its extracted JSON structure into an object.
 function Get-ParsedJsonObjectFromFile {
     param([string]$FilePath)
 
@@ -601,6 +602,7 @@ function Format-OdsDocument {
                     $sheetNameForFreeze = 'Sheet1'
                 }
 
+                # Sets or updates a named configuration item node in the ODS settings.xml document.
                 function Set-ConfigItemValue {
                     param(
                         [Parameter(Mandatory = $true)]

@@ -1,11 +1,9 @@
-<#
+﻿<#
 .SYNOPSIS
     Resolves the configured Calibre installation and library environment.
 
 .DESCRIPTION
-    Loads and validates the shared Calibre configuration and resolves the
-    installation, library, and database paths used by the export scripts.
-    Calibre-specific export operations remain in the calling scripts.
+    Loads and validates the shared Calibre configuration and resolves the installation, library, and database paths used by the export scripts. Calibre-specific export operations remain in the calling scripts.
 
 .PARAMETER ConfigurationPath
     Path to the shared Calibre export configuration JSON file.
@@ -21,15 +19,10 @@
 
 .NOTES
     Filename: Modules\Calibre.Environment.psm1
-    Version: 1.1.0
+    Version: 1.2.0
 #>
 
-<#
-.SYNOPSIS
-    Loads and validates the shared Calibre export configuration.
-.PARAMETER ConfigurationPath
-    Path to the configuration JSON file.
-#>
+# Loads and validates the shared Calibre export configuration JSON file from the given path.
 function Get-CalibreConfiguration {
     [CmdletBinding()]
     param(
@@ -77,12 +70,7 @@ function Get-CalibreConfiguration {
     }
 }
 
-<#
-.SYNOPSIS
-    Resolves the selected Calibre installation and library paths.
-.PARAMETER Configuration
-    Validated configuration object from Get-CalibreConfiguration.
-#>
+# Resolves the selected Calibre installation, library path, and SQLite database paths from a configuration object.
 function Get-CalibreEnvironment {
     [CmdletBinding()]
     param(
@@ -109,21 +97,14 @@ function Get-CalibreEnvironment {
     }
 
     [PSCustomObject]@{
-        PortablePath = $calibrePortablePath
-        LibraryPath  = $libraryPath
+        PortablePath   = $calibrePortablePath
+        LibraryPath    = $libraryPath
         MetadataDbPath = Join-Path -Path $libraryPath -ChildPath 'metadata.db'
         NotesDbPath    = Join-Path -Path $libraryPath -ChildPath '.calnotes\notes.db'
     }
 }
 
-<#
-.SYNOPSIS
-    Finds a named executable below the Calibre installation.
-.PARAMETER CalibrePath
-    Root path of the selected Calibre installation.
-.PARAMETER Name
-    Executable file name to locate.
-#>
+# Finds a named executable file (such as calibredb.exe or calibre-debug.exe) within the Calibre installation path.
 function Get-CalibreExecutable {
     [CmdletBinding()]
     param(
