@@ -96,3 +96,7 @@ This project is an independent personal tool and is not affiliated with, sponsor
 
 ## License
 This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) license. See [LICENSE](LICENSE) for the full terms.
+
+## AI Usage
+
+This project was created with support from AI/KI tooling.
