@@ -3,6 +3,7 @@
 
 # Secret files and credentials
 .secrets/
+Secrets
 
 # Log files
 Logs/*
@@ -18,5 +19,8 @@ Logs/*
 # Backup files (Notepad++)
 *.bak
 
-# Notes
+# Private Notes
 To-Do.md
+
+# Book Cache
+.cache/
