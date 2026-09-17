@@ -5,10 +5,12 @@
 .DESCRIPTION
     The export is configured through 01-CalibreExport.config.json. See README.md for the configuration and behavior details.
     Uses calibredb.exe from the Calibre Portable installation.
+    The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
+    converted to normalized text and included in the BookContent JSON field.
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 3.1
+    Version: 3.2
 #>
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
@@ -64,9 +66,11 @@ try {
     $CalibrePortablePath = $CalibreEnvironment.PortablePath
     $LibraryPath = $CalibreEnvironment.LibraryPath
     $CalibredbExe = Get-CalibreExecutable -CalibrePath $CalibrePortablePath -Name 'calibredb.exe'
+    $EbookConvertExe = Get-CalibreExecutable -CalibrePath $CalibrePortablePath -Name 'ebook-convert.exe'
 
     Write-Host "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
     Write-Host "Tool:       $(ConvertTo-DisplayPath -Path $CalibredbExe.FullName -BasePath $PSScriptRoot)"
+    Write-Host "Converter:  $(ConvertTo-DisplayPath -Path $EbookConvertExe.FullName -BasePath $PSScriptRoot)"
     Write-Host "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
     Write-Host "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
     Write-Host "Books/file: $BooksPerFile"
@@ -114,7 +118,7 @@ try {
     # Query the Calibre library via calibredb, including the modification date used for descending sort order and the optional date filter.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
-        --fields=title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
+        --fields=id,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
         "--with-library=$LibraryPath"
 
     if ($LASTEXITCODE -ne 0) {
@@ -162,6 +166,15 @@ try {
         return
     }
 
+    # Index Calibre's ID-based book directories once so content extraction remains efficient for large exports.
+    $BookDirectories = @{}
+    Get-ChildItem -LiteralPath $LibraryPath -Directory -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if ($_.Name -match '\((\d+)\)$') {
+                $BookDirectories[$Matches[1]] = $_
+            }
+        }
+
     $TotalBooks = $Books.Count
     $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
 
@@ -198,6 +211,80 @@ try {
         return $null
     }
 
+    # Resolves the preferred supported book file from the cached ID-based book directory.
+    function Get-PrimaryBookFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Book,
+            [Parameter(Mandatory = $true)]
+            [hashtable]$BookDirectories
+        )
+
+        if ($null -eq $Book.id) {
+            return $null
+        }
+
+        $BookDirectory = $BookDirectories[[string]$Book.id]
+        if (-not $BookDirectory) {
+            return $null
+        }
+
+        $FormatOrder = @('.epub', '.azw3', '.mobi', '.pdf')
+        $Files = @(Get-ChildItem -LiteralPath $BookDirectory.FullName -File -ErrorAction SilentlyContinue)
+        foreach ($Extension in $FormatOrder) {
+            $Match = $Files | Where-Object { $_.Extension -ieq $Extension } | Select-Object -First 1
+            if ($Match) {
+                return $Match
+            }
+        }
+
+        return $null
+    }
+
+    # Converts a book to text, normalizes whitespace, and keeps the first 20,000 words.
+    function Get-BookContent {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.IO.FileInfo]$SourceFile,
+            [Parameter(Mandatory = $true)]
+            [System.IO.FileInfo]$EbookConvertExe
+        )
+
+        $TempDirectory = Join-Path -Path $env:TEMP -ChildPath ("CalibreTagAuditor-" + [Guid]::NewGuid().ToString('N'))
+        $TempTextFile = Join-Path -Path $TempDirectory -ChildPath 'book.txt'
+
+        try {
+            New-Item -Path $TempDirectory -ItemType Directory -Force | Out-Null
+            & $EbookConvertExe.FullName $SourceFile.FullName $TempTextFile 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $TempTextFile -PathType Leaf)) {
+                return $null
+            }
+
+            $RawText = [System.IO.File]::ReadAllText($TempTextFile)
+            $NormalizedLines = @()
+            foreach ($Line in ($RawText -split "`r?`n")) {
+                $NormalizedLine = ($Line -replace '\s+', ' ').Trim()
+                if ($NormalizedLine) {
+                    $NormalizedLines += $NormalizedLine
+                } elseif ($NormalizedLines.Count -gt 0 -and $NormalizedLines[-1] -ne '') {
+                    $NormalizedLines += ''
+                }
+            }
+
+            $NormalizedText = ($NormalizedLines -join "`n").Trim()
+            $Words = @($NormalizedText -split '\s+' | Where-Object { $_ })
+            if ($Words.Count -gt 20000) {
+                $NormalizedText = $Words[0..19999] -join ' '
+            }
+
+            return $NormalizedText
+        } finally {
+            if (Test-Path -LiteralPath $TempDirectory -PathType Container) {
+                Remove-Item -LiteralPath $TempDirectory -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
     # Transform the raw data into a simple object format for JSON export.
     $Results = foreach ($Book in $Books) {
         # identifiers come back as a map (e.g. isbn/amazon/google) joined into a readable string
@@ -206,6 +293,21 @@ try {
             $IdentifierText = (($Book.identifiers.PSObject.Properties | ForEach-Object {
                 "$($_.Name):$($_.Value)"
             }) -join ", ")
+        }
+
+        $PrimaryBookFile = Get-PrimaryBookFile -Book $Book -BookDirectories $BookDirectories
+        $BookContent = $null
+        if ($PrimaryBookFile) {
+            try {
+                $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
+                if ($null -eq $BookContent) {
+                    Write-Warning ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
+                }
+            } catch {
+                Write-Warning ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
+            }
+        } else {
+            Write-Warning ("No supported primary book file found for '{0}'." -f $Book.title)
         }
 
         [PSCustomObject]@{
@@ -217,6 +319,7 @@ try {
             IDs         = Clear-ExportText -Value $IdentifierText
             Publisher   = Clear-ExportText -Value $Book.publisher
             Year        = Get-ExportYear -PubDate $Book.pubdate
+            BookContent = $BookContent
         }
     }
 

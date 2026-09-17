@@ -34,6 +34,7 @@ The book export contains the following fields from Calibre:
 - `IDs`: Available identifiers, such as ISBN, Amazon, or Google IDs
 - `Publisher`: Publisher name
 - `Year`: Publication year, extracted from the publication date
+- `BookContent`: The first 20,000 words from the preferred EPUB, AZW3, MOBI, or PDF file, with normalized whitespace. Content extraction failures result in an empty value for that book.
 
 The Calibre field `last_modified` is used only to sort the books and apply the `ChangedWithinDays` filter. It is not included in the exported book JSON files.
 
