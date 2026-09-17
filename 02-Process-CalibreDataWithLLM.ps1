@@ -3,7 +3,7 @@
     Validate Calibre export data with the Mistral API.
 
 .DESCRIPTION
-    Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book export to the agent together with the prompt and tag definitions, and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
+    Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book's extracted content and existing tags to the agent together with the prompt and tag definitions, and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
@@ -11,7 +11,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
 
 .NOTES
-    Version: 4.1
+    Version: 4.2
     Requires a valid API key in Secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -163,9 +163,8 @@ try {
         $agentBody = @{
             model        = $script:Model
             name         = "Calibre Book Validation Agent"
-            description  = "Agent for validating Calibre book data against tag definitions."
+            description  = "Agent for deriving and validating Calibre tags from extracted book content."
             instructions = $script:PromptSystem
-            tools        = @(@{ type = "web_search" })
             completion_args = @{ temperature = 0.2; top_p = 0.95 }
         } | ConvertTo-Json -Depth 10
 
@@ -849,6 +848,19 @@ try {
             Write-Warning $validationWarningText
         }
 
+        # Send extracted content and current tags in an explicit two-stage input shape.
+        $bookAnalysisRecords = @($parsedInputBooks | ForEach-Object {
+            [ordered]@{
+                Title               = $_.Title
+                Author              = $_.Author
+                Series              = $_.Series
+                SeriesIndex         = $_.SeriesIndex
+                ExistingCalibreTags = $_.Tags
+                BookContent         = $_.BookContent
+            }
+        })
+        $bookAnalysisInput = ConvertTo-Json -InputObject $bookAnalysisRecords -Depth 10
+
         $fullPrompt = @"
 $PromptSystem
 
@@ -858,9 +870,9 @@ TAG DEFINITIONS (from $($tagFile.Name)):
 $tagContent
 
 ===================================
-BOOKS (from $($bookFile.Name)):
+BOOK CONTENT AND CURRENT CALIBRE TAGS (from $($bookFile.Name)):
 ===================================
-$bookContent
+$bookAnalysisInput
 "@
 
         # Send the prompt to the Mistral conversation endpoint, retrying on incomplete/invalid responses
