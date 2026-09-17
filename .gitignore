@@ -2,7 +2,6 @@
 .vscode/
 
 # Secret files and credentials
-.secrets/
 Secrets
 
 # Log files

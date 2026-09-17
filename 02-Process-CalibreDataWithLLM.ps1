@@ -12,7 +12,7 @@
 
 .NOTES
     Version: 4.1
-    Requires a valid API key in .secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
+    Requires a valid API key in Secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
@@ -38,13 +38,13 @@ try {
     $ScriptDir = $PSScriptRoot
     $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
-    $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_API.txt"
+    $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Mistral_API.txt"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
 
     $Model = "mistral-large-latest"
     $AgentsUrl = "https://api.mistral.ai/v1/agents"
     $ConversationsUrl = "https://api.mistral.ai/v1/conversations"
-    $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath ".secrets\Mistral_Agent_Id.txt"
+    $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Mistral_Agent_Id.txt"
     $ApiTimeoutSec = 300
 
     # Retry/backoff configuration for all retry activities in this script.
@@ -79,7 +79,7 @@ try {
     }
 
     # Create the secrets folder if it is missing.
-    $SecretDir = Join-Path -Path $ScriptDir -ChildPath ".secrets"
+    $SecretDir = Join-Path -Path $ScriptDir -ChildPath "Secrets"
     if (-not (Test-Path -Path $SecretDir)) {
         New-Item -Path $SecretDir -ItemType Directory | Out-Null
     }
