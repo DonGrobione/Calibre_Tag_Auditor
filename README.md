@@ -109,7 +109,3 @@ This project is an independent personal tool and is not affiliated with, sponsor
 
 ## License
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE) for the full terms.
-
-## AI Usage
-
-This project was created with support from AI/KI tooling.
