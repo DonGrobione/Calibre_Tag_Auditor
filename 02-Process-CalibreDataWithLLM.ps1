@@ -8,25 +8,29 @@
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 4.2
+    Version: 4.3
     Requires a valid API key in Secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
-$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
-if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
+# Import the central logging module and the console/log output helpers.
+Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
 }
 
-Import-Module -Name $WriteLogModulePath -Force
+Import-Module -Name $CalibreConsoleModulePath -Force
 
-Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
-Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
-Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
+# Start an own log session only when the script is not running inside the pipeline's session.
+$ownsLogSession = -not (Test-LogSession)
+if ($ownsLogSession) {
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+}
 
 try {
     # Enable strict error handling for the LLM workflow.
@@ -67,9 +71,9 @@ try {
     else {
         $jsonFiles = Get-ChildItem -Path $OutputDir -Filter "*.json" -File
         if ($jsonFiles.Count -gt 0) {
-            Write-Host "Cleaning $($jsonFiles.Count) JSON file(s) from 02-LLM-Result..." -ForegroundColor Yellow
+            Write-ScriptLog "Cleaning $($jsonFiles.Count) JSON file(s) from 02-LLM-Result..."
             $jsonFiles | Remove-Item -Force
-            Write-Host "Done." -ForegroundColor Green
+            Write-ScriptLog "Done."
             Write-Host ""
         }
     }
@@ -111,9 +115,9 @@ try {
     # Load the tag definitions and print a short summary for the run.
     $tagContent = Get-Content -Path $tagFile.FullName -Raw -Encoding UTF8
 
-    Write-Host "Tag file: $($tagFile.Name)" -ForegroundColor Cyan
-    Write-Host "Found:    $($bookFiles.Count) book export files" -ForegroundColor Cyan
-    Write-Host "Target:   $(ConvertTo-DisplayPath -Path $OutputDir -BasePath $PSScriptRoot)" -ForegroundColor Cyan
+    Write-ScriptLog "Tag file: $($tagFile.Name)"
+    Write-ScriptLog "Found:    $($bookFiles.Count) book export files"
+    Write-ScriptLog "Target:   $(ConvertTo-DisplayPath -Path $OutputDir -BasePath $PSScriptRoot)"
     Write-Host ""
 
     # Check whether a previously stored agent ID still resolves to a real Mistral agent.
@@ -140,7 +144,7 @@ try {
         }
 
         if (-not (Test-AgentExists -AgentId $AgentId)) {
-            Write-Host "No existing agent found for ID: $AgentId" -ForegroundColor DarkGray
+            Write-ScriptLog "No existing agent found for ID: $AgentId"
             return
         }
 
@@ -148,12 +152,12 @@ try {
         $deleteUrl = "$script:AgentsUrl/$AgentId"
 
         try {
-            Write-Host "Deleting existing Mistral agent: $AgentId" -ForegroundColor Yellow
+            Write-ScriptLog "Deleting existing Mistral agent: $AgentId"
             Invoke-RestMethod -Uri $deleteUrl -Method Delete -Headers $headers -TimeoutSec $script:ApiTimeoutSec | Out-Null
-            Write-Host "Existing agent deleted successfully." -ForegroundColor Green
+            Write-ScriptLog "Existing agent deleted successfully."
         }
         catch {
-            Write-Warning "Could not delete existing agent '$AgentId': $($_.Exception.Message)"
+            Write-ScriptLog -Level WARN -Message "Could not delete existing agent '$AgentId': $($_.Exception.Message)"
         }
     }
 
@@ -169,7 +173,7 @@ try {
         } | ConvertTo-Json -Depth 10
 
         try {
-            Write-Host "Creating new Mistral agent..." -ForegroundColor Gray
+            Write-ScriptLog "Creating new Mistral agent..."
             $response = Invoke-RestMethod -Uri $script:AgentsUrl -Method Post -Headers $headers -Body $agentBody -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
 
             $agentId = $null
@@ -179,7 +183,7 @@ try {
 
             if (-not [string]::IsNullOrWhiteSpace($agentId)) {
                 Set-Content -Path $script:AgentIdFile -Value $agentId -Encoding UTF8
-                Write-Host "Agent created successfully with ID: $agentId" -ForegroundColor Green
+                Write-ScriptLog "Agent created successfully with ID: $agentId"
                 return $agentId
             }
 
@@ -205,10 +209,10 @@ try {
                 $errMessage = $_.ToString()
             }
 
-            Write-Error "Failed to create agent: $errMessage"
+            Write-ScriptLog -Level ERROR -Message "Failed to create agent: $errMessage"
             $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
             if (-not [string]::IsNullOrWhiteSpace($errorBody)) {
-                Write-Error "API Response: $errorBody"
+                Write-ScriptLog -Level ERROR -Message "API Response: $errorBody"
             }
             throw
         }
@@ -221,7 +225,7 @@ try {
             if ($null -ne $agentIdContent) {
                 $existingId = $agentIdContent.Trim()
                 if (-not [string]::IsNullOrWhiteSpace($existingId)) {
-                    Write-Host "Existing agent ID found from previous run: $existingId" -ForegroundColor Gray
+                    Write-ScriptLog "Existing agent ID found from previous run: $existingId"
                     Remove-MistralAgent -AgentId $existingId
                 }
             }
@@ -344,7 +348,7 @@ try {
         param($Response)
 
         if ($null -eq $Response) {
-            Write-Warning "No response received from the Mistral API."
+            Write-ScriptLog -Level WARN -Message "No response received from the Mistral API."
             return $null
         }
 
@@ -465,10 +469,10 @@ try {
             }
         }
 
-        Write-Host "--- Raw API response ---" -ForegroundColor Magenta
-        $Response | ConvertTo-Json -Depth 10 | ForEach-Object { Write-Host $_ -ForegroundColor Magenta }
-        Write-Host "--- End response ---" -ForegroundColor Magenta
-        Write-Warning "Response could not be parsed. See raw output above."
+        Write-ScriptLog "--- Raw API response ---"
+        Write-ScriptLog -Message ($Response | ConvertTo-Json -Depth 10)
+        Write-ScriptLog "--- End response ---"
+        Write-ScriptLog -Level WARN -Message "Response could not be parsed. See raw output above."
         return $Response | ConvertTo-Json -Depth 3
     }
 
@@ -753,32 +757,32 @@ try {
                 if ($statusCode -eq 429) {
                     $retryCount++
                     $waitTime = [math]::Pow(2, $retryCount) * $script:RateLimitRetryBaseSeconds
-                    Write-Warning "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
+                    Write-ScriptLog -Level WARN -Message "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
                 elseif ($statusCode -eq 503) {
                     $retryCount++
                     $waitTime = [math]::Min($script:ServiceUnavailableRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ServiceUnavailableRetryBaseSeconds)
-                    Write-Warning "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
+                    Write-ScriptLog -Level WARN -Message "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
                     Start-Sleep -Seconds $waitTime
                 }
                 elseif ($statusCode -eq 504) {
                     $retryCount++
                     $waitTime = $script:GatewayTimeoutRetryIntervalSeconds
-                    Write-Warning "Gateway timeout (504). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries)"
+                    Write-ScriptLog -Level WARN -Message "Gateway timeout (504). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries)"
                     Start-Sleep -Seconds $waitTime
                 }
                 else {
-                    Write-Warning "API request failed: HTTP $statusCode"
+                    Write-ScriptLog -Level WARN -Message "API request failed: HTTP $statusCode"
 
                     if ($statusCode -eq 400) {
-                        Write-Warning "Possible causes: invalid agent ID, malformed payload, missing permissions."
+                        Write-ScriptLog -Level WARN -Message "Possible causes: invalid agent ID, malformed payload, missing permissions."
                     }
                     elseif ($statusCode -eq 401) {
-                        Write-Warning "Possible cause: API key is invalid or expired."
+                        Write-ScriptLog -Level WARN -Message "Possible cause: API key is invalid or expired."
                     }
                     elseif ($statusCode -eq 500 -or $statusCode -eq 502) {
-                        Write-Warning "Server error at Mistral - retry later."
+                        Write-ScriptLog -Level WARN -Message "Server error at Mistral - retry later."
                     }
 
                     $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
@@ -791,28 +795,28 @@ try {
                     $script:LastApiErrorBody = $errorBody
 
                     if (-not [string]::IsNullOrEmpty($errorBody)) {
-                        Write-Warning "API response body: $errorBody"
+                        Write-ScriptLog -Level WARN -Message "API response body: $errorBody"
                     }
 
-                    Write-Warning "Original error: $originalError"
+                    Write-ScriptLog -Level WARN -Message "Original error: $originalError"
                     return $null
                 }
             }
         }
 
         $script:LastApiErrorMessage = "API request aborted after $maxRetries attempts."
-        Write-Error "API request aborted after $maxRetries attempts."
+        Write-ScriptLog -Level ERROR -Message "API request aborted after $maxRetries attempts."
         return $null
     }
 
     # Initialize the Mistral agent for this execution.
-    Write-Host "--- Initialize Mistral agent ---" -ForegroundColor Cyan
+    Write-ScriptLog "--- Initialize Mistral agent ---"
     $AgentId = Get-MistralAgentId
 
     if ([string]::IsNullOrWhiteSpace($AgentId)) {
         throw "Agent ID could not be resolved."
     }
-    Write-Host "Agent ID: $AgentId" -ForegroundColor Gray
+    Write-ScriptLog "Agent ID: $AgentId"
     Write-Host ""
 
     # Process each book file one by one and save every LLM response separately.
@@ -827,7 +831,7 @@ try {
 
     foreach ($bookFile in $bookFiles) {
         $counter++
-        Write-Host "[$counter/$total] Processing $($bookFile.Name)..." -ForegroundColor Yellow
+        Write-ScriptLog "[$counter/$total] Processing $($bookFile.Name)..."
 
         # Read the current book export and build the full prompt payload.
         $bookContent = Get-Content -Path $bookFile.FullName -Raw -Encoding UTF8
@@ -845,7 +849,7 @@ try {
         }
         catch {
             $validationWarningText = "Validation warning in '$($bookFile.Name)': Could not parse input book JSON for count validation. $($_.Exception.Message)"
-            Write-Warning $validationWarningText
+            Write-ScriptLog -Level WARN -Message $validationWarningText
         }
 
         # Send extracted content and current tags in an explicit two-stage input shape.
@@ -915,11 +919,11 @@ $bookAnalysisInput
 
             $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
             if ($contentAttempt -lt $script:MaxContentRetries) {
-                Write-Warning "Invalid/incomplete response for '$($bookFile.Name)' (attempt $contentAttempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
+                Write-ScriptLog -Level WARN -Message "Invalid/incomplete response for '$($bookFile.Name)' (attempt $contentAttempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
                 Start-Sleep -Seconds $script:ContentRetryDelaySeconds
             }
             else {
-                Write-WarningAndLog "All $($script:MaxContentRetries) attempt(s) for '$($bookFile.Name)' failed validation. Last reason: $retryReason"
+                Write-ScriptLog -Level WARN -Message "All $($script:MaxContentRetries) attempt(s) for '$($bookFile.Name)' failed validation. Last reason: $retryReason"
             }
         }
 
@@ -927,7 +931,7 @@ $bookAnalysisInput
             $retriedFileCount++
             if ($null -ne $resultObject -and $resultObject.status -eq 'success') {
                 $retriedFileSuccessCount++
-                Write-HostAndLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)." -ForegroundColor Green
+                Write-ScriptLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)."
             }
         }
 
@@ -935,10 +939,10 @@ $bookAnalysisInput
             $totalPromptTokens += $filePromptTokens
             $totalCompletionTokens += $fileCompletionTokens
             $totalTokens += $fileTotalTokens
-            Write-Host "  -> Token usage for $($bookFile.Name): prompt=$($filePromptTokens.ToString('N0')), completion=$($fileCompletionTokens.ToString('N0')), total=$($fileTotalTokens.ToString('N0'))" -ForegroundColor Gray
+            Write-ScriptLog "  -> Token usage for $($bookFile.Name): prompt=$($filePromptTokens.ToString('N0')), completion=$($fileCompletionTokens.ToString('N0')), total=$($fileTotalTokens.ToString('N0'))"
         }
         else {
-            Write-Host "  -> Token usage for $($bookFile.Name): unavailable" -ForegroundColor DarkGray
+            Write-ScriptLog "  -> Token usage for $($bookFile.Name): unavailable"
         }
 
         $tokenUsage = [ordered]@{
@@ -959,22 +963,20 @@ $bookAnalysisInput
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
 
             $inputCountText = if ($null -ne $resultObject.input_unique_book_count) { $resultObject.input_unique_book_count } else { 'n/a' }
-            $validationColor = if ($resultObject.unique_book_count_match -eq $true) { 'Green' } else { 'Yellow' }
-            Write-Host "  -> Validation check: input=$inputCountText, output=$($resultObject.output_unique_book_count)" -ForegroundColor $validationColor
+            Write-ScriptLog "  -> Validation check: input=$inputCountText, output=$($resultObject.output_unique_book_count)"
 
             if ($resultObject.status -eq 'success') {
-                Write-Host "  -> Saved as: $outName" -ForegroundColor Green
+                Write-ScriptLog "  -> Saved as: $outName"
             }
             elseif ($resultObject.status -eq 'warning') {
                 $validationWarningText = "Validation warning in '$($bookFile.Name)': $($resultObject.validation_error)"
-                Write-Warning $validationWarningText
-                Write-Host "  -> Saved with validation warning: $outName" -ForegroundColor Yellow
+                Write-ScriptLog -Level WARN -Message $validationWarningText
+                Write-ScriptLog "  -> Saved with validation warning: $outName"
             }
             else {
                 $validationErrorText = "Validation error in '$($bookFile.Name)': $($resultObject.parse_error)"
-                Write-Log -Message "$(Get-ScriptLogPrefix) $validationErrorText" -IsError
-                Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
-                Write-Host "  -> Saved with parse error: $outName" -ForegroundColor Yellow
+                Write-ScriptLog -Level ERROR -Message $validationErrorText
+                Write-ScriptLog "  -> Saved with parse error: $outName"
             }
         }
         else {
@@ -1009,10 +1011,9 @@ $bookAnalysisInput
             $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
             [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
 
-            Write-Host "  -> Saved with API error: $outName" -ForegroundColor Red
+            Write-ScriptLog "  -> Saved with API error: $outName"
             $validationErrorText = "Validation error in '$($bookFile.Name)': $apiDetail"
-            Write-Log -Message "$(Get-ScriptLogPrefix) $validationErrorText" -IsError
-            Microsoft.PowerShell.Utility\Write-Error -Message $validationErrorText -ErrorAction Continue
+            Write-ScriptLog -Level ERROR -Message $validationErrorText
         }
 
         Start-Sleep -Seconds $script:InterFileDelaySeconds
@@ -1022,10 +1023,10 @@ $bookAnalysisInput
     $scriptEndTime = Get-Date
     $scriptDuration = $scriptEndTime - $scriptStartTime
     Write-Host ""
-    Write-Host "--- Processing Complete ---" -ForegroundColor Cyan
-    Write-Host "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
-    Write-Host "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries." -ForegroundColor Gray
-    Write-Host "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))" -ForegroundColor Gray
+    Write-ScriptLog "--- Processing Complete ---"
+    Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))"
+    Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
+    Write-ScriptLog "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))"
 
 }
 catch {
@@ -1040,10 +1041,11 @@ catch {
         $errorMessage = $_.ToString()
     }
 
-    Write-Error $errorMessage
+    Write-ScriptLog -Level ERROR -Message $errorMessage -ErrorRecord $_
     throw
 }
 finally {
-    # Remove the logging aliases so they cannot leak into the caller's scope.
-    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
+    if ($ownsLogSession) {
+        Stop-Log
+    }
 }

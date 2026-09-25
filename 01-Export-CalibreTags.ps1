@@ -5,13 +5,13 @@
 .DESCRIPTION
     Connects Calibre .calnotes/notes.db with the library metadata.db and exports tag notes as JSON. The first line of each note is removed so the output contains only the tag definition.
     Uses calibre-debug.exe (Calibre's embedded Python interpreter) to query both SQLite databases via ATTACH. The temporary Python script is written to $env:TEMP and deleted after execution.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER OutputPath
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.1
+    Version: 3.2
 #>
 
 [CmdletBinding()]
@@ -20,12 +20,14 @@ param (
     [string]$OutputPath
 )
 
-$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
-if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
+# Import the central logging module and the console/log output helpers.
+Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
 }
 
-Import-Module -Name $WriteLogModulePath -Force
+Import-Module -Name $CalibreConsoleModulePath -Force
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
 if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) {
@@ -34,12 +36,14 @@ if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) 
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
 
-Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
-Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
-Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
-
 $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
 $CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
+
+# Start an own log session only when the script is not running inside the pipeline's session.
+$ownsLogSession = -not (Test-LogSession)
+if ($ownsLogSession) {
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+}
 
 try {
     # Enable strict error handling for the tag export workflow.
@@ -83,12 +87,12 @@ try {
     $TempDir = $env:TEMP
     $TempScript = Join-Path $TempDir "calibre_export_temp.py"
 
-    Write-Host "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
-    Write-Host "Tool:       $(ConvertTo-DisplayPath -Path $CalibreDebugExe.FullName -BasePath $PSScriptRoot)"
-    Write-Host "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
-    Write-Host "Metadata:   $(ConvertTo-DisplayPath -Path $FullMetaDb -BasePath $PSScriptRoot)"
-    Write-Host "Notes DB:   $(ConvertTo-DisplayPath -Path $FullNotesDb -BasePath $PSScriptRoot)"
-    Write-Host "Output:     $(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Tool:       $(ConvertTo-DisplayPath -Path $CalibreDebugExe.FullName -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Metadata:   $(ConvertTo-DisplayPath -Path $FullMetaDb -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Notes DB:   $(ConvertTo-DisplayPath -Path $FullNotesDb -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Output:     $(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)"
 
     # The Python code reads the tag notes from the Calibre database and writes them as JSON.
     $PythonScriptContent = @"
@@ -162,19 +166,21 @@ except Exception as e:
     if ($Result -like "*SUCCESS:*") {
         $Count = ($Result -split "SUCCESS:")[1].Trim()
         Write-Host ""
-        Write-Host "Export completed successfully. $Count entries saved to '$(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)'."
+        Write-ScriptLog "Export completed successfully. $Count entries saved to '$(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)'."
     } else {
         throw "Data export failed: $Result"
     }
 }
 catch {
-    Write-Error $_.Exception.Message
+    Write-ScriptLog -Level ERROR -Message $_.Exception.Message -ErrorRecord $_
     throw
 }
 finally {
+    # Stop the own log session first so a failing cleanup below cannot leave it running.
+    if ($ownsLogSession) {
+        Stop-Log
+    }
     if (Test-Path -Path $TempScript) {
         Remove-Item -Path $TempScript -Force -ErrorAction SilentlyContinue
     }
-    # Remove the logging aliases so they cannot leak into the caller's scope.
-    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
 }

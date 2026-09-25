@@ -31,6 +31,7 @@ Collection of PowerShell scripts for managing Calibre Portable library data, inc
 - ODS output location: `03-ODS/` directory.
 
 ## Dependencies
+- PowerShell module DonGrobione.Logging >= 1.2.0 (external, default module path; update with `Update-DonGrobioneLogging`).
 - Calibre Portable (`calibredb.exe`, `calibre-debug.exe`).
 - Mistral API (for LLM validation).
 - LibreOffice (`soffice.exe`, for headless CSV to ODS conversion).
@@ -40,5 +41,7 @@ Collection of PowerShell scripts for managing Calibre Portable library data, inc
 - When creating or fully rewriting a `.ps1` or `.psm1` file, verify/re-apply the UTF-8 BOM afterwards.
 
 ## Logging and Orchestration
+- Logging migrated from the project's own logging modules (daily log files in the project folder) to DonGrobione.Logging. Logs: `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HHmmss.log`, one file per run, 5 files per host kept by `Start-Log`.
+- `Invoke-CalibreToolsPipeline.ps1` owns the log session; child scripts start their own session only when `Test-LogSession` is `$false`.
+- `Write-ScriptLog` (`Modules\Calibre.Console.psm1`) replaces the former `Write-Host`/`Write-Warning`/`Write-Error` aliases. It never terminates; the former aliased `Write-Error` was also non-terminating because module functions do not inherit the caller's `$ErrorActionPreference`.
 - Duplicate log entries bug fix: Child scripts log and rethrow their own errors. `Invoke-CalibreToolsPipeline.ps1` catch block prints via `Microsoft.PowerShell.Utility\Write-Error -ErrorAction Continue` and calls `exit 1` instead of rethrowing.
-- Scope Script aliases for `Write-Host`, `Write-Warning`, `Write-Error` are removed in a `finally` block in every script to prevent leakage into caller sessions.

@@ -22,12 +22,14 @@
 - Enable Set-StrictMode -Version Latest only after verifying that the complete script and all imported modules support it in PowerShell 5.1.
 
 ## 4. Logging And Error Handling
-- Write-Log.psm1 is the only module allowed to write log files or emit project log entries.
-- Modules and library scripts must not contain logging code, call Write-Log, or write log files. They return data, status objects, exception records, or error objects to the calling script.
-- The orchestrator or standalone entry point script decides which events are logged and at what verbosity level, and calls Write-Log for those events.
-- Every logfile entry must identify the emitting script name as prefix (for example [MyScript.ps1]).
-- Child scripts must catch their own errors, rethrow with throw so failures bubble to the orchestrator, and let the orchestrator decide the final logging.
-- The orchestrator prints errors to terminal and writes log entries via Write-Log. It must not write duplicate log entries for errors already logged.
+- Logging uses only the external module DonGrobione.Logging (>= 1.2.0), installed in the default PowerShell module path and imported with Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop. Never use -Force for this import because it resets a running log session. The project does not install, bundle, or update the module.
+- Log files are written only by DonGrobione.Logging to <Documents>\Logs\Calibre_Tag_Auditor\. Nothing writes log files into the project folder.
+- Invoke-CalibreToolsPipeline.ps1 calls Start-Log -LogDirectory 'Calibre_Tag_Auditor' once and Stop-Log in its finally block. Every other script uses $ownsLogSession = -not (Test-LogSession), starts a session only when it owns it, and stops it in finally only when it owns it.
+- Scripts write terminal and log output through Write-ScriptLog from Modules\Calibre.Console.psm1, which forwards @PSBoundParameters unchanged to DonGrobione.Logging\Write-Log and also writes to the information stream. Levels are DEBUG, INFO, WARN, ERROR, and FATAL. Plain Write-Host is used only for console-only output such as blank lines and prompts.
+- Never define a function named Write-Log and never read the logging module's private state ($script:LogConfig, & (Get-Module ...) { ... }, .SessionState). Use Test-LogSession and Get-LogSession; code that needs the log directory must handle a $null result from Get-LogSession.
+- Modules and library scripts must not contain logging code or write log files. They return data, status objects, exception records, or error objects to the calling script. Modules\Calibre.Console.psm1 is the only exception because it provides Write-ScriptLog.
+- Child scripts must catch their own errors, log them once with Write-ScriptLog -Level ERROR -ErrorRecord $_, and rethrow with throw so failures bubble to the orchestrator.
+- The orchestrator prints errors to terminal only. It must not write duplicate log entries for errors already logged.
 - Scripts return exit code 0 on success and 1 on unhandled failure. Standalone entry points and orchestrators use exit codes; sub-scripts called by an orchestrator rely on the orchestrator's exit handling.
 - Project-internal paths are logged as relative paths from the repository root; paths under $env:TEMP are logged as absolute paths.
 - Temporary files must be created under $env:TEMP and removed after use.
@@ -52,7 +54,7 @@
 
 ## 9. Project-Specific Rules (Calibre_Tag_Auditor)
 - Store secrets under Secrets/ as per the unified standard.
-- Write-Host, Write-Warning, and Write-Error must be wrapped or aliased so terminal output is preserved while logging the same message. Aliases must be removed in a finally block before exit to prevent leaking into caller sessions.
+- Do not alias Write-Host, Write-Warning, or Write-Error. Messages that must appear in both terminal and log are written with Write-ScriptLog.
 - LLM agent prompt instructions must be stored exclusively in external .txt prompt files; do not embed agent prompt text in PowerShell scripts.
 - Maximum three parameters per function.
-- Every script must import Write-Log.psm1 by using a path based on $PSScriptRoot.
+- Every script must import DonGrobione.Logging by name and Modules\Calibre.Console.psm1 by using a path based on $PSScriptRoot.

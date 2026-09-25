@@ -7,10 +7,10 @@
     Uses calibredb.exe from the Calibre Portable installation.
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
     converted to normalized text and included in the BookContent JSON field.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 3.2
+    Version: 3.3
 #>
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
@@ -35,18 +35,20 @@ if ($DebugBookExport) {
     $BooksPerFile = 5
 }
 
-
-# Import central logging module to mirror terminal output into the central log file.
-$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
-if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
+# Import the central logging module and the console/log output helpers.
+Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
 }
 
-Import-Module -Name $WriteLogModulePath -Force
+Import-Module -Name $CalibreConsoleModulePath -Force
 
-Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
-Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
-Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
+# Start an own log session only when the script is not running inside the pipeline's session.
+$ownsLogSession = -not (Test-LogSession)
+if ($ownsLogSession) {
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+}
 
 try {
     # Enable strict error handling so problems are reported immediately.
@@ -68,15 +70,15 @@ try {
     $CalibredbExe = Get-CalibreExecutable -CalibrePath $CalibrePortablePath -Name 'calibredb.exe'
     $EbookConvertExe = Get-CalibreExecutable -CalibrePath $CalibrePortablePath -Name 'ebook-convert.exe'
 
-    Write-Host "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
-    Write-Host "Tool:       $(ConvertTo-DisplayPath -Path $CalibredbExe.FullName -BasePath $PSScriptRoot)"
-    Write-Host "Converter:  $(ConvertTo-DisplayPath -Path $EbookConvertExe.FullName -BasePath $PSScriptRoot)"
-    Write-Host "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
-    Write-Host "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
-    Write-Host "Books/file: $BooksPerFile"
-    Write-Host "Changed:    $ChangedWithinDays day(s)"
+    Write-ScriptLog "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Tool:       $(ConvertTo-DisplayPath -Path $CalibredbExe.FullName -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Converter:  $(ConvertTo-DisplayPath -Path $EbookConvertExe.FullName -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Books/file: $BooksPerFile"
+    Write-ScriptLog "Changed:    $ChangedWithinDays day(s)"
     if ($DebugBookExport) {
-        Write-Host "Debug:      20 books, 5 books/file"
+        Write-ScriptLog "Debug:      20 books, 5 books/file"
     }
 
     # Create a timestamp for the output files.
@@ -162,7 +164,7 @@ try {
     }
 
     if (-not $Books -or $Books.Count -eq 0) {
-        Write-Warning "No books were found in the library."
+        Write-ScriptLog -Level WARN -Message "No books were found in the library."
         return
     }
 
@@ -301,13 +303,13 @@ try {
             try {
                 $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
                 if ($null -eq $BookContent) {
-                    Write-Warning ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
+                    Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
                 }
             } catch {
-                Write-Warning ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
+                Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
             }
         } else {
-            Write-Warning ("No supported primary book file found for '{0}'." -f $Book.title)
+            Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'." -f $Book.title)
         }
 
         [PSCustomObject]@{
@@ -329,9 +331,9 @@ try {
         Write-JsonFile -Path $JsonFile -InputObject $Results -Depth 10
 
         Write-Host ""
-        Write-Host "Export complete:"
-        Write-Host ("  Books: {0}" -f $Results.Count)
-        Write-Host ("  File:  {0}" -f (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
+        Write-ScriptLog "Export complete:"
+        Write-ScriptLog ("  Books: {0}" -f $Results.Count)
+        Write-ScriptLog ("  File:  {0}" -f (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
     } else {
         $FileCount = [Math]::Ceiling($TotalBooks / $BooksPerFile)
         $PadWidth = [Math]::Max(2, $FileCount.ToString().Length)
@@ -347,22 +349,23 @@ try {
 
             Write-JsonFile -Path $JsonFile -InputObject $Batch -Depth 10
 
-            Write-Host ("  File {0}/{1}: Books {2}-{3} ({4}) -> {5}" -f `
+            Write-ScriptLog ("  File {0}/{1}: Books {2}-{3} ({4}) -> {5}" -f `
                 $CurrentFile, $FileCount, ($StartIndex + 1), ($EndIndex + 1), $Batch.Count, (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
 
             $StartIndex += $BooksPerFile
         }
 
         Write-Host ""
-        Write-Host "Export complete:"
-        Write-Host ("  Books:   {0}" -f $TotalBooks)
-        Write-Host ("  Files:   {0}" -f $FileCount)
-        Write-Host ("  Per file: max {0}" -f $BooksPerFile)
+        Write-ScriptLog "Export complete:"
+        Write-ScriptLog ("  Books:   {0}" -f $TotalBooks)
+        Write-ScriptLog ("  Files:   {0}" -f $FileCount)
+        Write-ScriptLog ("  Per file: max {0}" -f $BooksPerFile)
     }
 } catch {
-    Write-Error $_.Exception.Message
+    Write-ScriptLog -Level ERROR -Message $_.Exception.Message -ErrorRecord $_
     throw
 } finally {
-    # Remove the logging aliases so they cannot leak into the caller's scope.
-    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
+    if ($ownsLogSession) {
+        Stop-Log
+    }
 }

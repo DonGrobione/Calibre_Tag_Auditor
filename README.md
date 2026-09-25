@@ -5,6 +5,7 @@ I started this project because I have several thousand books and lost track of t
 
 ## Requirements
 - Windows with PowerShell 5.1 or later
+- PowerShell module [DonGrobione.Logging](https://github.com/DonGrobione/Logging) version 1.2.0 or later, installed in the default PowerShell module path. This project does not install, bundle, or update it.
 - LibreOffice (current standard installation; headless conversion support required)
 - Calibre's embedded Python is used for the tag export step
 - No separate system Python installation is required for ODS conversion
@@ -68,9 +69,19 @@ After a successful run, the generated files are located here:
 - `01-Export`: exported books and tag definitions
 - `02-LLM-Result`: Mistral validation results
 - `03-ODS`: formatted ODS file for LibreOffice
-- `Logs`: logs for troubleshooting
 
 The ODS file contains the columns `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason`. For `ProposedAction = NO_CHANGES`, `Tag` and `Reason` are empty cells.
+
+## Logging
+All scripts log through the DonGrobione.Logging module. Each run writes one log file to `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HHmmss.log`. When the pipeline runs, all steps share one log file; a step started on its own writes its own log file. The module keeps the 5 newest log files per computer and deletes older ones automatically. The project folder no longer contains log files.
+
+Terminal output shows the same messages; warnings and errors are prefixed with `WARN:` or `ERROR:`.
+
+To update the logging module:
+
+```powershell
+Update-DonGrobioneLogging
+```
 
 ## Run Individual Steps
 The quick start is normally sufficient. For troubleshooting, run the steps individually in this order:
@@ -84,6 +95,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **Calibre is not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
 - **The Mistral request failed:** Check the API key in `Secrets/Mistral_API.txt`.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
+- **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
 
 ## AI Usage

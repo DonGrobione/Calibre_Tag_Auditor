@@ -5,28 +5,21 @@
 .DESCRIPTION
     Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
+    The pipeline starts one DonGrobione.Logging (>= 1.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Log rotation is handled by Start-Log. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
     On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
 
 .NOTES
-    Version: 1.7
+    Version: 1.8
 #>
 
-$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
-$ClearLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Clear-LogFile.psm1"
-if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
-}
-if (-not (Test-Path -Path $ClearLogModulePath)) {
-    throw "Required module not found: '.\\Modules\\Clear-LogFile.psm1'"
+# Import the central logging module and the console/log output helpers.
+Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
 }
 
-Import-Module -Name $WriteLogModulePath -Force
-Import-Module -Name $ClearLogModulePath -Force
-
-Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
-Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
-Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
+Import-Module -Name $CalibreConsoleModulePath -Force
 
 # Clear the console to keep the output readable for each run.
 clear-Host
@@ -34,6 +27,9 @@ clear-Host
 # Stop execution immediately on errors.
 $ErrorActionPreference = 'Stop'
 $startTime = Get-Date
+
+# Start the log session shared by all child scripts.
+Start-Log -LogDirectory 'Calibre_Tag_Auditor'
 
 try {
     # Define the order of scripts to run.
@@ -47,7 +43,7 @@ try {
     # Run each script in sequence.
     foreach ($script in $scripts) {
         $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $script
-        Write-Host "=== Starting: $script ===" -ForegroundColor Cyan
+        Write-ScriptLog "=== Starting: $script ==="
         & $scriptPath
 
         # Check whether the script completed successfully.
@@ -55,7 +51,7 @@ try {
             throw "Script '$script' exited with code $LASTEXITCODE. Pipeline aborted."
         }
 
-        Write-Host "=== Completed: $script ===" -ForegroundColor Green
+        Write-ScriptLog "=== Completed: $script ==="
         Write-Host ""
     }
 
@@ -76,28 +72,16 @@ try {
     $totalTokens = $totalPromptTokens + $totalCompletionTokens
 
     # Print a summary when the pipeline finishes successfully.
-    Write-Host "--- Pipeline complete ---" -ForegroundColor Cyan
+    Write-ScriptLog "--- Pipeline complete ---"
     $endTime = Get-Date
     $duration = $endTime - $startTime
-    Write-Host "Start:    $($startTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
-    Write-Host "End:      $($endTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
-    Write-Host "Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
+    Write-ScriptLog "Start:    $($startTime.ToString('HH:mm:ss'))"
+    Write-ScriptLog "End:      $($endTime.ToString('HH:mm:ss'))"
+    Write-ScriptLog "Duration: $($duration.ToString('hh\:mm\:ss'))"
     Write-Host ""
-    Write-Host "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))" -ForegroundColor Gray
-    Write-Host "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))" -ForegroundColor Gray
-    Write-Host "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))" -ForegroundColor Gray
-
-    # Clean up old log files after the pipeline finishes successfully.
-    try {
-        Push-Location -Path $PSScriptRoot
-        Clear-LogFile
-    }
-    catch {
-        Write-Warning "Log cleanup failed: $($_.Exception.Message). Pipeline continues."
-    }
-    finally {
-        Pop-Location
-    }
+    Write-ScriptLog "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))"
+    Write-ScriptLog "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))"
+    Write-ScriptLog "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))"
 }
 catch {
     # Report the error and stop execution. Every child script already logs and rethrows its own errors, so this catch block only prints to terminal and never writes a second logfile entry for the same failure.
@@ -120,5 +104,5 @@ catch {
     exit 1
 }
 finally {
-    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
+    Stop-Log
 }

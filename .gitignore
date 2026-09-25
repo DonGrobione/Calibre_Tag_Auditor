@@ -4,9 +4,6 @@
 # Secret files and credentials
 Secrets
 
-# Log files
-Logs/*
-
 # Generated export and result data
 01-Export/*
 !01-Export/.gitkeep

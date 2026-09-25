@@ -13,7 +13,7 @@
 
     For rows where ProposedAction = NO_CHANGES, Tag and Reason are empty cells in the review sheet.
     The final ODS file is written to the output folder using the naming pattern 03-ODS_Convert_<timestamp>.ods, where <timestamp> is taken from the first input JSON file. All temporary files are created under $env:TEMP and removed after use.
-    Script output (info, warnings, and errors) is written both to terminal and to the central log via Modules\Write-Log.psm1. A finally block removes the logging aliases before the script exits so they cannot leak into the calling shell.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert. Defaults to .\02-LLM-Result.
@@ -22,7 +22,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.2
+    Version: 1.3
 #>
 
 [CmdletBinding()]
@@ -31,16 +31,14 @@ param(
     [string]$OdsOutputFolder = ".\03-ODS"
 )
 
-$WriteLogModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Write-Log.psm1"
-if (-not (Test-Path -Path $WriteLogModulePath)) {
-    throw "Required module not found: '.\\Modules\\Write-Log.psm1'"
+# Import the central logging module and the console/log output helpers.
+Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
 }
 
-Import-Module -Name $WriteLogModulePath -Force
-
-Set-Alias -Name Write-Host -Value Write-HostAndLog -Scope Script
-Set-Alias -Name Write-Warning -Value Write-WarningAndLog -Scope Script
-Set-Alias -Name Write-Error -Value Write-ErrorAndLog -Scope Script
+Import-Module -Name $CalibreConsoleModulePath -Force
 
 #region JSON parsing and record extraction
 
@@ -198,13 +196,13 @@ function Get-BookRecordsFromJsonFiles {
 
     $allObjects = @()
     foreach ($file in $Files) {
-        Write-Host "Processing: $($file.Name)"
+        Write-ScriptLog "Processing: $($file.Name)"
 
         try {
             $parsed = Get-ParsedJsonObjectFromFile -FilePath $file.FullName
         }
         catch {
-            Write-Warning "Failed to process $($file.Name): $($_.Exception.Message)"
+            Write-ScriptLog -Level WARN -Message "Failed to process $($file.Name): $($_.Exception.Message)"
             continue
         }
 
@@ -783,6 +781,12 @@ function Format-OdsDocument {
 
 $ErrorActionPreference = 'Stop'
 
+# Start an own log session only when the script is not running inside the pipeline's session.
+$ownsLogSession = -not (Test-LogSession)
+if ($ownsLogSession) {
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+}
+
 try {
     if (-not [System.IO.Path]::IsPathRooted($InputFolder)) {
         $InputFolder = Join-Path -Path $PSScriptRoot -ChildPath $InputFolder
@@ -796,7 +800,7 @@ try {
 
     $files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
     if (-not $files) {
-        Write-Error "No JSON files found in folder: $(ConvertTo-DisplayPath -Path $inputFolderFull -BasePath $PSScriptRoot)"
+        Write-ScriptLog -Level ERROR -Message "No JSON files found in folder: $(ConvertTo-DisplayPath -Path $inputFolderFull -BasePath $PSScriptRoot)"
         throw "No JSON input files found."
     }
 
@@ -808,13 +812,13 @@ try {
 
     $allObjects = Get-BookRecordsFromJsonFiles -Files $files
     if (-not $allObjects) {
-        Write-Error "No valid JSON objects were found."
+        Write-ScriptLog -Level ERROR -Message "No valid JSON objects were found."
         throw "No valid JSON objects were found."
     }
 
     $csvRows = ConvertTo-CsvRows -Objects $allObjects
     if (-not $csvRows) {
-        Write-Error "No valid book records with Title/Author/Action/Tag/Reason were found."
+        Write-ScriptLog -Level ERROR -Message "No valid book records with Title/Author/Action/Tag/Reason were found."
         throw "No valid book records were found."
     }
 
@@ -827,7 +831,7 @@ try {
         throw "LibreOffice installation not found. Please install LibreOffice or add it to the default installation paths."
     }
 
-    Write-Host "Detected LibreOffice: $(ConvertTo-DisplayPath -Path $libreOfficeExe -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Detected LibreOffice: $(ConvertTo-DisplayPath -Path $libreOfficeExe -BasePath $PSScriptRoot)"
 
     # Write the merged records as a temporary pipe-delimited UTF-8 CSV under $env:TEMP for LibreOffice to consume.
     $tempCsvPath = Join-Path -Path $env:TEMP -ChildPath ("03-LLM-Result_{0}_{1}.csv" -f $timestamp, [System.Guid]::NewGuid().ToString('N'))
@@ -835,7 +839,7 @@ try {
         $csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
         $csvContent | Out-File -FilePath $tempCsvPath -Encoding UTF8 -Force
 
-        Write-Host "Converting merged records to ODS..."
+        Write-ScriptLog "Converting merged records to ODS..."
         $generatedFilePath = Invoke-LibreOfficeCsvToOds -LibreOfficeExe $libreOfficeExe -CsvFilePath $tempCsvPath -OutputFolder $env:TEMP
         $generatedFile = Get-Item -Path $generatedFilePath -ErrorAction Stop
 
@@ -849,7 +853,7 @@ try {
         Move-Item -Path $generatedFile.FullName -Destination $targetFilePath -Force
 
         Format-OdsDocument -OdsFilePath $targetFilePath
-        Write-Host "Created and formatted ODS: $(ConvertTo-DisplayPath -Path $targetFilePath -BasePath $PSScriptRoot)"
+        Write-ScriptLog "Created and formatted ODS: $(ConvertTo-DisplayPath -Path $targetFilePath -BasePath $PSScriptRoot)"
     }
     finally {
         if (Test-Path -Path $tempCsvPath -PathType Leaf) {
@@ -858,10 +862,11 @@ try {
     }
 }
 catch {
-    Write-Error "LLM result to ODS conversion failed: $($_.Exception.Message)"
+    Write-ScriptLog -Level ERROR -Message "LLM result to ODS conversion failed: $($_.Exception.Message)" -ErrorRecord $_
     throw
 }
 finally {
-    # Remove the logging aliases so they cannot leak into the caller's scope.
-    Remove-Item -Path Alias:Write-Host, Alias:Write-Warning, Alias:Write-Error -ErrorAction SilentlyContinue
+    if ($ownsLogSession) {
+        Stop-Log
+    }
 }
