@@ -11,6 +11,3 @@ Secrets
 !02-LLM-Result/.gitkeep
 03-ODS/*
 !03-ODS/.gitkeep
-
-# Book Cache
-.cache/
