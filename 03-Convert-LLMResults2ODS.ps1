@@ -22,7 +22,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.3
+    Version: 1.4
 #>
 
 [CmdletBinding()]
@@ -33,9 +33,9 @@ param(
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
-$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
@@ -61,15 +61,27 @@ function Repair-Mojibake {
     return $Text
 }
 
+# Returns $true when the text parses as JSON and $false otherwise.
+function Test-JsonText {
+    param([string]$Text)
+
+    try {
+        ConvertFrom-Json -InputObject $Text -ErrorAction Stop | Out-Null
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
 # Try to restore malformed or misdecoded JSON text into a parsable format.
 function Repair-JsonText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
 
-    try {
-        ConvertFrom-Json -InputObject $Text -ErrorAction Stop | Out-Null
+    if (Test-JsonText -Text $Text) {
         return $Text
-    } catch {}
+    }
 
     if ($Text -notmatch 'Ã|Â') {
         return $Text
@@ -78,17 +90,20 @@ function Repair-JsonText {
     try {
         $latin1Bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($Text)
         $decoded = [System.Text.Encoding]::UTF8.GetString($latin1Bytes)
-        try {
-            ConvertFrom-Json -InputObject $decoded -ErrorAction Stop | Out-Null
-            return $decoded
-        } catch {}
-    } catch {}
+    }
+    catch {
+        return $Text
+    }
+
+    if (Test-JsonText -Text $decoded) {
+        return $decoded
+    }
 
     return $Text
 }
 
 # Recursively process JSON values so strings are cleaned and nested structures are preserved.
-function Convert-JsonValues {
+function Convert-JsonValue {
     param([object]$Item)
     if ($null -eq $Item) { return $null }
 
@@ -100,7 +115,7 @@ function Convert-JsonValues {
         $result = @{}
         foreach ($key in $Item.Keys) {
             $fixedKey = Repair-Mojibake -Text $key
-            $result[$fixedKey] = Convert-JsonValues -Item $Item[$key]
+            $result[$fixedKey] = Convert-JsonValue -Item $Item[$key]
         }
         return $result
     }
@@ -108,7 +123,7 @@ function Convert-JsonValues {
     if ($Item -is [System.Collections.IEnumerable] -and -not ($Item -is [string])) {
         $list = @()
         foreach ($element in $Item) {
-            $list += Convert-JsonValues -Item $element
+            $list += Convert-JsonValue -Item $element
         }
         return ,$list
     }
@@ -191,7 +206,7 @@ function Get-ParsedJsonObjectFromFile {
 }
 
 # Read all JSON result files and return the flattened list of book result records.
-function Get-BookRecordsFromJsonFiles {
+function Get-BookRecordFromJsonFile {
     param([System.IO.FileInfo[]]$Files)
 
     $allObjects = @()
@@ -228,18 +243,19 @@ function Get-BookRecordsFromJsonFiles {
 }
 
 # Normalize raw JSON objects into the five business columns required by the ODS review sheet.
-function ConvertTo-CsvRows {
+function ConvertTo-CsvRow {
     param([object[]]$Objects)
 
     $csvRows = @()
     foreach ($item in $Objects) {
-        $cleanItem = Convert-JsonValues -Item $item
+        $cleanItem = Convert-JsonValue -Item $item
 
-        $title = if ($cleanItem.PSObject.Properties.Match('Title')) { $cleanItem.Title } elseif ($cleanItem.PSObject.Properties.Match('Titel')) { $cleanItem.Titel } else { $null }
-        $author = if ($cleanItem.PSObject.Properties.Match('Author')) { $cleanItem.Author } elseif ($cleanItem.PSObject.Properties.Match('Autor')) { $cleanItem.Autor } else { $null }
-        $proposedAction = if ($cleanItem.PSObject.Properties.Match('ProposedAction')) { $cleanItem.ProposedAction } elseif ($cleanItem.PSObject.Properties.Match('Action')) { $cleanItem.Action } elseif ($cleanItem.PSObject.Properties.Match('Aktion')) { $cleanItem.Aktion } else { $null }
-        $tag = if ($cleanItem.PSObject.Properties.Match('Tag')) { $cleanItem.Tag } else { $null }
-        $reason = if ($cleanItem.PSObject.Properties.Match('Reason')) { $cleanItem.Reason } elseif ($cleanItem.PSObject.Properties.Match('Begründung')) { $cleanItem.Begründung } else { $null }
+        # The property indexer returns $null for a missing property; Properties.Match() returns an empty collection that still counts as $true.
+        $title = if ($cleanItem.PSObject.Properties['Title']) { $cleanItem.Title } elseif ($cleanItem.PSObject.Properties['Titel']) { $cleanItem.Titel } else { $null }
+        $author = if ($cleanItem.PSObject.Properties['Author']) { $cleanItem.Author } elseif ($cleanItem.PSObject.Properties['Autor']) { $cleanItem.Autor } else { $null }
+        $proposedAction = if ($cleanItem.PSObject.Properties['ProposedAction']) { $cleanItem.ProposedAction } elseif ($cleanItem.PSObject.Properties['Action']) { $cleanItem.Action } elseif ($cleanItem.PSObject.Properties['Aktion']) { $cleanItem.Aktion } else { $null }
+        $tag = if ($cleanItem.PSObject.Properties['Tag']) { $cleanItem.Tag } else { $null }
+        $reason = if ($cleanItem.PSObject.Properties['Reason']) { $cleanItem.Reason } elseif ($cleanItem.PSObject.Properties['Begründung']) { $cleanItem.Begründung } else { $null }
 
         if ([string]::IsNullOrWhiteSpace([string]$title) -and
             [string]::IsNullOrWhiteSpace([string]$author) -and
@@ -301,7 +317,7 @@ function Get-LibreOfficePath {
 }
 
 # Run LibreOffice headless to convert one CSV file to ODS and wait until the output file appears.
-function Invoke-LibreOfficeCsvToOds {
+function Invoke-LibreOfficeConversion {
     param(
         [Parameter(Mandatory = $true)]
         [string]$LibreOfficeExe,
@@ -602,6 +618,7 @@ function Format-OdsDocument {
 
                 # Sets or updates a named configuration item node in the ODS settings.xml document.
                 function Set-ConfigItemValue {
+                    [CmdletBinding(SupportsShouldProcess = $true)]
                     param(
                         [Parameter(Mandatory = $true)]
                         [System.Xml.XmlElement]$Parent,
@@ -618,6 +635,10 @@ function Format-OdsDocument {
                         [Parameter(Mandatory = $true)]
                         [string]$Value
                     )
+
+                    if (-not $PSCmdlet.ShouldProcess("settings.xml config item '$Name'", "Set value '$Value'")) {
+                        return
+                    }
 
                     $node = $Parent.SelectSingleNode("config:config-item[@config:name='$Name']", $NamespaceManager)
                     if ($null -eq $node) {
@@ -810,13 +831,13 @@ try {
         throw "Could not determine a timestamp from input file name: $($firstFile.Name)"
     }
 
-    $allObjects = Get-BookRecordsFromJsonFiles -Files $files
+    $allObjects = Get-BookRecordFromJsonFile -Files $files
     if (-not $allObjects) {
         Write-ScriptLog -Level ERROR -Message "No valid JSON objects were found."
         throw "No valid JSON objects were found."
     }
 
-    $csvRows = ConvertTo-CsvRows -Objects $allObjects
+    $csvRows = ConvertTo-CsvRow -Objects $allObjects
     if (-not $csvRows) {
         Write-ScriptLog -Level ERROR -Message "No valid book records with Title/Author/Action/Tag/Reason were found."
         throw "No valid book records were found."
@@ -840,7 +861,7 @@ try {
         $csvContent | Out-File -FilePath $tempCsvPath -Encoding UTF8 -Force
 
         Write-ScriptLog "Converting merged records to ODS..."
-        $generatedFilePath = Invoke-LibreOfficeCsvToOds -LibreOfficeExe $libreOfficeExe -CsvFilePath $tempCsvPath -OutputFolder $env:TEMP
+        $generatedFilePath = Invoke-LibreOfficeConversion -LibreOfficeExe $libreOfficeExe -CsvFilePath $tempCsvPath -OutputFolder $env:TEMP
         $generatedFile = Get-Item -Path $generatedFilePath -ErrorAction Stop
 
         $targetFileName = "03-ODS_Convert_$timestamp.ods"

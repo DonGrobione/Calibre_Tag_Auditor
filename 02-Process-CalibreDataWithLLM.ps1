@@ -11,7 +11,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 4.3
+    Version: 4.4
     Requires a valid API key in Secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -19,9 +19,9 @@
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
-$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
@@ -74,7 +74,7 @@ try {
             Write-ScriptLog "Cleaning $($jsonFiles.Count) JSON file(s) from 02-LLM-Result..."
             $jsonFiles | Remove-Item -Force
             Write-ScriptLog "Done."
-            Write-Host ""
+            Write-Information -MessageData '' -InformationAction Continue
         }
     }
 
@@ -118,10 +118,10 @@ try {
     Write-ScriptLog "Tag file: $($tagFile.Name)"
     Write-ScriptLog "Found:    $($bookFiles.Count) book export files"
     Write-ScriptLog "Target:   $(ConvertTo-DisplayPath -Path $OutputDir -BasePath $PSScriptRoot)"
-    Write-Host ""
+    Write-Information -MessageData '' -InformationAction Continue
 
     # Check whether a previously stored agent ID still resolves to a real Mistral agent.
-    function Test-AgentExists {
+    function Test-MistralAgent {
         param([string]$AgentId)
 
         $headers = @{ Authorization = "Bearer $script:ApiKey" }
@@ -137,14 +137,19 @@ try {
 
     # Delete an existing agent if it is still available.
     function Remove-MistralAgent {
+        [CmdletBinding(SupportsShouldProcess = $true)]
         param([string]$AgentId)
 
         if ([string]::IsNullOrWhiteSpace($AgentId)) {
             return
         }
 
-        if (-not (Test-AgentExists -AgentId $AgentId)) {
+        if (-not (Test-MistralAgent -AgentId $AgentId)) {
             Write-ScriptLog "No existing agent found for ID: $AgentId"
+            return
+        }
+
+        if (-not $PSCmdlet.ShouldProcess("Mistral agent '$AgentId'", 'Delete')) {
             return
         }
 
@@ -163,6 +168,13 @@ try {
 
     # Create a fresh Mistral agent for this run.
     function New-MistralAgent {
+        [CmdletBinding(SupportsShouldProcess = $true)]
+        param()
+
+        if (-not $PSCmdlet.ShouldProcess("Mistral agent with model '$script:Model'", 'Create')) {
+            return $null
+        }
+
         $headers = @{ Authorization = "Bearer $script:ApiKey" }
         $agentBody = @{
             model        = $script:Model
@@ -817,7 +829,7 @@ try {
         throw "Agent ID could not be resolved."
     }
     Write-ScriptLog "Agent ID: $AgentId"
-    Write-Host ""
+    Write-Information -MessageData '' -InformationAction Continue
 
     # Process each book file one by one and save every LLM response separately.
     $counter = 0
@@ -1022,7 +1034,7 @@ $bookAnalysisInput
     # Final summary for the completed run.
     $scriptEndTime = Get-Date
     $scriptDuration = $scriptEndTime - $scriptStartTime
-    Write-Host ""
+    Write-Information -MessageData '' -InformationAction Continue
     Write-ScriptLog "--- Processing Complete ---"
     Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))"
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."

@@ -1,0 +1,208 @@
+﻿<#
+.SYNOPSIS
+    Pester tests for the JSON, CSV, and LibreOffice functions in 03-Convert-LLMResults2ODS.ps1.
+
+.DESCRIPTION
+    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue, Get-BookRecordFromJsonFile, ConvertTo-CsvRow, Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
+    The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
+
+.EXAMPLE
+    Import-Module Pester -RequiredVersion 3.4.0; Invoke-Pester -Path '.\Tests\03-Convert-LLMResults2ODS.Tests.ps1'
+#>
+
+$projectRoot = Split-Path -Path $PSScriptRoot -Parent
+$scriptPath = Join-Path -Path $projectRoot -ChildPath '03-Convert-LLMResults2ODS.ps1'
+$parseErrors = $null
+$scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
+$functionNames = @('Repair-Mojibake', 'Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-JsonText', 'Get-ParsedJsonObjectFromFile', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-ConfigItemValue')
+foreach ($functionName in $functionNames) {
+    $definition = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+        }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+
+# Stands in for the Calibre.Console logging helper so the tests write no log file.
+function Write-ScriptLog {
+    param($Message, $Level, $ErrorRecord)
+    $null = $Message, $Level, $ErrorRecord
+}
+
+# Stands in for the Calibre.Console display path helper and returns the path unchanged.
+function ConvertTo-DisplayPath {
+    param($Path, $BasePath)
+    $null = $BasePath
+    $Path
+}
+
+# UTF-8 text "Müller" decoded as Latin-1, as produced by a wrong decoding step.
+$mojibakeText = 'M' + [char]0x00C3 + [char]0x00BC + 'ller'
+$umlautText = 'M' + [char]0x00FC + 'ller'
+
+Describe '03-Convert-LLMResults2ODS.ps1 source' {
+    It 'parses without errors' {
+        @($parseErrors).Count | Should Be 0
+    }
+}
+
+Describe 'Test-JsonText' {
+    It 'returns $true for valid JSON' {
+        Test-JsonText -Text '{ "a": 1 }' | Should Be $true
+    }
+
+    It 'returns $false for invalid JSON' {
+        Test-JsonText -Text '{ a: ' | Should Be $false
+    }
+}
+
+Describe 'Repair-JsonText' {
+    It 'returns valid JSON unchanged' {
+        Repair-JsonText -Text '{ "Title": "A" }' | Should Be '{ "Title": "A" }'
+    }
+
+    It 'returns invalid JSON without mojibake unchanged' {
+        Repair-JsonText -Text '{ broken' | Should Be '{ broken'
+    }
+
+    It 'returns an empty string unchanged' {
+        Repair-JsonText -Text '' | Should Be ''
+    }
+
+    It 'returns valid JSON with mojibake unchanged, because Convert-JsonValue repairs the values later' {
+        $validJson = '{ "Author": "' + $mojibakeText + '" }'
+        Repair-JsonText -Text $validJson | Should Be $validJson
+    }
+
+    It 'returns the original text when the decoded text is still invalid JSON' {
+        $invalidJson = '{ "Author": ' + $mojibakeText
+        Repair-JsonText -Text $invalidJson | Should Be $invalidJson
+    }
+}
+
+Describe 'Convert-JsonValue' {
+    It 'repairs mojibake in strings' {
+        Convert-JsonValue -Item $mojibakeText | Should Be $umlautText
+    }
+
+    It 'repairs keys and values of dictionaries' {
+        $result = Convert-JsonValue -Item @{ $mojibakeText = $mojibakeText }
+        $result[$umlautText] | Should Be $umlautText
+    }
+
+    It 'repairs every element of a list and keeps it a list' {
+        $result = Convert-JsonValue -Item @($mojibakeText, 'Plain')
+        $result.Count | Should Be 2
+        $result[0] | Should Be $umlautText
+        $result[1] | Should Be 'Plain'
+    }
+
+    It 'returns $null for $null' {
+        Convert-JsonValue -Item $null | Should Be $null
+    }
+
+    It 'returns numbers unchanged' {
+        Convert-JsonValue -Item 42 | Should Be 42
+    }
+}
+
+Describe 'Get-BookRecordFromJsonFile' {
+    $wrappedFile = Join-Path -Path $TestDrive -ChildPath 'wrapped.json'
+    $arrayFile = Join-Path -Path $TestDrive -ChildPath 'array.json'
+    $brokenFile = Join-Path -Path $TestDrive -ChildPath 'broken.json'
+    Set-Content -LiteralPath $wrappedFile -Encoding UTF8 -Value '{ "metadata": {}, "records": [ { "Title": "A" }, { "Title": "B" } ] }'
+    Set-Content -LiteralPath $arrayFile -Encoding UTF8 -Value 'Response: [ { "Title": "C" } ] trailing text'
+    Set-Content -LiteralPath $brokenFile -Encoding UTF8 -Value 'no json here'
+
+    It 'returns the records of wrapped results and bare arrays' {
+        $records = Get-BookRecordFromJsonFile -Files @((Get-Item -LiteralPath $wrappedFile), (Get-Item -LiteralPath $arrayFile))
+        (@($records) | ForEach-Object { $_.Title }) -join ',' | Should Be 'A,B,C'
+    }
+
+    It 'skips unreadable files with a warning' {
+        Mock Write-ScriptLog { }
+        $records = Get-BookRecordFromJsonFile -Files @((Get-Item -LiteralPath $brokenFile), (Get-Item -LiteralPath $arrayFile))
+        @($records).Count | Should Be 1
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' }
+    }
+}
+
+Describe 'ConvertTo-CsvRow' {
+    It 'maps the English property names to the five columns' {
+        $row = ConvertTo-CsvRow -Objects @([pscustomobject]@{ Title = 'T'; Author = 'A'; ProposedAction = 'ADD'; Tag = 'Fantasy'; Reason = 'R' })
+        $row.Title | Should Be 'T'
+        $row.Author | Should Be 'A'
+        $row.ProposedAction | Should Be 'ADD'
+        $row.Tag | Should Be 'Fantasy'
+        $row.Reason | Should Be 'R'
+    }
+
+    It 'maps the German property names' {
+        $reasonName = 'Begr' + [char]0x00FC + 'ndung'
+        $item = [pscustomobject]@{ Titel = 'T'; Autor = 'A'; Aktion = 'REMOVE' }
+        $item | Add-Member -NotePropertyName $reasonName -NotePropertyValue 'Grund'
+        $row = ConvertTo-CsvRow -Objects @($item)
+        $row.Title | Should Be 'T'
+        $row.Author | Should Be 'A'
+        $row.ProposedAction | Should Be 'REMOVE'
+        $row.Reason | Should Be 'Grund'
+    }
+
+    It 'falls back to the Action property when ProposedAction is missing' {
+        $row = ConvertTo-CsvRow -Objects @([pscustomobject]@{ Title = 'T'; Action = 'NO_CHANGES' })
+        $row.ProposedAction | Should Be 'NO_CHANGES'
+    }
+
+    It 'skips records without title, author, action, and reason' {
+        @(ConvertTo-CsvRow -Objects @([pscustomobject]@{ Tag = 'Only tag' })).Count | Should Be 0
+    }
+}
+
+Describe 'Invoke-LibreOfficeConversion' {
+    $outputFolder = Join-Path -Path $TestDrive -ChildPath 'out'
+    New-Item -Path $outputFolder -ItemType Directory -Force | Out-Null
+    $csvPath = Join-Path -Path $TestDrive -ChildPath 'review.csv'
+    Set-Content -LiteralPath $csvPath -Value 'Title|Author'
+    $expectedOdsPath = Join-Path -Path $outputFolder -ChildPath 'review.ods'
+    $fakeProcess = [pscustomobject]@{ ExitCode = 0; Id = 0 }
+    $fakeProcess | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { }
+    Mock Get-CimInstance { }
+    Mock Stop-Process { }
+
+    It 'returns the path of the created ODS file' {
+        Mock Start-Process { Set-Content -LiteralPath $expectedOdsPath -Value 'ods'; $fakeProcess }
+        Invoke-LibreOfficeConversion -LibreOfficeExe 'soffice.exe' -CsvFilePath $csvPath -OutputFolder $outputFolder | Should Be $expectedOdsPath
+        Assert-MockCalled Start-Process -Scope It -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'soffice.exe' -and ($ArgumentList -contains '--headless') }
+    }
+
+    It 'throws when LibreOffice creates an empty file' {
+        Mock Start-Process { [System.IO.File]::WriteAllBytes($expectedOdsPath, [byte[]]@()); $fakeProcess }
+        { Invoke-LibreOfficeConversion -LibreOfficeExe 'soffice.exe' -CsvFilePath $csvPath -OutputFolder $outputFolder } | Should Throw 'LibreOffice produced an empty ODS file'
+    }
+}
+
+Describe 'Set-ConfigItemValue' {
+    $configNamespace = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+    $document = New-Object -TypeName System.Xml.XmlDocument
+    $document.LoadXml("<config:config-item-map-entry xmlns:config=`"$configNamespace`"><config:config-item config:name=`"ZoomValue`" config:type=`"int`">80</config:config-item></config:config-item-map-entry>")
+    $namespaceManager = New-Object -TypeName System.Xml.XmlNamespaceManager -ArgumentList $document.NameTable
+    $namespaceManager.AddNamespace('config', $configNamespace)
+    $parent = $document.DocumentElement
+
+    It 'updates an existing config item' {
+        Set-ConfigItemValue -Parent $parent -Document $document -NamespaceManager $namespaceManager -ConfigNamespace $configNamespace -Name 'ZoomValue' -Type 'int' -Value '100'
+        $parent.SelectSingleNode("config:config-item[@config:name='ZoomValue']", $namespaceManager).InnerText | Should Be '100'
+    }
+
+    It 'adds a missing config item with name and type' {
+        Set-ConfigItemValue -Parent $parent -Document $document -NamespaceManager $namespaceManager -ConfigNamespace $configNamespace -Name 'ShowGrid' -Type 'boolean' -Value 'true'
+        $node = $parent.SelectSingleNode("config:config-item[@config:name='ShowGrid']", $namespaceManager)
+        $node.InnerText | Should Be 'true'
+        $node.GetAttribute('type', $configNamespace) | Should Be 'boolean'
+    }
+
+    It 'changes nothing with -WhatIf' {
+        Set-ConfigItemValue -Parent $parent -Document $document -NamespaceManager $namespaceManager -ConfigNamespace $configNamespace -Name 'ZoomValue' -Type 'int' -Value '50' -WhatIf
+        $parent.SelectSingleNode("config:config-item[@config:name='ZoomValue']", $namespaceManager).InnerText | Should Be '100'
+    }
+}

@@ -32,7 +32,7 @@
 
 .NOTES
     Filename: Modules\Calibre.Console.psm1
-    Version: 1.0.0
+    The module version is maintained in Modules\Calibre.Console.psd1.
 #>
 
 # Writes a message to the DonGrobione.Logging log file and to the information stream.
@@ -65,6 +65,8 @@ function ConvertTo-DisplayPath {
     [OutputType([string])]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyString()]
         [string]$Path,
         [string]$BasePath = $PSScriptRoot
     )

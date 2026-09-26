@@ -9,20 +9,20 @@
     On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
 
 .NOTES
-    Version: 1.8
+    Version: 1.9
 #>
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
-$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
 
 # Clear the console to keep the output readable for each run.
-clear-Host
+Clear-Host
 
 # Stop execution immediately on errors.
 $ErrorActionPreference = 'Stop'
@@ -52,7 +52,7 @@ try {
         }
 
         Write-ScriptLog "=== Completed: $script ==="
-        Write-Host ""
+        Write-Information -MessageData '' -InformationAction Continue
     }
 
     $totalPromptTokens = [int64]0
@@ -78,7 +78,7 @@ try {
     Write-ScriptLog "Start:    $($startTime.ToString('HH:mm:ss'))"
     Write-ScriptLog "End:      $($endTime.ToString('HH:mm:ss'))"
     Write-ScriptLog "Duration: $($duration.ToString('hh\:mm\:ss'))"
-    Write-Host ""
+    Write-Information -MessageData '' -InformationAction Continue
     Write-ScriptLog "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))"
     Write-ScriptLog "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))"
     Write-ScriptLog "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))"
@@ -98,8 +98,7 @@ catch {
     }
 
     Microsoft.PowerShell.Utility\Write-Error $errorMessage -ErrorAction Continue
-    Write-Host "Press Enter to close this window after reviewing the error..." -ForegroundColor Yellow
-    Read-Host | Out-Null
+    Read-Host -Prompt 'Press Enter to close this window after reviewing the error' | Out-Null
     # Exit the orchestrator directly instead of rethrowing, so no uncaught exception reaches the host and triggers spurious failure log entries.
     exit 1
 }
