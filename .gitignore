@@ -12,12 +12,5 @@ Secrets
 03-ODS/*
 !03-ODS/.gitkeep
 
-# Backup files (Notepad++)
-*.bak
-
-# Private Notes
-To-Do.md
-README.private.md
-
 # Book Cache
 .cache/
