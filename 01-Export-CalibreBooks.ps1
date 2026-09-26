@@ -10,36 +10,21 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 3.3
+    Version: 3.4
 #>
 
-$CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
+$CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psd1"
 if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Environment.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Environment.psd1'"
 }
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
 
-# Central export settings are maintained in 01-CalibreExport.config.json.
-$ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
-$CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
-$BooksPerFile = $CalibreConfig.BooksPerFile
-$ChangedWithinDays = $CalibreConfig.ChangedWithinDays
-$DebugBookExport = $CalibreConfig.DebugBookExport
-
-if ($null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
-    throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
-}
-
-if ($DebugBookExport) {
-    $BooksPerFile = 5
-}
-
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
-$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
@@ -53,6 +38,21 @@ if ($ownsLogSession) {
 try {
     # Enable strict error handling so problems are reported immediately.
     $ErrorActionPreference = "Stop"
+
+    # Central export settings are maintained in 01-CalibreExport.config.json.
+    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
+    $CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
+    $BooksPerFile = $CalibreConfig.BooksPerFile
+    $ChangedWithinDays = $CalibreConfig.ChangedWithinDays
+    $DebugBookExport = $CalibreConfig.DebugBookExport
+
+    if ($null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
+        throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
+    }
+
+    if ($DebugBookExport) {
+        $BooksPerFile = 5
+    }
 
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.

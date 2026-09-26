@@ -12,6 +12,20 @@ I started this project because I have several thousand books and lost track of t
 - A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `Secrets/Mistral_API.txt`
 - Calibre Portable or a fixed installation. I use the portable version and sync it across devices via cloud storage.
 - Every Calibre tag must have a definition in the tag notes.
+- Optional, for development: Pester 3.4 or 4.x to run the tests in `Tests/` (see [Tests](#tests)).
+
+## Project Structure
+- `Invoke-CalibreToolsPipeline.ps1`: runs the complete workflow.
+- `01-Export-CalibreBooks.ps1`, `01-Export-CalibreTags.ps1`, `02-Process-CalibreDataWithLLM.ps1`, `03-Convert-LLMResults2ODS.ps1`: the individual workflow steps (see [Run Individual Steps](#run-individual-steps)).
+- `01-CalibreExport.config.json`: Calibre export configuration (see [Calibre Configuration](#calibre-configuration)).
+- `02-CalibreDataLLM-Prompt.txt`: prompt for the Mistral agent.
+- `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
+  - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
+  - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
+- `Tests/`: Pester tests for the modules.
+- `Secrets/`: API key and agent ID (not tracked by Git).
+- `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)).
+- `CHANGELOG.md`: notable changes and module versions.
 
 ## Calibre Configuration
 Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`:
@@ -97,6 +111,16 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
+
+## Tests
+The Pester tests in `Tests/` cover the modules and need neither Calibre nor Mistral nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:
+
+```powershell
+Import-Module Pester -RequiredVersion 3.4.0
+Invoke-Pester -Path .\Tests
+```
+
+If Pester 4.x is installed, `Import-Module Pester -MaximumVersion 4.99` works as well.
 
 ## AI Usage
 This codebase was created with assistance from AI tools.

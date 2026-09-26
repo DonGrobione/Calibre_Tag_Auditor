@@ -11,7 +11,7 @@
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.2
+    Version: 3.3
 #>
 
 [CmdletBinding()]
@@ -22,22 +22,19 @@ param (
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
-$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psm1"
+$CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Console.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
 
-$CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psm1"
+$CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psd1"
 if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) {
-    throw "Required module not found: '.\Modules\Calibre.Environment.psm1'"
+    throw "Required module not found: '.\Modules\Calibre.Environment.psd1'"
 }
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
-
-$ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
-$CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
 
 # Start an own log session only when the script is not running inside the pipeline's session.
 $ownsLogSession = -not (Test-LogSession)
@@ -48,6 +45,9 @@ if ($ownsLogSession) {
 try {
     # Enable strict error handling for the tag export workflow.
     $ErrorActionPreference = "Stop"
+
+    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "01-CalibreExport.config.json"
+    $CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
 
     $ScriptDir = $PSScriptRoot
 
