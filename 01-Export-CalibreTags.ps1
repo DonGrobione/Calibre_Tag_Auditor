@@ -165,7 +165,7 @@ except Exception as e:
 
     if ($Result -like "*SUCCESS:*") {
         $Count = ($Result -split "SUCCESS:")[1].Trim()
-        Write-Host ""
+        Write-Information -MessageData '' -InformationAction Continue
         Write-ScriptLog "Export completed successfully. $Count entries saved to '$(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)'."
     } else {
         throw "Data export failed: $Result"

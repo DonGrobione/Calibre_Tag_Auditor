@@ -22,7 +22,7 @@ I started this project because I have several thousand books and lost track of t
 - `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
   - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
-- `Tests/`: Pester tests for the modules.
+- `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: API key and agent ID (not tracked by Git).
 - `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)).
 - `CHANGELOG.md`: notable changes and module versions.
@@ -113,7 +113,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
 
 ## Tests
-The Pester tests in `Tests/` cover the modules and need neither Calibre nor Mistral nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:
+The Pester tests in `Tests/` cover the modules and the helper functions of the step scripts. They mock all external calls and need neither Calibre nor Mistral nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:
 
 ```powershell
 Import-Module Pester -RequiredVersion 3.4.0

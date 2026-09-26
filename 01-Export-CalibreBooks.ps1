@@ -330,7 +330,7 @@ try {
         $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_01_$ExportDate.json"
         Write-JsonFile -Path $JsonFile -InputObject $Results -Depth 10
 
-        Write-Host ""
+        Write-Information -MessageData '' -InformationAction Continue
         Write-ScriptLog "Export complete:"
         Write-ScriptLog ("  Books: {0}" -f $Results.Count)
         Write-ScriptLog ("  File:  {0}" -f (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
@@ -355,7 +355,7 @@ try {
             $StartIndex += $BooksPerFile
         }
 
-        Write-Host ""
+        Write-Information -MessageData '' -InformationAction Continue
         Write-ScriptLog "Export complete:"
         Write-ScriptLog ("  Books:   {0}" -f $TotalBooks)
         Write-ScriptLog ("  Files:   {0}" -f $FileCount)

@@ -35,7 +35,7 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 - **Modules/Calibre.Environment.psd1/.psm1**: loads and validates `01-CalibreExport.config.json` and resolves the Calibre installation, library, database and executable paths. Raises errors with `$PSCmdlet.ThrowTerminatingError()` and error IDs, so callers must call it inside try/catch. No logging.
 - **Modules/Calibre.Console.psd1/.psm1**: `Write-ScriptLog` (terminal + log output wrapper) and `ConvertTo-DisplayPath` (project-relative display paths).
 - Scripts import the modules through their `.psd1` manifests.
-- **Tests/**: Pester tests, one file per module (`Tests/<ModuleName>.Tests.ps1`). The Console tests replace DonGrobione.Logging with an in-memory stub module.
+- **Tests/**: Pester tests, one file per module or script (`Tests/<Name>.Tests.ps1`). The Console tests replace DonGrobione.Logging with an in-memory stub module. Step scripts run their workflow when executed, so their tests parse the script with the PowerShell AST, dot-source only the function definitions under test, and stub `Write-ScriptLog`/`ConvertTo-DisplayPath`. Use `Assert-MockCalled -Scope It`, because Pester 3.4 otherwise counts calls across the whole Describe block.
 - **CHANGELOG.md**: release notes per module version and for script changes.
 - **Dependencies**: PowerShell module DonGrobione.Logging >= 1.2.0 (external, default module path, update with `Update-DonGrobioneLogging`), Calibre Portable (`calibredb.exe`, `calibre-debug.exe`, `ebook-convert.exe`), Mistral API, LibreOffice (`soffice.exe`).
 
@@ -68,7 +68,7 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 - Log files are written only by DonGrobione.Logging to `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HHmmss.log` (one file per run, 5 files per host kept by Start-Log). Nothing writes log files into the project folder.
 - Invoke-CalibreToolsPipeline.ps1 calls `Start-Log -LogDirectory 'Calibre_Tag_Auditor'` once and Stop-Log in its finally block. Every other script uses `$ownsLogSession = -not (Test-LogSession)`, starts a session only when it owns it, and stops it in finally only when it owns it.
 - Every script imports DonGrobione.Logging by name and Modules\Calibre.Console.psm1 by a path based on $PSScriptRoot.
-- Scripts write terminal and log output through Write-ScriptLog, which forwards @PSBoundParameters unchanged to DonGrobione.Logging\Write-Log and also writes to the information stream. Levels are DEBUG, INFO, WARN, ERROR, and FATAL. Plain Write-Host is used only for console-only output such as blank lines and prompts.
+- Scripts write terminal and log output through Write-ScriptLog, which forwards @PSBoundParameters unchanged to DonGrobione.Logging\Write-Log and also writes to the information stream. Levels are DEBUG, INFO, WARN, ERROR, and FATAL. Console-only output uses `Write-Information -InformationAction Continue` (blank lines) or `Read-Host -Prompt` (prompts); Write-Host is not used.
 - Do not alias Write-Host, Write-Warning, or Write-Error. Never define a function named Write-Log and never read the logging module's private state (`$script:LogConfig`, `& (Get-Module ...) { ... }`, `.SessionState`). Use Test-LogSession and Get-LogSession; code that needs the log directory must handle a $null result from Get-LogSession.
 - Modules and library scripts must not contain logging code or write log files. They return data, status objects, exception records, or error objects to the calling script. Modules\Calibre.Console.psm1 is the only exception because it provides Write-ScriptLog.
 - Child scripts must catch their own errors, log them once with `Write-ScriptLog -Level ERROR -ErrorRecord $_`, and rethrow with throw so failures bubble to the orchestrator.
@@ -122,7 +122,8 @@ The project is not published to the PowerShell Gallery, but it must stay complia
 Rules 9 to 11 take precedence over any conflicting rule above.
 
 ## Repository Memory
-- **Script warnings:** as of 2026-09-26 the step scripts still carry PSScriptAnalyzer warnings from before rule 9 (Write-Host, plural nouns, missing ShouldProcess on New-/Remove-/Set- functions, empty catch blocks). Fix them when the affected code is touched.
+- **PSScriptAnalyzer:** since 2026-09-26 the whole repository has zero warnings; only the intentional PSProvideCommentHelp Information findings remain. Console blank lines use `Write-Information -MessageData '' -InformationAction Continue`.
+- **PSObject property checks:** `$obj.PSObject.Properties.Match('Name')` is always truthy, even when empty. Use `$obj.PSObject.Properties['Name']`, which returns `$null` for a missing property.
 - **Encoding:** all .ps1, .psm1 and .psd1 files are UTF-8 with BOM (`EF BB BF`) and CRLF line endings, because scripts contain non-ASCII literals (e.g. `'Ã|Â'`, `Begründung`). When creating or fully rewriting such a file, verify or re-apply the BOM afterwards.
 - **Output locations:** `01-Export/`, `02-LLM-Result/`, `03-ODS/` (contents git-ignored, `.gitkeep` tracked). `.cache/`, `Secrets`, `To-Do.md` and `README.private.md` are git-ignored.
 - **Write-Error semantics:** the former aliased Write-Error was non-terminating because module functions do not inherit the caller's `$ErrorActionPreference`. Write-ScriptLog is non-terminating too, so replacing those calls kept the control flow.

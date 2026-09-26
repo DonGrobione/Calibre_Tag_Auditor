@@ -17,6 +17,13 @@ All notable changes to this project are documented in this file. The format is b
 - All scripts import the modules through their manifests instead of the `.psm1` files.
 - `01-Export-CalibreBooks.ps1` 3.4 and `01-Export-CalibreTags.ps1` 3.3: the configuration is loaded inside the error-handling block, so configuration errors are written to the log and stop the script.
 
+- Fixed all PSScriptAnalyzer warnings in the scripts:
+  - Blank console lines use `Write-Information` instead of `Write-Host`. The pipeline's error prompt uses `Read-Host -Prompt` and is no longer yellow.
+  - `02-Process-CalibreDataWithLLM.ps1` 4.4: `Test-AgentExists` was renamed to `Test-MistralAgent`. `Remove-MistralAgent` and `New-MistralAgent` support `-WhatIf`/`-Confirm`.
+  - `03-Convert-LLMResults2ODS.ps1` 1.4: renamed `Convert-JsonValues`, `Get-BookRecordsFromJsonFiles`, `ConvertTo-CsvRows` and `Invoke-LibreOfficeCsvToOds` to `Convert-JsonValue`, `Get-BookRecordFromJsonFile`, `ConvertTo-CsvRow` and `Invoke-LibreOfficeConversion`. The JSON check in `Repair-JsonText` moved into `Test-JsonText`, which replaces the empty catch blocks. `Set-ConfigItemValue` supports `-WhatIf`/`-Confirm`.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.9.
+- Fixed in `03-Convert-LLMResults2ODS.ps1`: `ConvertTo-CsvRow` never used the fallback properties `Titel`, `Autor`, `Action`, `Aktion`, and `Begründung`, because an empty `PSObject.Properties.Match()` result counts as `$true`. LLM results that use these names now fill the review sheet instead of leaving the cells empty.
+
 ### Project
-- Added Pester tests in `Tests/` for both modules (Pester v4-compatible syntax).
+- Added Pester tests in `Tests/` for both modules and for the changed functions of the 02 and 03 scripts (Pester v4-compatible syntax). The script tests parse the script and load only the functions under test, so the workflow does not run.
 - Added this changelog.
