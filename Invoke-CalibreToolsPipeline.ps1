@@ -9,9 +9,27 @@
     On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
     When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline skips the remaining steps, prints a short summary without token usage, and exits with code 0.
 
+.PARAMETER ChangedWithinDays
+    Exports only books changed within this number of days; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
+
+.EXAMPLE
+    .\Invoke-CalibreToolsPipeline.ps1
+    Runs all steps with the settings from 01-CalibreExport.config.json.
+
+.EXAMPLE
+    .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 7
+    Runs all steps for the books changed within the last 7 days.
+
 .NOTES
-    Version: 1.10
+    Version: 1.11
 #>
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [ValidateRange(0, 36500)]
+    [int]$ChangedWithinDays
+)
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
@@ -49,6 +67,33 @@ function Test-BookExportFile {
     return (@(Get-ChildItem -LiteralPath $ExportDirectory -Filter '01-Export-CalibreBooks_*.json' -File).Count -gt 0)
 }
 
+# Returns the parameters for a step script: the book export receives the pipeline's ChangedWithinDays override when it was given; all other steps receive none.
+function Get-StepScriptParameter {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ScriptName,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [hashtable]$PipelineParameters
+    )
+
+    $stepParameters = @{}
+    if ($ScriptName -eq '01-Export-CalibreBooks.ps1' -and $PipelineParameters.ContainsKey('ChangedWithinDays')) {
+        $stepParameters['ChangedWithinDays'] = $PipelineParameters['ChangedWithinDays']
+    }
+
+    return $stepParameters
+}
+
+# Collect the parameters given to the pipeline so they can be forwarded to the step scripts.
+$pipelineParameters = @{}
+if ($PSBoundParameters.ContainsKey('ChangedWithinDays')) {
+    $pipelineParameters['ChangedWithinDays'] = $ChangedWithinDays
+}
+
 try {
     # Define the order of scripts to run.
     $scripts = @(
@@ -62,8 +107,9 @@ try {
     $noBooksToProcess = $false
     foreach ($script in $scripts) {
         $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $script
+        $stepParameters = Get-StepScriptParameter -ScriptName $script -PipelineParameters $pipelineParameters
         Write-ScriptLog "=== Starting: $script ==="
-        & $scriptPath
+        & $scriptPath @stepParameters
 
         # Check whether the script completed successfully.
         if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
