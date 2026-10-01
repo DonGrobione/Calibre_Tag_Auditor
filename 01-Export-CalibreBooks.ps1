@@ -10,7 +10,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 3.4
+    Version: 3.5
 #>
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psd1"
@@ -164,7 +164,15 @@ try {
     }
 
     if (-not $Books -or $Books.Count -eq 0) {
-        Write-ScriptLog -Level WARN -Message "No books were found in the library."
+        if ($DebugBookExport) {
+            Write-ScriptLog -Level WARN -Message "No books with a valid modification date were found in the library. No book export file was written."
+        }
+        elseif ($ChangedWithinDays -eq 0) {
+            Write-ScriptLog -Level WARN -Message "No books were found in the library. No book export file was written."
+        }
+        else {
+            Write-ScriptLog -Level WARN -Message "No books changed within the last $ChangedWithinDays day(s). No book export file was written. Increase ChangedWithinDays in 01-CalibreExport.config.json or set it to 0 to export all books."
+        }
         return
     }
 

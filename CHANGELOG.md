@@ -11,6 +11,9 @@ All notable changes to this project are documented in this file. The format is b
   - Temperature and top-p are no longer set, as Google recommends for Gemini 3.8 Flash. The thinking level (default `medium`) is configurable in the script.
   - Token usage: completion tokens now include Gemini's thinking tokens, because they are billed as output.
   - The result files contain the field `model` instead of `agent_id`.
+- Fixed: the pipeline failed in `02-Process-CalibreDataWithLLM.ps1` with "Missing required export file(s)" when no book changed within `ChangedWithinDays`.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.10: when `01-Export-CalibreBooks.ps1` writes no book export file, the pipeline skips the remaining steps, prints a short summary, and exits with code 0 (new function `Test-BookExportFile`, with tests).
+  - `01-Export-CalibreBooks.ps1` 3.5: the warning names the actual reason (no books changed within the configured days, empty library, or no valid modification dates in debug mode) instead of always reporting "No books were found in the library."
 
 ## 2026-09-26
 
