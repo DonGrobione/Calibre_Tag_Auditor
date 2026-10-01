@@ -117,6 +117,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 ## Common Issues
 - **Calibre is not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
 - **The Gemini request failed:** Check that `Secrets/Gemini_API.json.key` is valid JSON with the property `APIKey` and that the key is valid. The API response body is written to the log.
+- **A book has no `BookContent`:** The book export reads the content from the first EPUB, AZW3, MOBI, or PDF file of a book, in this order. If a book has none of these formats, the log contains a warning with the supported formats and the formats that are available for the book. Convert the book to a supported format in Calibre to include its content.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the tag export, Gemini, and ODS steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
