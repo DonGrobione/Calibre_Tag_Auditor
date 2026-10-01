@@ -3,11 +3,11 @@
 This file guides Claude Code when working in this repository. It holds the project rules and the repository memory.
 
 ## Project Overview
-Windows PowerShell 5.1 scripts that export (recently changed) books and tag definitions from a Calibre Portable library, validate the tags with a Mistral agent, and convert the results into a formatted ODS review sheet via headless LibreOffice. See README.md for user-facing configuration and usage.
+Windows PowerShell 5.1 scripts that export (recently changed) books and tag definitions from a Calibre Portable library, validate the tags with Google Gemini, and convert the results into a formatted ODS review sheet via headless LibreOffice. See README.md for user-facing configuration and usage.
 
 ## Commands
 ```powershell
-# Full pipeline (has real side effects: Calibre export, paid Mistral API calls, LibreOffice). Ask before running.
+# Full pipeline (has real side effects: Calibre export, paid Gemini API calls, LibreOffice). Ask before running.
 .\Invoke-CalibreToolsPipeline.ps1
 
 # Single steps, in pipeline order
@@ -30,14 +30,14 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 - **Invoke-CalibreToolsPipeline.ps1**: orchestrator. Starts the shared log session, runs the four step scripts in order with `&`, aborts on failure, prints a run and token summary. On failure it prints the error to the terminal only, waits for Enter, and exits with code 1.
 - **01-Export-CalibreBooks.ps1**: runs `calibredb.exe` to export book metadata to `01-Export/01-Export-CalibreBooks_<nn>_<timestamp>.json`, split into files of `BooksPerFile` books. Uses `ebook-convert.exe` to add the first 20,000 words of the primary EPUB/AZW3/MOBI/PDF as `BookContent`.
 - **01-Export-CalibreTags.ps1**: writes a temporary Python script to `$env:TEMP` and runs it with `calibre-debug.exe` to join `.calnotes/notes.db` with `metadata.db` and export the tag definitions to `01-Export/02-Export-CalibreTags_*.json`.
-- **02-Process-CalibreDataWithLLM.ps1**: deletes the previous Mistral agent, creates a fresh one with the prompt from `02-CalibreDataLLM-Prompt.txt`, sends each book export file with the tag definitions to the Mistral conversations API, validates the unique-book counts, repairs mojibake, retries on 429/503/504 and on invalid responses, and writes `02-LLM-Result/LLM-Result_*.json`. Secrets: `Secrets/Mistral_API.txt`, `Secrets/Mistral_Agent_Id.txt`.
+- **02-Process-CalibreDataWithLLM.ps1**: sends each book export file with the tag definitions to the Gemini Interactions API (`gemini-3.8-flash`, prompt from `02-CalibreDataLLM-Prompt.txt` as `system_instruction`, `store = false`), validates the unique-book counts, repairs mojibake, retries on 429/503/504 and on invalid responses, and writes `02-LLM-Result/LLM-Result_*.json`. Secret: `Secrets/Gemini_API.json.key` (JSON, property `APIKey`).
 - **03-Convert-LLMResults2ODS.ps1**: merges the LLM results into a temporary pipe-delimited CSV in `$env:TEMP`, converts it with headless LibreOffice, and formats the ODS (line breaks, column widths) into `03-ODS/03-ODS_Convert_<timestamp>.ods`.
 - **Modules/Calibre.Environment.psd1/.psm1**: loads and validates `01-CalibreExport.config.json` and resolves the Calibre installation, library, database and executable paths. Raises errors with `$PSCmdlet.ThrowTerminatingError()` and error IDs, so callers must call it inside try/catch. No logging.
 - **Modules/Calibre.Console.psd1/.psm1**: `Write-ScriptLog` (terminal + log output wrapper) and `ConvertTo-DisplayPath` (project-relative display paths).
 - Scripts import the modules through their `.psd1` manifests.
 - **Tests/**: Pester tests, one file per module or script (`Tests/<Name>.Tests.ps1`). The Console tests replace DonGrobione.Logging with an in-memory stub module. Step scripts run their workflow when executed, so their tests parse the script with the PowerShell AST, dot-source only the function definitions under test, and stub `Write-ScriptLog`/`ConvertTo-DisplayPath`. Use `Assert-MockCalled -Scope It`, because Pester 3.4 otherwise counts calls across the whole Describe block.
 - **CHANGELOG.md**: release notes per module version and for script changes.
-- **Dependencies**: PowerShell module DonGrobione.Logging >= 1.2.0 (external, default module path, update with `Update-DonGrobioneLogging`), Calibre Portable (`calibredb.exe`, `calibre-debug.exe`, `ebook-convert.exe`), Mistral API, LibreOffice (`soffice.exe`).
+- **Dependencies**: PowerShell module DonGrobione.Logging >= 1.2.0 (external, default module path, update with `Update-DonGrobioneLogging`), Calibre Portable (`calibredb.exe`, `calibre-debug.exe`, `ebook-convert.exe`), Google Gemini API, LibreOffice (`soffice.exe`).
 
 ## Rules
 
@@ -85,7 +85,7 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 ### 6. Validation
 - Parse changed PowerShell files with Windows PowerShell 5.1 before completing work.
 - Run PSScriptAnalyzer where available and fix diagnostics introduced by the change.
-- Do not run scripts with real side effects (Calibre export, Mistral API, LibreOffice) without asking.
+- Do not run scripts with real side effects (Calibre export, Gemini API, LibreOffice) without asking.
 
 ### 7. Versioning
 - For modules with a manifest (.psd1, currently all modules): the manifest is the single source of truth for versioning. Do not duplicate version metadata inside comment-based help blocks.
