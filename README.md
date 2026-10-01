@@ -9,7 +9,7 @@ I started this project because I have several thousand books and lost track of t
 - LibreOffice (current standard installation; headless conversion support required)
 - Calibre's embedded Python is used for the tag export step
 - No separate system Python installation is required for ODS conversion
-- A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `Secrets/Mistral_API.txt`
+- A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `Secrets/Mistral_API.key`
 - Calibre Portable or a fixed installation. I use the portable version and sync it across devices via cloud storage.
 - Every Calibre tag must have a definition in the tag notes.
 - Optional, for development: Pester 3.4 or 4.x to run the tests in `Tests/` (see [Tests](#tests)).
@@ -67,7 +67,7 @@ The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Pro
 
 ## Quick Start
 1. Open `01-CalibreExport.config.json` and change `CalibrePaths` with the path where your Calibre is located and update `LibraryName` with the name of your library.
-2. Place your Mistral API key in `Secrets/Mistral_API.txt`.
+2. Place your Mistral API key in `Secrets/Mistral_API.key`.
 3. Open PowerShell in the project directory.
 4. Run the complete workflow:
 
@@ -107,7 +107,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 
 ## Common Issues
 - **Calibre is not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
-- **The Mistral request failed:** Check the API key in `Secrets/Mistral_API.txt`.
+- **The Mistral request failed:** Check the API key in `Secrets/Mistral_API.key`.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.

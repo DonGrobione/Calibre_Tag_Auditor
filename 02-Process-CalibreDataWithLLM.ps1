@@ -12,7 +12,7 @@
 
 .NOTES
     Version: 4.4
-    Requires a valid API key in Secrets/Mistral_API.txt and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
+    Requires a valid API key in Secrets/Mistral_API.key and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
@@ -42,7 +42,7 @@ try {
     $ScriptDir = $PSScriptRoot
     $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
-    $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Mistral_API.txt"
+    $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Mistral_API.key"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
 
     $Model = "mistral-large-latest"
