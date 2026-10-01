@@ -5,13 +5,13 @@
 .DESCRIPTION
     Connects Calibre .calnotes/notes.db with the library metadata.db and exports tag notes as JSON. The first line of each note is removed so the output contains only the tag definition.
     Uses calibre-debug.exe (Calibre's embedded Python interpreter) to query both SQLite databases via ATTACH. The temporary Python script is written to $env:TEMP and deleted after execution.
-    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER OutputPath
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.3
+    Version: 3.4
 #>
 
 [CmdletBinding()]
@@ -21,7 +21,7 @@ param (
 )
 
 # Import the central logging module and the console/log output helpers.
-Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
 $CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
     throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
@@ -36,10 +36,10 @@ if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) 
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
 
-# Start an own log session only when the script is not running inside the pipeline's session.
+# Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
 if ($ownsLogSession) {
-    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0
 }
 
 try {

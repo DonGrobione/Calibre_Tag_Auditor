@@ -4,6 +4,7 @@
 
 .DESCRIPTION
     Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Invoke-GeminiRequest, and Convert-ResponseTextToResultObject. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-RestMethod and Start-Sleep are mocked; no request reaches the Gemini API.
+    The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
 .EXAMPLE
@@ -189,5 +190,30 @@ Describe 'Convert-ResponseTextToResultObject' {
         $result = Convert-ResponseTextToResultObject -RawText 'no json here' -SourceFile 'file.json' -Model 'test-model'
         $result.status | Should Be 'error'
         $result.parse_error | Should Match 'Gemini response'
+    }
+}
+
+Describe 'Logging setup' {
+    $commands = @($scriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $startLogCalls = @($commands | Where-Object { $_.GetCommandName() -eq 'Start-Log' })
+    $loggingImports = @($commands | Where-Object { $_.GetCommandName() -eq 'Import-Module' -and $_.Extent.Text -match '\bDonGrobione\.Logging\b' })
+
+    It 'starts a log session' {
+        $startLogCalls.Count | Should BeGreaterThan 0
+    }
+
+    It 'turns off size-based rotation in every Start-Log call' {
+        foreach ($call in $startLogCalls) {
+            $call.Extent.Text | Should Match '-MaxFileSizeMB\s+0\b'
+        }
+    }
+
+    It 'requires DonGrobione.Logging 2.2.0 or later, which supports -MaxFileSizeMB' {
+        $loggingImports.Count | Should Be 1
+        $loggingImports[0].Extent.Text | Should Match '-MinimumVersion\s+2\.2\.0\b'
+    }
+
+    It 'imports DonGrobione.Logging without -Force, which would reset a running log session' {
+        $loggingImports[0].Extent.Text | Should Not Match '-Force\b'
     }
 }

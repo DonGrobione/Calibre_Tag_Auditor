@@ -37,7 +37,7 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 - Scripts import the modules through their `.psd1` manifests.
 - **Tests/**: Pester tests, one file per module or script (`Tests/<Name>.Tests.ps1`). The Console tests replace DonGrobione.Logging with an in-memory stub module. Step scripts run their workflow when executed, so their tests parse the script with the PowerShell AST, dot-source only the function definitions under test, and stub `Write-ScriptLog`/`ConvertTo-DisplayPath`. Use `Assert-MockCalled -Scope It`, because Pester 3.4 otherwise counts calls across the whole Describe block.
 - **CHANGELOG.md**: release notes per module version and for script changes.
-- **Dependencies**: PowerShell module DonGrobione.Logging >= 1.2.0 (external, default module path, update with `Update-DonGrobioneLogging`), Calibre Portable (`calibredb.exe`, `calibre-debug.exe`, `ebook-convert.exe`), Google Gemini API, LibreOffice (`soffice.exe`).
+- **Dependencies**: PowerShell module DonGrobione.Logging >= 2.2.0 (external, default module path, update with `Update-DonGrobioneLogging`), Calibre Portable (`calibredb.exe`, `calibre-debug.exe`, `ebook-convert.exe`), Google Gemini API, LibreOffice (`soffice.exe`).
 
 ## Rules
 
@@ -64,9 +64,9 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 - Maximum three parameters per function.
 
 ### 4. Logging And Error Handling
-- Logging uses only the external module DonGrobione.Logging (>= 1.2.0), installed in the default PowerShell module path and imported with `Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop`. Never use -Force for this import because it resets a running log session. The project does not install, bundle, or update the module.
-- Log files are written only by DonGrobione.Logging to `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HHmmss.log` (one file per run, 5 files per host kept by Start-Log). Nothing writes log files into the project folder.
-- Invoke-CalibreToolsPipeline.ps1 calls `Start-Log -LogDirectory 'Calibre_Tag_Auditor'` once and Stop-Log in its finally block. Every other script uses `$ownsLogSession = -not (Test-LogSession)`, starts a session only when it owns it, and stops it in finally only when it owns it.
+- Logging uses only the external module DonGrobione.Logging (>= 2.2.0), installed in the default PowerShell module path and imported with `Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop`. Never use -Force for this import because it resets a running log session. The project does not install, bundle, or update the module.
+- Log files are written only by DonGrobione.Logging to `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HH-mm-ss.log` (one file per run, 5 files per host kept by Start-Log). Size-based rotation is turned off: every `Start-Log` call passes `-MaxFileSizeMB 0` (needs 2.2.0). Nothing writes log files into the project folder.
+- Invoke-CalibreToolsPipeline.ps1 calls `Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0` once and Stop-Log in its finally block. Every other script uses `$ownsLogSession = -not (Test-LogSession)`, starts a session (with the same Start-Log parameters) only when it owns it, and stops it in finally only when it owns it.
 - Every script imports DonGrobione.Logging by name and Modules\Calibre.Console.psm1 by a path based on $PSScriptRoot.
 - Scripts write terminal and log output through Write-ScriptLog, which forwards @PSBoundParameters unchanged to DonGrobione.Logging\Write-Log and also writes to the information stream. Levels are DEBUG, INFO, WARN, ERROR, and FATAL. Console-only output uses `Write-Information -InformationAction Continue` (blank lines) or `Read-Host -Prompt` (prompts); Write-Host is not used.
 - Do not alias Write-Host, Write-Warning, or Write-Error. Never define a function named Write-Log and never read the logging module's private state (`$script:LogConfig`, `& (Get-Module ...) { ... }`, `.SessionState`). Use Test-LogSession and Get-LogSession; code that needs the log directory must handle a $null result from Get-LogSession.
