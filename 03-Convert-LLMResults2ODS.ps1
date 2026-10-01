@@ -13,7 +13,7 @@
 
     For rows where ProposedAction = NO_CHANGES, Tag and Reason are empty cells in the review sheet.
     The final ODS file is written to the output folder using the naming pattern 03-ODS_Convert_<timestamp>.ods, where <timestamp> is taken from the first input JSON file. All temporary files are created under $env:TEMP and removed after use.
-    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER InputFolder
     Folder with JSON files to convert. Defaults to .\02-LLM-Result.
@@ -22,7 +22,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.4
+    Version: 1.5
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,7 @@ param(
 )
 
 # Import the central logging module and the console/log output helpers.
-Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
 $CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
     throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
@@ -802,10 +802,10 @@ function Format-OdsDocument {
 
 $ErrorActionPreference = 'Stop'
 
-# Start an own log session only when the script is not running inside the pipeline's session.
+# Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
 if ($ownsLogSession) {
-    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0
 }
 
 try {

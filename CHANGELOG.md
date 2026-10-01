@@ -3,7 +3,14 @@ All notable changes to this project are documented in this file. The format is b
 
 ## 2026-10-01
 
+### Calibre.Console 1.1.1
+- Documentation only: the comment-based help names DonGrobione.Logging 2.2.0 as the required version.
+
 ### Scripts
+- All scripts turn off the size-based log rotation of DonGrobione.Logging with `Start-Log -MaxFileSizeMB 0`, so a run is never split across several log files. Retention (5 files per computer) is unchanged.
+  - DonGrobione.Logging 2.2.0 or later is now required (`-MinimumVersion 2.2.0`), because `-MaxFileSizeMB` was introduced in that version. Update with `Update-DonGrobioneLogging`.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.12, `01-Export-CalibreBooks.ps1` 3.9, `01-Export-CalibreTags.ps1` 3.4, `02-Process-CalibreDataWithLLM.ps1` 5.1, `03-Convert-LLMResults2ODS.ps1` 1.5.
+  - Documentation: log file names follow the module's format `<HOSTNAME>_yyyy-MM-dd_HH-mm-ss.log`.
 - Fixed in `01-Export-CalibreBooks.ps1` 3.8: the export stopped with "Cannot bind argument to parameter 'Files' because it is null" at the first book without a book directory in the library. `Get-BookFile` returns an empty array in that case, which PowerShell unrolls into `$null`. The export loop now wraps the result in `@()`, and `Get-PrimaryBookFile` accepts `$null`, so such books get the "No supported primary book file found" warning with `Available: none` and the export continues. Added regression tests.
 - New parameter `-ChangedWithinDays` for `Invoke-CalibreToolsPipeline.ps1` 1.11 and `01-Export-CalibreBooks.ps1` 3.7. It overrides `ChangedWithinDays` from `01-CalibreExport.config.json` for a single run, so the configuration file no longer has to be edited for a different period. Without the parameter, the configured value is used as before.
   - The pipeline forwards the parameter only to `01-Export-CalibreBooks.ps1` (new function `Get-StepScriptParameter`, with tests).

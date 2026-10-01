@@ -8,17 +8,17 @@
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
-    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 5.0
+    Version: 5.1
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
 # Import the central logging module and the console/log output helpers.
-Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
 $CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
     throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
@@ -26,10 +26,10 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 
 Import-Module -Name $CalibreConsoleModulePath -Force
 
-# Start an own log session only when the script is not running inside the pipeline's session.
+# Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
 if ($ownsLogSession) {
-    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0
 }
 
 try {

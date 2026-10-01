@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Write-ScriptLog forwards every message unchanged to DonGrobione.Logging\Write-Log and also writes it to the information stream so it stays visible in the terminal. Non-INFO messages are shown in the terminal with a level prefix (for example "WARN: ..."). Like Write-Log, it never terminates the calling script. ConvertTo-DisplayPath converts absolute paths into readable project-relative paths for output; paths under $env:TEMP and outside BasePath stay absolute.
-    The calling script imports DonGrobione.Logging (>= 1.2.0) and starts the log session; this module neither imports the logging module nor starts a session.
+    The calling script imports DonGrobione.Logging (>= 2.2.0) and starts the log session; this module neither imports the logging module nor starts a session.
 
 .PARAMETER Message
     Write-ScriptLog: the message to write.

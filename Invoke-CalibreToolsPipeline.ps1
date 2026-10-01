@@ -5,7 +5,7 @@
 .DESCRIPTION
     Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
-    The pipeline starts one DonGrobione.Logging (>= 1.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Log rotation is handled by Start-Log. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
+    The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
     On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
     When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline skips the remaining steps, prints a short summary without token usage, and exits with code 0.
 
@@ -21,7 +21,7 @@
     Runs all steps for the books changed within the last 7 days.
 
 .NOTES
-    Version: 1.11
+    Version: 1.12
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,7 @@ param(
 )
 
 # Import the central logging module and the console/log output helpers.
-Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
 $CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
     throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
@@ -47,8 +47,8 @@ Clear-Host
 $ErrorActionPreference = 'Stop'
 $startTime = Get-Date
 
-# Start the log session shared by all child scripts.
-Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+# Start the log session shared by all child scripts. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
+Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0
 
 # Returns $true when the export folder contains at least one book export file written by 01-Export-CalibreBooks.ps1.
 function Test-BookExportFile {

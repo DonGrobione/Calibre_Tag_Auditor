@@ -5,7 +5,7 @@ I started this project because I have several thousand books and lost track of t
 
 ## Requirements
 - Windows with PowerShell 5.1 or later
-- PowerShell module [DonGrobione.Logging](https://github.com/DonGrobione/Logging) version 1.2.0 or later, installed in the default PowerShell module path. This project does not install, bundle, or update it.
+- PowerShell module [DonGrobione.Logging](https://github.com/DonGrobione/Logging) version 2.2.0 or later, installed in the default PowerShell module path. This project does not install, bundle, or update it.
 - LibreOffice (current standard installation; headless conversion support required)
 - Calibre's embedded Python is used for the tag export step
 - No separate system Python installation is required for ODS conversion
@@ -108,7 +108,7 @@ After a successful run, the generated files are located here:
 The ODS file contains the columns `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason`. For `ProposedAction = NO_CHANGES`, `Tag` and `Reason` are empty cells.
 
 ## Logging
-All scripts log through the DonGrobione.Logging module. Each run writes one log file to `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HHmmss.log`. When the pipeline runs, all steps share one log file; a step started on its own writes its own log file. The module keeps the 5 newest log files per computer and deletes older ones automatically. The project folder no longer contains log files.
+All scripts log through the DonGrobione.Logging module. Each run writes one log file to `<Documents>\Logs\Calibre_Tag_Auditor\<HOSTNAME>_yyyy-MM-dd_HH-mm-ss.log`. When the pipeline runs, all steps share one log file; a step started on its own writes its own log file. The module keeps the 5 newest log files per computer and deletes older ones automatically. The scripts turn off the module's size-based rotation (`Start-Log -MaxFileSizeMB 0`), so a run is never split across several files, however long it takes. The project folder no longer contains log files.
 
 Terminal output shows the same messages; warnings and errors are prefixed with `WARN:` or `ERROR:`.
 
@@ -131,7 +131,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **The Gemini request failed:** Check that `Secrets/Gemini_API.json.key` is valid JSON with the property `APIKey` and that the key is valid. The API response body is written to the log.
 - **A book has no `BookContent`:** The book export reads the content from the first EPUB, AZW3, MOBI, or PDF file of a book, in this order. If a book has none of these formats, the log contains a warning with the supported formats and the formats that are available for the book. Convert the book to a supported format in Calibre to include its content.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
-- **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
+- **The module DonGrobione.Logging was not found or is too old:** Install version 2.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the tag export, Gemini, and ODS steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
 
 ## Tests

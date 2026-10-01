@@ -7,7 +7,7 @@
     Uses calibredb.exe from the Calibre Portable installation.
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
     converted to normalized text and included in the BookContent JSON field.
-    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
+    Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
     Exports only books changed within this number of days; 0 exports all books. Overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used. Ignored when DebugBookExport is enabled.
@@ -21,7 +21,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 3.8
+    Version: 3.9
 #>
 
 [CmdletBinding()]
@@ -45,7 +45,7 @@ if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
 
 # Import the central logging module and the console/log output helpers.
-Import-Module DonGrobione.Logging -MinimumVersion 1.2.0 -ErrorAction Stop
+Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
 $CalibreConsoleModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Console.psd1"
 if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
     throw "Required module not found: '.\Modules\Calibre.Console.psd1'"
@@ -53,10 +53,10 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 
 Import-Module -Name $CalibreConsoleModulePath -Force
 
-# Start an own log session only when the script is not running inside the pipeline's session.
+# Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
 if ($ownsLogSession) {
-    Start-Log -LogDirectory 'Calibre_Tag_Auditor'
+    Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0
 }
 
 try {
