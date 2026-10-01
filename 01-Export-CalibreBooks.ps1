@@ -21,7 +21,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 3.7
+    Version: 3.8
 #>
 
 [CmdletBinding()]
@@ -255,7 +255,7 @@ try {
         return $null
     }
 
-    # Returns all files in the cached ID-based book directory, or an empty array when the book has no directory.
+    # Returns all files in the cached ID-based book directory, or nothing when the book has no directory. PowerShell unrolls an empty array into no output, so callers must wrap the call in @() to get an array.
     function Get-BookFile {
         param(
             [Parameter(Mandatory = $true)]
@@ -276,10 +276,11 @@ try {
         return @(Get-ChildItem -LiteralPath $BookDirectory.FullName -File -ErrorAction SilentlyContinue)
     }
 
-    # Returns the first file whose extension appears earliest in the supported extension list, or $null when none matches.
+    # Returns the first file whose extension appears earliest in the supported extension list, or $null when none matches or no files are given.
     function Get-PrimaryBookFile {
         param(
             [Parameter(Mandatory = $true)]
+            [AllowNull()]
             [AllowEmptyCollection()]
             [System.IO.FileInfo[]]$Files,
             [Parameter(Mandatory = $true)]
@@ -375,7 +376,7 @@ try {
             }) -join ", ")
         }
 
-        $BookFiles = Get-BookFile -Book $Book -BookDirectories $BookDirectories
+        $BookFiles = @(Get-BookFile -Book $Book -BookDirectories $BookDirectories)
         $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
         $BookContent = $null
         if ($PrimaryBookFile) {

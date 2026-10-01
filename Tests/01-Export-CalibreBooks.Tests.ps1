@@ -65,12 +65,12 @@ Describe 'Get-BookFile' {
         $files.Count | Should Be 3
     }
 
-    It 'returns an empty array when the book has no directory' {
+    It 'returns no files when the book has no directory' {
         $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 2 }) -BookDirectories @{})
         $files.Count | Should Be 0
     }
 
-    It 'returns an empty array when the book has no id' {
+    It 'returns no files when the book has no id' {
         $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = $null }) -BookDirectories @{})
         $files.Count | Should Be 0
     }
@@ -96,6 +96,40 @@ Describe 'Get-PrimaryBookFile' {
 
     It 'returns $null for an empty file list' {
         Get-PrimaryBookFile -Files @() -SupportedExtensions $supportedExtensions | Should Be $null
+    }
+
+    It 'returns $null for $null instead of failing parameter binding' {
+        Get-PrimaryBookFile -Files $null -SupportedExtensions $supportedExtensions | Should Be $null
+    }
+
+    It 'accepts the unwrapped result of Get-BookFile for a book without directory' {
+        $bookFiles = Get-BookFile -Book ([PSCustomObject]@{ id = 6 }) -BookDirectories @{}
+        Get-PrimaryBookFile -Files $bookFiles -SupportedExtensions $supportedExtensions | Should Be $null
+    }
+}
+
+Describe 'Book file resolution in the export loop' {
+    $loopStatement = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$BookFiles'
+        }, $true)
+
+    It 'wraps Get-BookFile in @() so a book without directory yields an empty array' {
+        $loopStatement.Right.Extent.Text | Should Match '^@\(\s*Get-BookFile\b'
+    }
+
+    It 'yields an empty array and no primary file for a book without directory' {
+        $bookFiles = @(Get-BookFile -Book ([PSCustomObject]@{ id = 7 }) -BookDirectories @{})
+        $bookFiles.Count | Should Be 0
+        Get-PrimaryBookFile -Files $bookFiles -SupportedExtensions $supportedExtensions | Should Be $null
+        ConvertTo-FormatDisplayText -Extensions @($bookFiles | ForEach-Object Extension) | Should Be 'none'
+    }
+
+    It 'yields the single file for a book directory with one file' {
+        $directory = Add-TestBookDirectory -Name 'Book (8)' -FileNames @('book.epub')
+        $bookFiles = @(Get-BookFile -Book ([PSCustomObject]@{ id = 8 }) -BookDirectories @{ '8' = $directory })
+        $bookFiles.Count | Should Be 1
+        (Get-PrimaryBookFile -Files $bookFiles -SupportedExtensions $supportedExtensions).Name | Should Be 'book.epub'
     }
 }
 
