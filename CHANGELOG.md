@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-01
 
 ### Scripts
+- `01-Export-CalibreBooks.ps1` 3.6: more progress information in the terminal and the log.
+  - The number of books to export is logged before the content extraction starts.
+  - Every book is logged with its progress, for example `Book 2 of 300: Filename.epub`. Books without a supported file are logged with their title.
+  - The warning "No supported primary book file found" lists the supported formats and the formats available for the book, for example `Supported: EPUB, AZW3, MOBI, PDF. Available: CBZ.`
+  - `Get-PrimaryBookFile` now selects from a file list and a list of supported extensions; the new function `Get-BookFile` reads the book directory. The new function `ConvertTo-FormatDisplayText` formats the extension lists. Added `Tests/01-Export-CalibreBooks.Tests.ps1`.
 - `02-Process-CalibreDataWithLLM.ps1` 5.0: switched from the Mistral API to the Google Gemini Interactions API with the model `gemini-3.8-flash`.
   - The API key is read from the `APIKey` property of the JSON file `Secrets/Gemini_API.json.key` (new function `Get-GeminiApiKey`). `Secrets/Mistral_API.key` and `Secrets/Mistral_Agent_Id.txt` are no longer used.
   - Gemini needs no agent, so `Test-MistralAgent`, `Remove-MistralAgent`, `New-MistralAgent`, and `Get-MistralAgentId` were removed. The prompt is sent as `system_instruction` with every request instead of being repeated in the input.

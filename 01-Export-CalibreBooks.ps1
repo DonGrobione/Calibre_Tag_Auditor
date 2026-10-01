@@ -10,7 +10,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 3.5
+    Version: 3.6
 #>
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psd1"
@@ -176,6 +176,8 @@ try {
         return
     }
 
+    Write-ScriptLog ("Books to export: {0}" -f $Books.Count)
+
     # Index Calibre's ID-based book directories once so content extraction remains efficient for large exports.
     $BookDirectories = @{}
     Get-ChildItem -LiteralPath $LibraryPath -Directory -Recurse -ErrorAction SilentlyContinue |
@@ -187,6 +189,9 @@ try {
 
     $TotalBooks = $Books.Count
     $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
+
+    # Supported book formats in order of preference for the content extraction.
+    $SupportedBookExtensions = @('.epub', '.azw3', '.mobi', '.pdf')
 
     # Removes invisible formatting characters and soft hyphens from a string.
     function Clear-ExportText {
@@ -221,8 +226,8 @@ try {
         return $null
     }
 
-    # Resolves the preferred supported book file from the cached ID-based book directory.
-    function Get-PrimaryBookFile {
+    # Returns all files in the cached ID-based book directory, or an empty array when the book has no directory.
+    function Get-BookFile {
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
@@ -231,17 +236,28 @@ try {
         )
 
         if ($null -eq $Book.id) {
-            return $null
+            return @()
         }
 
         $BookDirectory = $BookDirectories[[string]$Book.id]
         if (-not $BookDirectory) {
-            return $null
+            return @()
         }
 
-        $FormatOrder = @('.epub', '.azw3', '.mobi', '.pdf')
-        $Files = @(Get-ChildItem -LiteralPath $BookDirectory.FullName -File -ErrorAction SilentlyContinue)
-        foreach ($Extension in $FormatOrder) {
+        return @(Get-ChildItem -LiteralPath $BookDirectory.FullName -File -ErrorAction SilentlyContinue)
+    }
+
+    # Returns the first file whose extension appears earliest in the supported extension list, or $null when none matches.
+    function Get-PrimaryBookFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [System.IO.FileInfo[]]$Files,
+            [Parameter(Mandatory = $true)]
+            [string[]]$SupportedExtensions
+        )
+
+        foreach ($Extension in $SupportedExtensions) {
             $Match = $Files | Where-Object { $_.Extension -ieq $Extension } | Select-Object -First 1
             if ($Match) {
                 return $Match
@@ -249,6 +265,28 @@ try {
         }
 
         return $null
+    }
+
+    # Converts file extensions into a unique, upper-case list without dots in input order (e.g. "EPUB, AZW3"), or "none" when the list is empty.
+    function ConvertTo-FormatDisplayText {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [AllowEmptyString()]
+            [string[]]$Extensions
+        )
+
+        $Formats = @($Extensions |
+            Where-Object { $_ } |
+            ForEach-Object { $_.TrimStart('.').ToUpperInvariant() } |
+            Where-Object { $_ } |
+            Select-Object -Unique)
+
+        if ($Formats.Count -eq 0) {
+            return 'none'
+        }
+
+        return ($Formats -join ', ')
     }
 
     # Converts a book to text, normalizes whitespace, and keeps the first 20,000 words.
@@ -296,7 +334,10 @@ try {
     }
 
     # Transform the raw data into a simple object format for JSON export.
+    $BookNumber = 0
     $Results = foreach ($Book in $Books) {
+        $BookNumber++
+
         # identifiers come back as a map (e.g. isbn/amazon/google) joined into a readable string
         $IdentifierText = $null
         if ($Book.identifiers) {
@@ -305,9 +346,11 @@ try {
             }) -join ", ")
         }
 
-        $PrimaryBookFile = Get-PrimaryBookFile -Book $Book -BookDirectories $BookDirectories
+        $BookFiles = Get-BookFile -Book $Book -BookDirectories $BookDirectories
+        $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
         $BookContent = $null
         if ($PrimaryBookFile) {
+            Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
             try {
                 $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
                 if ($null -eq $BookContent) {
@@ -317,7 +360,10 @@ try {
                 Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
             }
         } else {
-            Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'." -f $Book.title)
+            Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $Book.title)
+            $AvailableFormats = ConvertTo-FormatDisplayText -Extensions @($BookFiles | ForEach-Object Extension)
+            Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'. Supported: {1}. Available: {2}." -f `
+                $Book.title, (ConvertTo-FormatDisplayText -Extensions $SupportedBookExtensions), $AvailableFormats)
         }
 
         [PSCustomObject]@{
