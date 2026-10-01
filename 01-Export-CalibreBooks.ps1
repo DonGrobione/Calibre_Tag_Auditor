@@ -9,9 +9,33 @@
     converted to normalized text and included in the BookContent JSON field.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
+.PARAMETER ChangedWithinDays
+    Exports only books changed within this number of days; 0 exports all books. Overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used. Ignored when DebugBookExport is enabled.
+
+.EXAMPLE
+    .\01-Export-CalibreBooks.ps1
+    Exports the books changed within the number of days configured in 01-CalibreExport.config.json.
+
+.EXAMPLE
+    .\01-Export-CalibreBooks.ps1 -ChangedWithinDays 7
+    Exports the books changed within the last 7 days.
+
 .NOTES
-    Version: 3.6
+    Version: 3.7
 #>
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [ValidateRange(0, 36500)]
+    [int]$ChangedWithinDays
+)
+
+# Remember whether the caller overrides the configured ChangedWithinDays value.
+$ChangedWithinDaysOverride = $null
+if ($PSBoundParameters.ContainsKey('ChangedWithinDays')) {
+    $ChangedWithinDaysOverride = $ChangedWithinDays
+}
 
 $CalibreEnvironmentModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Environment.psd1"
 if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) {
@@ -44,6 +68,11 @@ try {
     $CalibreConfig = Get-CalibreConfiguration -ConfigurationPath $ConfigPath
     $BooksPerFile = $CalibreConfig.BooksPerFile
     $ChangedWithinDays = $CalibreConfig.ChangedWithinDays
+    $ChangedWithinDaysSource = 'config'
+    if ($null -ne $ChangedWithinDaysOverride) {
+        $ChangedWithinDays = $ChangedWithinDaysOverride
+        $ChangedWithinDaysSource = 'parameter'
+    }
     $DebugBookExport = $CalibreConfig.DebugBookExport
 
     if ($null -eq $BooksPerFile -or $null -eq $ChangedWithinDays) {
@@ -76,7 +105,7 @@ try {
     Write-ScriptLog "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
     Write-ScriptLog "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
     Write-ScriptLog "Books/file: $BooksPerFile"
-    Write-ScriptLog "Changed:    $ChangedWithinDays day(s)"
+    Write-ScriptLog "Changed:    $ChangedWithinDays day(s) ($ChangedWithinDaysSource)"
     if ($DebugBookExport) {
         Write-ScriptLog "Debug:      20 books, 5 books/file"
     }
@@ -171,7 +200,7 @@ try {
             Write-ScriptLog -Level WARN -Message "No books were found in the library. No book export file was written."
         }
         else {
-            Write-ScriptLog -Level WARN -Message "No books changed within the last $ChangedWithinDays day(s). No book export file was written. Increase ChangedWithinDays in 01-CalibreExport.config.json or set it to 0 to export all books."
+            Write-ScriptLog -Level WARN -Message "No books changed within the last $ChangedWithinDays day(s). No book export file was written. Run again with a higher -ChangedWithinDays value (0 exports all books), or change ChangedWithinDays in 01-CalibreExport.config.json."
         }
         return
     }

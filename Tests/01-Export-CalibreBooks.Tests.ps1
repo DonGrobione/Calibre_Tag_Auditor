@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers Get-BookFile, Get-PrimaryBookFile, and ConvertTo-FormatDisplayText. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The book directories are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile, Get-PrimaryBookFile, and ConvertTo-FormatDisplayText. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book directories are created under $TestDrive; Calibre is not started.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
 .EXAMPLE
@@ -46,6 +46,15 @@ function Add-TestBookDirectory {
 Describe '01-Export-CalibreBooks.ps1 source' {
     It 'parses without errors' {
         @($parseErrors).Count | Should Be 0
+    }
+
+    It 'has an optional integer parameter ChangedWithinDays limited to 0..36500' {
+        $parameter = (Get-Command -Name $scriptPath).Parameters['ChangedWithinDays']
+        $parameter.ParameterType | Should Be ([int])
+        $range = @($parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] })[0]
+        $range.MinRange | Should Be 0
+        $range.MaxRange | Should Be 36500
+        @($parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count | Should Be 0
     }
 }
 

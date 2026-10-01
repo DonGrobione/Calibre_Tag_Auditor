@@ -33,7 +33,7 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 - `CalibrePaths`: Ordered list of Calibre Portable installation directories. The first existing path is used.
 - `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
 - `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`. Keep this number low to prevent timeouts or other LLM processing issues.
-- `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`.
+- `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`. The parameter `-ChangedWithinDays` of `Invoke-CalibreToolsPipeline.ps1` and `01-Export-CalibreBooks.ps1` overrides this value for a single run without changing the file (see [Quick Start](#quick-start)).
 - `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export the 20 most recently changed books in four JSON files with five books per file. Books without a valid modification date are excluded. Default: `false`.
 
 Depending on the size of your library and number of tags, changing the value of `ChangedWithinDays` may use a lot more tokens, especially if many web calls or searches are required.
@@ -86,6 +86,18 @@ The API key file `Secrets/Gemini_API.json.key` is a JSON file. The script reads 
 
 The script exports books and tags, validates the data with Gemini, and then creates the ODS review file.
 
+To export a different period for a single run without editing `01-CalibreExport.config.json`, pass `-ChangedWithinDays`. The value from the configuration file stays the default for all runs without the parameter.
+
+```powershell
+# Books changed within the last 7 days
+.\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 7
+
+# All books
+.\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 0
+```
+
+`01-Export-CalibreBooks.ps1` accepts the same parameter when it runs on its own.
+
 ## Results
 After a successful run, the generated files are located here:
 
@@ -120,7 +132,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **A book has no `BookContent`:** The book export reads the content from the first EPUB, AZW3, MOBI, or PDF file of a book, in this order. If a book has none of these formats, the log contains a warning with the supported formats and the formats that are available for the book. Convert the book to a supported format in Calibre to include its content.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
-- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the tag export, Gemini, and ODS steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
+- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the tag export, Gemini, and ODS steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
 
 ## Tests
 The Pester tests in `Tests/` cover the modules and the helper functions of the step scripts. They mock all external calls and need neither Calibre nor Gemini nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:

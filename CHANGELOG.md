@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-01
 
 ### Scripts
+- New parameter `-ChangedWithinDays` for `Invoke-CalibreToolsPipeline.ps1` 1.11 and `01-Export-CalibreBooks.ps1` 3.7. It overrides `ChangedWithinDays` from `01-CalibreExport.config.json` for a single run, so the configuration file no longer has to be edited for a different period. Without the parameter, the configured value is used as before.
+  - The pipeline forwards the parameter only to `01-Export-CalibreBooks.ps1` (new function `Get-StepScriptParameter`, with tests).
+  - The export logs whether the value comes from the configuration or the parameter, for example `Changed: 7 day(s) (parameter)`. The warning for an empty export suggests the parameter.
+  - The value must be between 0 and 36500; `0` exports all books. `DebugBookExport` still ignores it.
 - `01-Export-CalibreBooks.ps1` 3.6: more progress information in the terminal and the log.
   - The number of books to export is logged before the content extraction starts.
   - Every book is logged with its progress, for example `Book 2 of 300: Filename.epub`. Books without a supported file are logged with their title.

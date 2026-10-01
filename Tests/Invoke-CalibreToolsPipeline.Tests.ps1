@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers Test-BookExportFile, which decides whether the pipeline continues after the book export. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test.
+    Covers the ChangedWithinDays script parameter, Test-BookExportFile, which decides whether the pipeline continues after the book export, and Get-StepScriptParameter, which forwards the parameter to the book export. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
 .EXAMPLE
@@ -14,15 +14,26 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath 'Invoke-CalibreToolsPipeline.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$definition = $scriptAst.Find({
-        param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-BookExportFile'
-    }, $true)
-. ([scriptblock]::Create($definition.Extent.Text))
+foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter')) {
+    $definition = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+        }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
 
 Describe 'Invoke-CalibreToolsPipeline.ps1 source' {
     It 'parses without errors' {
         @($parseErrors).Count | Should Be 0
+    }
+
+    It 'has an optional integer parameter ChangedWithinDays limited to 0..36500' {
+        $parameter = (Get-Command -Name $scriptPath).Parameters['ChangedWithinDays']
+        $parameter.ParameterType | Should Be ([int])
+        $range = @($parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] })[0]
+        $range.MinRange | Should Be 0
+        $range.MaxRange | Should Be 36500
+        @($parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count | Should Be 0
     }
 }
 
@@ -50,5 +61,28 @@ Describe 'Test-BookExportFile' {
         $exportDirectory = Join-Path -Path $TestDrive -ChildPath 'folder-only'
         New-Item -Path (Join-Path -Path $exportDirectory -ChildPath '01-Export-CalibreBooks_folder.json') -ItemType Directory -Force | Out-Null
         Test-BookExportFile -ExportDirectory $exportDirectory | Should Be $false
+    }
+}
+
+Describe 'Get-StepScriptParameter' {
+    It 'forwards ChangedWithinDays to the book export' {
+        $result = Get-StepScriptParameter -ScriptName '01-Export-CalibreBooks.ps1' -PipelineParameters @{ ChangedWithinDays = 7 }
+        $result['ChangedWithinDays'] | Should Be 7
+    }
+
+    It 'forwards ChangedWithinDays 0 to export all books' {
+        $result = Get-StepScriptParameter -ScriptName '01-Export-CalibreBooks.ps1' -PipelineParameters @{ ChangedWithinDays = 0 }
+        $result.ContainsKey('ChangedWithinDays') | Should Be $true
+        $result['ChangedWithinDays'] | Should Be 0
+    }
+
+    It 'returns no parameters for the book export when ChangedWithinDays was not given' {
+        $result = Get-StepScriptParameter -ScriptName '01-Export-CalibreBooks.ps1' -PipelineParameters @{}
+        $result.Count | Should Be 0
+    }
+
+    It 'returns no parameters for the other steps' {
+        $result = Get-StepScriptParameter -ScriptName '01-Export-CalibreTags.ps1' -PipelineParameters @{ ChangedWithinDays = 7 }
+        $result.Count | Should Be 0
     }
 }
