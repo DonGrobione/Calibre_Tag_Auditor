@@ -1,5 +1,5 @@
 # Calibre Tag Auditor
-Calibre Tag Auditor exports (updated) book data from Calibre, validates it with Mistral, and converts the results directly into an ODS review worksheet with LibreOffice. The generated ODS file serves as a review worksheet: use it to inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
+Calibre Tag Auditor exports (updated) book data from Calibre, validates it with Google Gemini, and converts the results directly into an ODS review worksheet with LibreOffice. The generated ODS file serves as a review worksheet: use it to inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
 
 I started this project because I have several thousand books and lost track of the consistency of my defined tags, especially as metadata downloads introduce new and undefined tags to my library.
 
@@ -9,7 +9,7 @@ I started this project because I have several thousand books and lost track of t
 - LibreOffice (current standard installation; headless conversion support required)
 - Calibre's embedded Python is used for the tag export step
 - No separate system Python installation is required for ODS conversion
-- A Mistral account with access to the configured model (`mistral-large-latest`) and an API key stored in `Secrets/Mistral_API.key`
+- A Google Gemini API key with access to the configured model (`gemini-3.8-flash`), stored in `Secrets/Gemini_API.json.key` (see [Google Gemini](#google-gemini))
 - Calibre Portable or a fixed installation. I use the portable version and sync it across devices via cloud storage.
 - Every Calibre tag must have a definition in the tag notes.
 - Optional, for development: Pester 3.4 or 4.x to run the tests in `Tests/` (see [Tests](#tests)).
@@ -18,12 +18,12 @@ I started this project because I have several thousand books and lost track of t
 - `Invoke-CalibreToolsPipeline.ps1`: runs the complete workflow.
 - `01-Export-CalibreBooks.ps1`, `01-Export-CalibreTags.ps1`, `02-Process-CalibreDataWithLLM.ps1`, `03-Convert-LLMResults2ODS.ps1`: the individual workflow steps (see [Run Individual Steps](#run-individual-steps)).
 - `01-CalibreExport.config.json`: Calibre export configuration (see [Calibre Configuration](#calibre-configuration)).
-- `02-CalibreDataLLM-Prompt.txt`: prompt for the Mistral agent.
+- `02-CalibreDataLLM-Prompt.txt`: prompt for Gemini, sent as system instruction with every request.
 - `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
   - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
 - `Tests/`: Pester tests for the modules and the step scripts.
-- `Secrets/`: API key and agent ID (not tracked by Git).
+- `Secrets/`: Gemini API key file (not tracked by Git).
 - `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)).
 - `CHANGELOG.md`: notable changes and module versions.
 
@@ -53,21 +53,30 @@ The book export contains the following fields from Calibre:
 
 The Calibre field `last_modified` is used only to sort the books and apply the `ChangedWithinDays` filter. It is not included in the exported book JSON files.
 
-## Mistral
-The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Prompt.txt`.
+## Google Gemini
+`02-Process-CalibreDataWithLLM.ps1` sends each book export file to the Gemini Interactions API (`gemini-3.8-flash`). The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Prompt.txt` and sent as system instruction with every request. Model, thinking level (`low`, `medium`, or `high`), timeouts, and retry intervals are set near the top of the script.
+
+The API key file `Secrets/Gemini_API.json.key` is a JSON file. The script reads only the property `APIKey`; other properties are ignored:
+
+```json
+{
+    "APIKey": "<your Gemini API key>"
+}
+```
 
 ### Documentation
-- https://docs.mistral.ai/models/model-cards/mistral-large-3-25-12
-- https://mistral.ai/pricing/api/?capabilities=text-to-text
+- Gemini 3.8 Flash: https://ai.google.dev/gemini-api/docs/latest-model
+- Interactions API reference: https://ai.google.dev/api/interactions-api
+- Pricing: https://ai.google.dev/gemini-api/docs/pricing
+- API keys: https://aistudio.google.com/docs/api-keys
 
-### Mistral Links
-- Admin Center Subscriptions: https://admin.mistral.ai/subscription
-- API-Keys: https://console.mistral.ai/observability/traces?profile_dialog=api-keys
-- Mistral Status: https://status.mistral.ai/
+### Gemini Links
+- API keys: https://aistudio.google.com/apikey
+- Billing: https://aistudio.google.com/billing
 
 ## Quick Start
 1. Open `01-CalibreExport.config.json` and change `CalibrePaths` with the path where your Calibre is located and update `LibraryName` with the name of your library.
-2. Place your Mistral API key in `Secrets/Mistral_API.key`.
+2. Store your Gemini API key in `Secrets/Gemini_API.json.key` (see [Google Gemini](#google-gemini)).
 3. Open PowerShell in the project directory.
 4. Run the complete workflow:
 
@@ -75,13 +84,13 @@ The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Pro
 .\Invoke-CalibreToolsPipeline.ps1
 ```
 
-The script exports books and tags, validates the data with Mistral, and then creates the ODS review file.
+The script exports books and tags, validates the data with Gemini, and then creates the ODS review file.
 
 ## Results
 After a successful run, the generated files are located here:
 
 - `01-Export`: exported books and tag definitions
-- `02-LLM-Result`: Mistral validation results
+- `02-LLM-Result`: Gemini validation results
 - `03-ODS`: formatted ODS file for LibreOffice
 
 The ODS file contains the columns `Title`, `Author`, `ProposedAction`, `Tag`, and `Reason`. For `ProposedAction = NO_CHANGES`, `Tag` and `Reason` are empty cells.
@@ -107,13 +116,13 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 
 ## Common Issues
 - **Calibre is not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
-- **The Mistral request failed:** Check the API key in `Secrets/Mistral_API.key`.
+- **The Gemini request failed:** Check that `Secrets/Gemini_API.json.key` is valid JSON with the property `APIKey` and that the key is valid. The API response body is written to the log.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 1.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books.
 
 ## Tests
-The Pester tests in `Tests/` cover the modules and the helper functions of the step scripts. They mock all external calls and need neither Calibre nor Mistral nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:
+The Pester tests in `Tests/` cover the modules and the helper functions of the step scripts. They mock all external calls and need neither Calibre nor Gemini nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:
 
 ```powershell
 Import-Module Pester -RequiredVersion 3.4.0
@@ -125,7 +134,7 @@ If Pester 4.x is installed, `Import-Module Pester -MaximumVersion 4.99` works as
 ## AI Usage
 This codebase was created with assistance from AI tools.
 
-The workflow also uses the Mistral API to validate exported Calibre book data against tag definitions. The book data processed by this step is sent to Mistral. Review the generated suggestions before applying them and ensure that sending this data complies with your privacy requirements.
+The workflow also uses the Google Gemini API to validate exported Calibre book data against tag definitions. The book data processed by this step is sent to Google. Requests are sent with `store` disabled, so the interactions are not kept for later retrieval; data use for model training depends on your Gemini API plan. Review the generated suggestions before applying them and ensure that sending this data complies with your privacy requirements.
 
 ## Independent Project Notice
 

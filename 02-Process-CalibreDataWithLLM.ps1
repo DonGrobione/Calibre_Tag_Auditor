@@ -1,9 +1,9 @@
 ﻿<#
 .SYNOPSIS
-    Validate Calibre export data with the Mistral API.
+    Validate Calibre export data with the Google Gemini API.
 
 .DESCRIPTION
-    Reads the latest Calibre book export and tag-definition JSON files, creates a fresh Mistral agent for each run, sends each book's extracted content and existing tags to the agent together with the prompt and tag definitions, and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
+    Reads the latest Calibre book export and tag-definition JSON files, sends each book's extracted content and existing tags together with the tag definitions to the Gemini Interactions API (prompt as system instruction), and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
@@ -11,8 +11,8 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 1.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 4.4
-    Requires a valid API key in Secrets/Mistral_API.key and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
+    Version: 5.0
+    Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
@@ -42,13 +42,12 @@ try {
     $ScriptDir = $PSScriptRoot
     $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
-    $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Mistral_API.key"
+    $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Gemini_API.json.key"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
 
-    $Model = "mistral-large-latest"
-    $AgentsUrl = "https://api.mistral.ai/v1/agents"
-    $ConversationsUrl = "https://api.mistral.ai/v1/conversations"
-    $AgentIdFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Mistral_Agent_Id.txt"
+    $Model = "gemini-3.8-flash"
+    $ThinkingLevel = "medium"                             # Gemini thinking level: low, medium, or high.
+    $InteractionsUrl = "https://generativelanguage.googleapis.com/v1beta/interactions"
     $ApiTimeoutSec = 300
 
     # Retry/backoff configuration for all retry activities in this script.
@@ -82,14 +81,31 @@ try {
         throw "API key or prompt file is missing in the script folder."
     }
 
-    # Create the secrets folder if it is missing.
-    $SecretDir = Join-Path -Path $ScriptDir -ChildPath "Secrets"
-    if (-not (Test-Path -Path $SecretDir)) {
-        New-Item -Path $SecretDir -ItemType Directory | Out-Null
+    # Read the Gemini API key from the APIKey property of the JSON secrets file.
+    function Get-GeminiApiKey {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path
+        )
+
+        try {
+            $secret = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw "The Gemini API key file is not valid JSON: $($_.Exception.Message)"
+        }
+
+        if ($null -eq $secret -or $null -eq $secret.PSObject.Properties['APIKey'] -or [string]::IsNullOrWhiteSpace([string]$secret.APIKey)) {
+            throw "The Gemini API key file contains no value for the property 'APIKey'."
+        }
+
+        return ([string]$secret.APIKey).Trim()
     }
 
     # Load the API key and the prompt system from external files.
-    $ApiKey = (Get-Content -Path $ApiKeyFile -Raw -Encoding UTF8).Trim()
+    $ApiKey = Get-GeminiApiKey -Path $ApiKeyFile
     $PromptSystem = (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim()
 
     # Require the export folder and both export types before contacting the API.
@@ -120,133 +136,7 @@ try {
     Write-ScriptLog "Target:   $(ConvertTo-DisplayPath -Path $OutputDir -BasePath $PSScriptRoot)"
     Write-Information -MessageData '' -InformationAction Continue
 
-    # Check whether a previously stored agent ID still resolves to a real Mistral agent.
-    function Test-MistralAgent {
-        param([string]$AgentId)
-
-        $headers = @{ Authorization = "Bearer $script:ApiKey" }
-        try {
-            $testUrl = "$script:AgentsUrl/$AgentId"
-            Invoke-RestMethod -Uri $testUrl -Method Get -Headers $headers -TimeoutSec 30 | Out-Null
-            return $true
-        }
-        catch {
-            return $false
-        }
-    }
-
-    # Delete an existing agent if it is still available.
-    function Remove-MistralAgent {
-        [CmdletBinding(SupportsShouldProcess = $true)]
-        param([string]$AgentId)
-
-        if ([string]::IsNullOrWhiteSpace($AgentId)) {
-            return
-        }
-
-        if (-not (Test-MistralAgent -AgentId $AgentId)) {
-            Write-ScriptLog "No existing agent found for ID: $AgentId"
-            return
-        }
-
-        if (-not $PSCmdlet.ShouldProcess("Mistral agent '$AgentId'", 'Delete')) {
-            return
-        }
-
-        $headers = @{ Authorization = "Bearer $script:ApiKey" }
-        $deleteUrl = "$script:AgentsUrl/$AgentId"
-
-        try {
-            Write-ScriptLog "Deleting existing Mistral agent: $AgentId"
-            Invoke-RestMethod -Uri $deleteUrl -Method Delete -Headers $headers -TimeoutSec $script:ApiTimeoutSec | Out-Null
-            Write-ScriptLog "Existing agent deleted successfully."
-        }
-        catch {
-            Write-ScriptLog -Level WARN -Message "Could not delete existing agent '$AgentId': $($_.Exception.Message)"
-        }
-    }
-
-    # Create a fresh Mistral agent for this run.
-    function New-MistralAgent {
-        [CmdletBinding(SupportsShouldProcess = $true)]
-        param()
-
-        if (-not $PSCmdlet.ShouldProcess("Mistral agent with model '$script:Model'", 'Create')) {
-            return $null
-        }
-
-        $headers = @{ Authorization = "Bearer $script:ApiKey" }
-        $agentBody = @{
-            model        = $script:Model
-            name         = "Calibre Book Validation Agent"
-            description  = "Agent for deriving and validating Calibre tags from extracted book content."
-            instructions = $script:PromptSystem
-            completion_args = @{ temperature = 0.2; top_p = 0.95 }
-        } | ConvertTo-Json -Depth 10
-
-        try {
-            Write-ScriptLog "Creating new Mistral agent..."
-            $response = Invoke-RestMethod -Uri $script:AgentsUrl -Method Post -Headers $headers -Body $agentBody -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
-
-            $agentId = $null
-            if ($null -ne $response -and $response.PSObject.Properties.Name -contains 'id') {
-                $agentId = [string]$response.id
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($agentId)) {
-                Set-Content -Path $script:AgentIdFile -Value $agentId -Encoding UTF8
-                Write-ScriptLog "Agent created successfully with ID: $agentId"
-                return $agentId
-            }
-
-            $responseText = $null
-            if ($null -ne $response) {
-                try {
-                    $responseText = $response | ConvertTo-Json -Depth 10 -Compress
-                }
-                catch {
-                    $responseText = [string]$response
-                }
-            }
-
-            if ([string]::IsNullOrWhiteSpace($responseText)) {
-                throw "Agent creation failed: no agent ID was returned by the API."
-            }
-
-            throw "Agent creation failed: invalid agent ID in response. Response: $responseText"
-        }
-        catch {
-            $errMessage = Get-ErrorMessageFromException -ErrorRecord $_
-            if ([string]::IsNullOrWhiteSpace($errMessage)) {
-                $errMessage = $_.ToString()
-            }
-
-            Write-ScriptLog -Level ERROR -Message "Failed to create agent: $errMessage"
-            $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
-            if (-not [string]::IsNullOrWhiteSpace($errorBody)) {
-                Write-ScriptLog -Level ERROR -Message "API Response: $errorBody"
-            }
-            throw
-        }
-    }
-
-    # Remove any previously stored agent and create a fresh one for each run.
-    function Get-MistralAgentId {
-        if (Test-Path -Path $script:AgentIdFile) {
-            $agentIdContent = Get-Content -Path $script:AgentIdFile -Raw -Encoding UTF8
-            if ($null -ne $agentIdContent) {
-                $existingId = $agentIdContent.Trim()
-                if (-not [string]::IsNullOrWhiteSpace($existingId)) {
-                    Write-ScriptLog "Existing agent ID found from previous run: $existingId"
-                    Remove-MistralAgent -AgentId $existingId
-                }
-            }
-        }
-
-        Remove-Item -Path $script:AgentIdFile -Force -ErrorAction SilentlyContinue
-        return New-MistralAgent
-    }
-
+    # Reverse up to four rounds of UTF-8 text that was decoded as ISO-8859-1 (mojibake such as "Ã¤" instead of "ä").
     function Repair-MojibakeText {
         param([string]$Text)
 
@@ -314,11 +204,11 @@ try {
         }
     }
 
-    # Extracts prompt, completion, and total token usage from an API response object.
+    # Extracts prompt, completion (output plus thinking), and total token usage from a Gemini interaction response.
     function Get-TokenUsageFromResponse {
         param($Response)
 
-        if ($null -eq $Response -or $null -eq $Response.usage) {
+        if ($null -eq $Response -or $null -eq $Response.PSObject.Properties['usage'] -or $null -eq $Response.usage) {
             return $null
         }
 
@@ -327,21 +217,21 @@ try {
         $completionTokens = $null
         $totalTokens = $null
 
-        if ($usage.PSObject.Properties.Name -contains 'prompt_tokens') {
-            $promptTokens = [int64]$usage.prompt_tokens
-        }
-        elseif ($usage.PSObject.Properties.Name -contains 'input_tokens') {
-            $promptTokens = [int64]$usage.input_tokens
+        if ($null -ne $usage.PSObject.Properties['total_input_tokens']) {
+            $promptTokens = [int64]$usage.total_input_tokens
         }
 
-        if ($usage.PSObject.Properties.Name -contains 'completion_tokens') {
-            $completionTokens = [int64]$usage.completion_tokens
-        }
-        elseif ($usage.PSObject.Properties.Name -contains 'output_tokens') {
-            $completionTokens = [int64]$usage.output_tokens
+        # Thinking tokens are billed as output tokens, so they count as completion tokens.
+        foreach ($outputPropertyName in @('total_output_tokens', 'total_thought_tokens')) {
+            if ($null -ne $usage.PSObject.Properties[$outputPropertyName]) {
+                if ($null -eq $completionTokens) {
+                    $completionTokens = [int64]0
+                }
+                $completionTokens += [int64]$usage.$outputPropertyName
+            }
         }
 
-        if ($usage.PSObject.Properties.Name -contains 'total_tokens') {
+        if ($null -ne $usage.PSObject.Properties['total_tokens']) {
             $totalTokens = [int64]$usage.total_tokens
         }
         elseif ($null -ne $promptTokens -and $null -ne $completionTokens) {
@@ -355,130 +245,36 @@ try {
         }
     }
 
-    # Extract the response text from the Mistral API response regardless of the payload shape.
-    function Get-MistralResponseText {
+    # Joins the text items of all model output steps of a Gemini interaction response and logs the raw response when it contains no text.
+    function Get-GeminiResponseText {
         param($Response)
 
         if ($null -eq $Response) {
-            Write-ScriptLog -Level WARN -Message "No response received from the Mistral API."
+            Write-ScriptLog -Level WARN -Message "No response received from the Gemini API."
             return $null
         }
 
-        # Recursively extracts text from message content structures in the API response.
-        function Get-TextFromContent {
-            param($Content)
+        if ($null -ne $Response.PSObject.Properties['status'] -and [string]$Response.status -ne 'completed') {
+            Write-ScriptLog -Level WARN -Message "Gemini interaction finished with status '$($Response.status)'."
+        }
 
-            if ($null -eq $Content) {
-                return $null
-            }
+        $textParts = @()
+        if ($null -ne $Response.PSObject.Properties['steps']) {
+            foreach ($step in @($Response.steps)) {
+                if ($null -eq $step -or [string]$step.type -ne 'model_output' -or $null -eq $step.PSObject.Properties['content']) {
+                    continue
+                }
 
-            if ($Content -is [string]) {
-                return (Repair-MojibakeText -Text $Content)
-            }
-
-            if ($Content -is [System.Collections.IEnumerable]) {
-                $textParts = foreach ($item in $Content) {
-                    if ($null -eq $item) {
-                        continue
-                    }
-
-                    if ($item -is [string]) {
-                        Repair-MojibakeText -Text $item
-                        continue
-                    }
-
-                    if ($null -ne $item.text -and -not [string]::IsNullOrWhiteSpace([string]$item.text)) {
-                        [string]$item.text
+                foreach ($contentItem in @($step.content)) {
+                    if ($null -ne $contentItem -and [string]$contentItem.type -eq 'text' -and -not [string]::IsNullOrEmpty([string]$contentItem.text)) {
+                        $textParts += [string]$contentItem.text
                     }
                 }
-
-                if ($textParts) {
-                    return ($textParts -join "")
-                }
-            }
-
-            if ($null -ne $Content.text -and -not [string]::IsNullOrWhiteSpace([string]$Content.text)) {
-                return (Repair-MojibakeText -Text [string]$Content.text)
-            }
-
-            return $null
-        }
-
-        # Extracts text content from a single output entry object.
-        function Get-TextFromOutputEntry {
-            param($Entry)
-
-            if ($null -eq $Entry) {
-                return $null
-            }
-
-            $entryType = $null
-            if ($null -ne $Entry.type) {
-                $entryType = [string]$Entry.type
-            }
-
-            $textFromContent = Get-TextFromContent -Content $Entry.content
-            if (-not [string]::IsNullOrWhiteSpace($textFromContent)) {
-                return $textFromContent
-            }
-
-            if ($entryType -eq 'message.output' -and $null -ne $Entry.message) {
-                $textFromMessage = Get-TextFromContent -Content $Entry.message.content
-                if (-not [string]::IsNullOrWhiteSpace($textFromMessage)) {
-                    return $textFromMessage
-                }
-
-                if ($null -ne $Entry.message.text -and -not [string]::IsNullOrWhiteSpace([string]$Entry.message.text)) {
-                    return (Repair-MojibakeText -Text [string]$Entry.message.text)
-                }
-            }
-
-            if ($null -ne $Entry.text -and -not [string]::IsNullOrWhiteSpace([string]$Entry.text)) {
-                return (Repair-MojibakeText -Text [string]$Entry.text)
-            }
-
-            return $null
-        }
-
-        if ($null -ne $Response.choices -and $Response.choices.Count -gt 0) {
-            if ($null -ne $Response.choices[0].message) {
-                if ($null -ne $Response.choices[0].message.content) {
-                    return $Response.choices[0].message.content
-                }
-                if ($null -ne $Response.choices[0].message.text) {
-                    return $Response.choices[0].message.text
-                }
-            }
-            if ($null -ne $Response.choices[0].content) {
-                return $Response.choices[0].content
-            }
-            if ($null -ne $Response.choices[0].text) {
-                return $Response.choices[0].text
             }
         }
 
-        if ($null -ne $Response.outputs -and $Response.outputs.Count -gt 0) {
-            foreach ($outputEntry in $Response.outputs) {
-                $outputText = Get-TextFromOutputEntry -Entry $outputEntry
-                if (-not [string]::IsNullOrWhiteSpace($outputText)) {
-                    return $outputText
-                }
-            }
-        }
-
-        if ($null -ne $Response.output) {
-            if ($Response.output -is [string]) {
-                return $Response.output
-            }
-            if ($null -ne $Response.output.text) {
-                return $Response.output.text
-            }
-            if ($null -ne $Response.output.content) {
-                $outputText = Get-TextFromContent -Content $Response.output.content
-                if (-not [string]::IsNullOrWhiteSpace($outputText)) {
-                    return $outputText
-                }
-            }
+        if ($textParts.Count -gt 0) {
+            return (Repair-MojibakeText -Text ($textParts -join ''))
         }
 
         Write-ScriptLog "--- Raw API response ---"
@@ -651,13 +447,13 @@ try {
         param(
             [string]$RawText,
             [string]$SourceFile,
-            [string]$AgentId,
+            [string]$Model,
             [int]$ExpectedUniqueBookCount = -1
         )
 
         $result = [ordered]@{
             source_file             = $SourceFile
-            agent_id                = $AgentId
+            model                   = $Model
             status                  = 'success'
             input_unique_book_count = $null
             output_unique_book_count = 0
@@ -677,7 +473,7 @@ try {
         $jsonText = Repair-JsonArrayFormatting -Text $jsonText
         if ([string]::IsNullOrWhiteSpace($jsonText)) {
             $result.status = 'error'
-            $result.parse_error = 'No JSON structure could be extracted from the Mistral response.'
+            $result.parse_error = 'No JSON structure could be extracted from the Gemini response.'
             return [pscustomobject]$result
         }
 
@@ -734,18 +530,20 @@ try {
         return [pscustomobject]$result
     }
 
-    # Sends a prompt payload to the Mistral conversation endpoint with automatic retry on rate limits and HTTP server errors.
-    function Invoke-MistralRequest {
+    # Sends the book data with the prompt as system instruction to the Gemini Interactions API with automatic retry on rate limits and HTTP server errors.
+    function Invoke-GeminiRequest {
         param([string]$PayloadText)
 
         $script:LastApiErrorMessage = $null
         $script:LastApiErrorBody = $null
 
-        $headers = @{ Authorization = "Bearer $script:ApiKey" }
+        $headers = @{ 'x-goog-api-key' = $script:ApiKey }
         $body = @{
-            agent_id = $script:AgentId
-            inputs   = $PayloadText
-            store    = $false
+            model              = $script:Model
+            system_instruction = $script:PromptSystem
+            input              = $PayloadText
+            generation_config  = @{ thinking_level = $script:ThinkingLevel }
+            store              = $false
         } | ConvertTo-Json -Depth 10
 
         $maxRetries = $script:MaxRequestRetries
@@ -753,8 +551,8 @@ try {
 
         while ($retryCount -lt $maxRetries) {
             try {
-                $response = Invoke-RestMethod -Uri $script:ConversationsUrl -Method Post -Headers $headers -Body $body -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
-                $text = Get-MistralResponseText -Response $response
+                $response = Invoke-RestMethod -Uri $script:InteractionsUrl -Method Post -Headers $headers -Body $body -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
+                $text = Get-GeminiResponseText -Response $response
                 return [pscustomobject]@{
                     Text        = $text
                     TokenUsage  = Get-TokenUsageFromResponse -Response $response
@@ -788,13 +586,13 @@ try {
                     Write-ScriptLog -Level WARN -Message "API request failed: HTTP $statusCode"
 
                     if ($statusCode -eq 400) {
-                        Write-ScriptLog -Level WARN -Message "Possible causes: invalid agent ID, malformed payload, missing permissions."
+                        Write-ScriptLog -Level WARN -Message "Possible causes: invalid API key (Gemini reports it as HTTP 400), invalid model name, malformed payload. See the API response body below."
                     }
-                    elseif ($statusCode -eq 401) {
+                    elseif ($statusCode -eq 401 -or $statusCode -eq 403) {
                         Write-ScriptLog -Level WARN -Message "Possible cause: API key is invalid or expired."
                     }
                     elseif ($statusCode -eq 500 -or $statusCode -eq 502) {
-                        Write-ScriptLog -Level WARN -Message "Server error at Mistral - retry later."
+                        Write-ScriptLog -Level WARN -Message "Server error at Google - retry later."
                     }
 
                     $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
@@ -821,14 +619,7 @@ try {
         return $null
     }
 
-    # Initialize the Mistral agent for this execution.
-    Write-ScriptLog "--- Initialize Mistral agent ---"
-    $AgentId = Get-MistralAgentId
-
-    if ([string]::IsNullOrWhiteSpace($AgentId)) {
-        throw "Agent ID could not be resolved."
-    }
-    Write-ScriptLog "Agent ID: $AgentId"
+    Write-ScriptLog "Model:    $Model (thinking level: $ThinkingLevel)"
     Write-Information -MessageData '' -InformationAction Continue
 
     # Process each book file one by one and save every LLM response separately.
@@ -877,9 +668,8 @@ try {
         })
         $bookAnalysisInput = ConvertTo-Json -InputObject $bookAnalysisRecords -Depth 10
 
-        $fullPrompt = @"
-$PromptSystem
-
+        # The prompt itself is sent as system instruction, so the input holds only the data.
+        $bookPayload = @"
 ===================================
 TAG DEFINITIONS (from $($tagFile.Name)):
 ===================================
@@ -891,8 +681,7 @@ BOOK CONTENT AND CURRENT CALIBRE TAGS (from $($bookFile.Name)):
 $bookAnalysisInput
 "@
 
-        # Send the prompt to the Mistral conversation endpoint, retrying on incomplete/invalid responses
-        # (e.g. the model returning a raw tool-call marker instead of the final book data).
+        # Send the book data to the Gemini Interactions API, retrying on incomplete or invalid responses (e.g. a wrong unique-book count or text that is not JSON).
         $apiResult = $null
         $resultObject = $null
         $contentAttempt = 0
@@ -903,7 +692,7 @@ $bookAnalysisInput
 
         while ($contentAttempt -lt $script:MaxContentRetries) {
             $contentAttempt++
-            $requestResult = Invoke-MistralRequest -PayloadText $fullPrompt
+            $requestResult = Invoke-GeminiRequest -PayloadText $bookPayload
 
             if ($null -eq $requestResult) {
                 break
@@ -923,7 +712,7 @@ $bookAnalysisInput
                 }
             }
 
-            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -AgentId $AgentId -ExpectedUniqueBookCount $inputUniqueBookCount
+            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -Model $Model -ExpectedUniqueBookCount $inputUniqueBookCount
 
             if ($resultObject.status -eq 'success') {
                 break
@@ -1007,7 +796,7 @@ $bookAnalysisInput
 
             $resultObject = [pscustomobject][ordered]@{
                 source_file              = $bookFile.Name
-                agent_id                 = $AgentId
+                model                    = $Model
                 status                   = 'error'
                 input_unique_book_count  = if ($inputUniqueBookCount -ge 0) { $inputUniqueBookCount } else { $null }
                 output_unique_book_count = 0
