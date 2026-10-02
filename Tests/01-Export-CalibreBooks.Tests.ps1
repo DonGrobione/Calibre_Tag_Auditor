@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile, Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, and that the cache cleanup runs before the date filter. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book directories are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that only books with content are cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -60,20 +60,50 @@ Describe '01-Export-CalibreBooks.ps1 source' {
 }
 
 Describe 'Get-BookFile' {
-    It 'returns all files of the book directory' {
-        $directory = Add-TestBookDirectory -Name 'Book (1)' -FileNames @('book.epub', 'cover.jpg', 'metadata.opf')
-        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 1 }) -BookDirectories @{ '1' = $directory })
-        $files.Count | Should Be 3
+    $libraryPath = Join-Path -Path $TestDrive -ChildPath 'Library'
+    $directory = Add-TestBookDirectory -Name 'Library\Author\Book (1)' -FileNames @('book.epub', 'book.pdf', 'cover.jpg')
+    # calibredb returns the format paths with forward slashes.
+    $epubPath = (Join-Path -Path $directory.FullName -ChildPath 'book.epub').Replace('\', '/')
+    $pdfPath = (Join-Path -Path $directory.FullName -ChildPath 'book.pdf').Replace('\', '/')
+
+    It 'returns the files listed in the formats field, but not other files of the book folder' {
+        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 1; formats = @($epubPath, $pdfPath) }) -LibraryPath $libraryPath)
+        $files.Count | Should Be 2
+        ($files | ForEach-Object Name) -join ',' | Should Be 'book.epub,book.pdf'
     }
 
-    It 'returns no files when the book has no directory' {
-        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 2 }) -BookDirectories @{})
+    It 'ignores the files of another folder with the same book id' {
+        $null = Add-TestBookDirectory -Name 'Library\Author\Old Title (1)' -FileNames @('old.epub')
+        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 1; formats = @($pdfPath) }) -LibraryPath $libraryPath)
+        $files.Count | Should Be 1
+        $files[0].Name | Should Be 'book.pdf'
+    }
+
+    It 'skips listed files that do not exist' {
+        $missingPath = (Join-Path -Path $directory.FullName -ChildPath 'missing.mobi').Replace('\', '/')
+        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 1; formats = @($missingPath, $epubPath) }) -LibraryPath $libraryPath)
+        $files.Count | Should Be 1
+        $files[0].Name | Should Be 'book.epub'
+    }
+
+    It 'skips files outside the library folder, also via ..' {
+        $outside = Add-TestBookDirectory -Name 'Outside' -FileNames @('book.epub')
+        $outsidePath = Join-Path -Path $outside.FullName -ChildPath 'book.epub'
+        $traversalPath = Join-Path -Path $libraryPath -ChildPath '..\Outside\book.epub'
+        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 1; formats = @($outsidePath, $traversalPath) }) -LibraryPath $libraryPath)
         $files.Count | Should Be 0
     }
 
-    It 'returns no files when the book has no id' {
-        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = $null }) -BookDirectories @{})
+    It 'skips a folder whose name only starts with the library folder name' {
+        $sibling = Add-TestBookDirectory -Name 'Library2' -FileNames @('book.epub')
+        $files = @(Get-BookFile -Book ([PSCustomObject]@{ id = 1; formats = @((Join-Path -Path $sibling.FullName -ChildPath 'book.epub')) }) -LibraryPath $libraryPath)
         $files.Count | Should Be 0
+    }
+
+    It 'returns no files when the book has no formats' {
+        @(Get-BookFile -Book ([PSCustomObject]@{ id = 2; formats = @() }) -LibraryPath $libraryPath).Count | Should Be 0
+        @(Get-BookFile -Book ([PSCustomObject]@{ id = 2; formats = $null }) -LibraryPath $libraryPath).Count | Should Be 0
+        @(Get-BookFile -Book ([PSCustomObject]@{ id = 2 }) -LibraryPath $libraryPath).Count | Should Be 0
     }
 }
 
@@ -103,8 +133,8 @@ Describe 'Get-PrimaryBookFile' {
         Get-PrimaryBookFile -Files $null -SupportedExtensions $supportedExtensions | Should Be $null
     }
 
-    It 'accepts the unwrapped result of Get-BookFile for a book without directory' {
-        $bookFiles = Get-BookFile -Book ([PSCustomObject]@{ id = 6 }) -BookDirectories @{}
+    It 'accepts the unwrapped result of Get-BookFile for a book without formats' {
+        $bookFiles = Get-BookFile -Book ([PSCustomObject]@{ id = 6 }) -LibraryPath $TestDrive
         Get-PrimaryBookFile -Files $bookFiles -SupportedExtensions $supportedExtensions | Should Be $null
     }
 }
@@ -115,20 +145,30 @@ Describe 'Book file resolution in the export loop' {
             $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$BookFiles'
         }, $true)
 
-    It 'wraps Get-BookFile in @() so a book without directory yields an empty array' {
+    It 'wraps Get-BookFile in @() so a book without formats yields an empty array' {
         $loopStatement.Right.Extent.Text | Should Match '^@\(\s*Get-BookFile\b'
     }
 
-    It 'yields an empty array and no primary file for a book without directory' {
-        $bookFiles = @(Get-BookFile -Book ([PSCustomObject]@{ id = 7 }) -BookDirectories @{})
+    It 'asks calibredb for the formats field' {
+        $scriptAst.Extent.Text | Should Match '--fields=\S*\bformats\b'
+    }
+
+    It 'no longer scans the library folder for book directories' {
+        $scriptAst.Extent.Text | Should Not Match 'BookDirectories'
+        $scriptAst.Extent.Text | Should Not Match 'Get-ChildItem -LiteralPath \$LibraryPath'
+    }
+
+    It 'yields an empty array and no primary file for a book without formats' {
+        $bookFiles = @(Get-BookFile -Book ([PSCustomObject]@{ id = 7 }) -LibraryPath $TestDrive)
         $bookFiles.Count | Should Be 0
         Get-PrimaryBookFile -Files $bookFiles -SupportedExtensions $supportedExtensions | Should Be $null
         ConvertTo-FormatDisplayText -Extensions @($bookFiles | ForEach-Object Extension) | Should Be 'none'
     }
 
-    It 'yields the single file for a book directory with one file' {
-        $directory = Add-TestBookDirectory -Name 'Book (8)' -FileNames @('book.epub')
-        $bookFiles = @(Get-BookFile -Book ([PSCustomObject]@{ id = 8 }) -BookDirectories @{ '8' = $directory })
+    It 'yields the single file for a book with one format' {
+        $directory = Add-TestBookDirectory -Name 'Library\Author\Book (8)' -FileNames @('book.epub')
+        $book = [PSCustomObject]@{ id = 8; formats = @((Join-Path -Path $directory.FullName -ChildPath 'book.epub').Replace('\', '/')) }
+        $bookFiles = @(Get-BookFile -Book $book -LibraryPath (Join-Path -Path $TestDrive -ChildPath 'Library'))
         $bookFiles.Count | Should Be 1
         (Get-PrimaryBookFile -Files $bookFiles -SupportedExtensions $supportedExtensions).Name | Should Be 'book.epub'
     }
@@ -211,43 +251,72 @@ Describe 'Write-BookCacheFile and Get-CachedBookExport' {
     $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'cache-read'
     $null = New-Item -Path $cacheDirectory -ItemType Directory -Force
     $path = Join-Path -Path $cacheDirectory -ChildPath '0f8fad5b-d9cb-469f-a165-70867728950e.json'
-    $record = [PSCustomObject]@{ Uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'; LastModified = '2026-10-01T10:00:00+00:00'; Title = 'Book'; BookContent = 'Begründung' }
+    $record = [PSCustomObject]@{ CacheVersion = 1; Uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'; LastModified = '2026-10-01T10:00:00+00:00'; Title = 'Book'; BookContent = 'Begründung' }
+
+    # Writes a cache file with the given JSON text to the test cache directory and returns its path.
+    function Add-TestCacheFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Name,
+            [Parameter(Mandatory = $true)]
+            [string]$Json
+        )
+
+        $filePath = Join-Path -Path $cacheDirectory -ChildPath $Name
+        Set-Content -LiteralPath $filePath -Value $Json
+        return $filePath
+    }
 
     It 'writes the cache file in UTF-8 without BOM' {
         Write-BookCacheFile -Path $path -Record $record
         [System.IO.File]::ReadAllBytes($path)[0] | Should Not Be 0xEF
     }
 
-    It 'returns the cached record with non-ASCII content when last_modified matches' {
-        $cached = Get-CachedBookExport -Path $path -LastModified '2026-10-01T10:00:00+00:00'
+    It 'returns the cached record with non-ASCII content when last_modified and the cache version match' {
+        $cached = Get-CachedBookExport -Path $path -LastModified '2026-10-01T10:00:00+00:00' -CacheVersion 1
         $cached.BookContent | Should Be 'Begründung'
         $cached.Title | Should Be 'Book'
     }
 
     It 'returns $null when last_modified differs' {
-        Get-CachedBookExport -Path $path -LastModified '2026-10-02T10:00:00+00:00' | Should Be $null
+        Get-CachedBookExport -Path $path -LastModified '2026-10-02T10:00:00+00:00' -CacheVersion 1 | Should Be $null
+    }
+
+    It 'returns $null when the cache version differs' {
+        Get-CachedBookExport -Path $path -LastModified '2026-10-01T10:00:00+00:00' -CacheVersion 2 | Should Be $null
+    }
+
+    It 'returns $null for a cache file without cache version, as written before version 4.2' {
+        $oldPath = Add-TestCacheFile -Name 'old-format.json' -Json '{ "LastModified": "x", "BookContent": "Text" }'
+        Get-CachedBookExport -Path $oldPath -LastModified 'x' -CacheVersion 1 | Should Be $null
     }
 
     It 'returns $null when the cache file does not exist' {
-        Get-CachedBookExport -Path (Join-Path -Path $cacheDirectory -ChildPath 'missing.json') -LastModified 'x' | Should Be $null
+        Get-CachedBookExport -Path (Join-Path -Path $cacheDirectory -ChildPath 'missing.json') -LastModified 'x' -CacheVersion 1 | Should Be $null
     }
 
     It 'returns $null for a corrupt cache file' {
-        $corruptPath = Join-Path -Path $cacheDirectory -ChildPath 'corrupt.json'
-        Set-Content -LiteralPath $corruptPath -Value '{ not json'
-        Get-CachedBookExport -Path $corruptPath -LastModified 'x' | Should Be $null
+        $corruptPath = Add-TestCacheFile -Name 'corrupt.json' -Json '{ not json'
+        Get-CachedBookExport -Path $corruptPath -LastModified 'x' -CacheVersion 1 | Should Be $null
     }
 
     It 'returns $null for a cache file without BookContent' {
-        $partialPath = Join-Path -Path $cacheDirectory -ChildPath 'partial.json'
-        Set-Content -LiteralPath $partialPath -Value '{ "LastModified": "x" }'
-        Get-CachedBookExport -Path $partialPath -LastModified 'x' | Should Be $null
+        $partialPath = Add-TestCacheFile -Name 'partial.json' -Json '{ "CacheVersion": 1, "LastModified": "x" }'
+        Get-CachedBookExport -Path $partialPath -LastModified 'x' -CacheVersion 1 | Should Be $null
     }
 
     It 'returns $null for a cache file whose BookContent is null, so the content is extracted again' {
-        $nullPath = Join-Path -Path $cacheDirectory -ChildPath 'null-content.json'
-        Set-Content -LiteralPath $nullPath -Value '{ "LastModified": "x", "BookContent": null }'
-        Get-CachedBookExport -Path $nullPath -LastModified 'x' | Should Be $null
+        $nullPath = Add-TestCacheFile -Name 'null-content.json' -Json '{ "CacheVersion": 1, "LastModified": "x", "BookContent": null }'
+        Get-CachedBookExport -Path $nullPath -LastModified 'x' -CacheVersion 1 | Should Be $null
+    }
+
+    It 'returns $null for a cache file whose BookContent is empty, so the content is extracted again' {
+        $emptyPath = Add-TestCacheFile -Name 'empty-content.json' -Json '{ "CacheVersion": 1, "LastModified": "x", "BookContent": "" }'
+        Get-CachedBookExport -Path $emptyPath -LastModified 'x' -CacheVersion 1 | Should Be $null
+    }
+
+    It 'rejects a cache version of 0' {
+        { Get-CachedBookExport -Path $path -LastModified 'x' -CacheVersion 0 } | Should Throw
     }
 
     It 'writes nothing with -WhatIf' {
@@ -327,7 +396,13 @@ Describe 'Book cache workflow' {
         while ($null -ne $condition -and $condition -isnot [System.Management.Automation.Language.IfStatementAst]) {
             $condition = $condition.Parent
         }
-        $condition.Clauses[0].Item1.Extent.Text | Should Match '\$null -ne \$BookContent'
+        $condition.Clauses[0].Item1.Extent.Text | Should Match '-not \[string\]::IsNullOrEmpty\(\$BookContent\)'
+    }
+
+    It 'writes the cache version into every cache file and checks it when reading' {
+        $scriptAst.Extent.Text | Should Match '\$BookCacheVersion = \d+'
+        $scriptAst.Extent.Text | Should Match 'CacheVersion\s*=\s*\$BookCacheVersion'
+        $scriptAst.Extent.Text | Should Match 'Get-CachedBookExport [^\r\n]*-CacheVersion \$BookCacheVersion'
     }
 
     It 'runs the cache cleanup once, before the date filter and the empty export check' {
