@@ -5,10 +5,9 @@
 .DESCRIPTION
     The export is configured through 01-CalibreExport.config.json. See README.md for the configuration and behavior details.
     Uses calibredb.exe from the Calibre Portable installation.
-    The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
-    converted to normalized text and included in the BookContent JSON field.
+    The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are converted to normalized text and included in the BookContent JSON field. The paths of the book files are read from Calibre (calibredb field formats); only files inside the library folder are used.
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
-    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books without content (failed extraction or no supported book file) are not cached. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
+    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre and the cache file has the current cache format version, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books without content (failed extraction, no text, or no supported book file) are not cached, and an outdated cache file of such a book is deleted. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -23,7 +22,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.1
+    Version: 4.2
 #>
 
 [CmdletBinding()]
@@ -96,6 +95,8 @@ try {
     Remove-Item -Force
 
     # Create the cache folder that holds one export file per book, keyed by the Calibre UUID.
+    # Increase BookCacheVersion whenever the content extraction or the cache file format changes, so all older cache files are rebuilt.
+    $BookCacheVersion = 1
     $CacheDir = Join-Path -Path $ScriptDir -ChildPath "01-Cache"
     if (-not (Test-Path -LiteralPath $CacheDir -PathType Container)) {
         New-Item -Path $CacheDir -ItemType Directory | Out-Null
@@ -187,7 +188,7 @@ try {
         return (Join-Path -Path $CacheDirectory -ChildPath ("{0}.json" -f $Uuid.ToLowerInvariant()))
     }
 
-    # Returns the cached book record when the cache file exists, can be parsed, has BookContent, and was written for the given last_modified value; otherwise $null.
+    # Returns the cached book record when the cache file exists, can be parsed, has the given cache format version, has non-empty BookContent, and was written for the given last_modified value; otherwise $null.
     function Get-CachedBookExport {
         param(
             [Parameter(Mandatory = $true)]
@@ -195,7 +196,10 @@ try {
             [string]$Path,
             [Parameter(Mandatory = $true)]
             [AllowEmptyString()]
-            [string]$LastModified
+            [string]$LastModified,
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(1, [int]::MaxValue)]
+            [int]$CacheVersion
         )
 
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -208,7 +212,11 @@ try {
             return $null
         }
 
-        if ($null -eq $Cached -or $null -eq $Cached.PSObject.Properties['LastModified'] -or $null -eq $Cached.BookContent) {
+        if ($null -eq $Cached -or $null -eq $Cached.PSObject.Properties['LastModified'] -or $null -eq $Cached.PSObject.Properties['CacheVersion']) {
+            return $null
+        }
+
+        if ([string]$Cached.CacheVersion -ne [string]$CacheVersion -or [string]::IsNullOrEmpty([string]$Cached.BookContent)) {
             return $null
         }
 
@@ -270,10 +278,10 @@ try {
         }
     }
 
-    # Query the Calibre library via calibredb, including the modification date used for descending sort order and the optional date filter.
+    # Query the Calibre library via calibredb, including the modification date used for descending sort order and the optional date filter, and the paths of the book files.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
-        --fields=id,uuid,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
+        --fields=id,uuid,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified,formats `
         "--with-library=$LibraryPath"
 
     if ($LASTEXITCODE -ne 0) {
@@ -344,15 +352,6 @@ try {
 
     Write-ScriptLog ("Books to export: {0}" -f $Books.Count)
 
-    # Index Calibre's ID-based book directories once so content extraction remains efficient for large exports.
-    $BookDirectories = @{}
-    Get-ChildItem -LiteralPath $LibraryPath -Directory -Recurse -ErrorAction SilentlyContinue |
-        ForEach-Object {
-            if ($_.Name -match '\((\d+)\)$') {
-                $BookDirectories[$Matches[1]] = $_
-            }
-        }
-
     # Without splitting all books go into one file; otherwise each file holds up to BooksPerFile books.
     $TotalBooks = $Books.Count
     $BooksInFile = $TotalBooks
@@ -397,25 +396,42 @@ try {
         return $null
     }
 
-    # Returns all files in the cached ID-based book directory, or nothing when the book has no directory. PowerShell unrolls an empty array into no output, so callers must wrap the call in @() to get an array.
+    # Returns the book files that Calibre lists in the formats field of the book and that exist inside the library folder; paths outside the library are ignored. PowerShell unrolls an empty array into no output, so callers must wrap the call in @() to get an array.
     function Get-BookFile {
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
             [Parameter(Mandatory = $true)]
-            [hashtable]$BookDirectories
+            [ValidateNotNullOrEmpty()]
+            [string]$LibraryPath
         )
 
-        if ($null -eq $Book.id) {
+        if ($null -eq $Book.PSObject.Properties['formats'] -or $null -eq $Book.formats) {
             return @()
         }
 
-        $BookDirectory = $BookDirectories[[string]$Book.id]
-        if (-not $BookDirectory) {
-            return @()
+        $LibraryRoot = [System.IO.Path]::GetFullPath($LibraryPath).TrimEnd('\') + '\'
+        $Files = foreach ($FormatPath in @($Book.formats)) {
+            if ([string]::IsNullOrWhiteSpace([string]$FormatPath)) {
+                continue
+            }
+
+            try {
+                $FullPath = [System.IO.Path]::GetFullPath(([string]$FormatPath).Replace('/', '\'))
+            } catch {
+                continue
+            }
+
+            if (-not $FullPath.StartsWith($LibraryRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            if (Test-Path -LiteralPath $FullPath -PathType Leaf) {
+                Get-Item -LiteralPath $FullPath
+            }
         }
 
-        return @(Get-ChildItem -LiteralPath $BookDirectory.FullName -File -ErrorAction SilentlyContinue)
+        return @($Files)
     }
 
     # Returns the first file whose extension appears earliest in the supported extension list, or $null when none matches or no files are given.
@@ -548,7 +564,7 @@ try {
         if ($null -eq $CachePath) {
             Write-ScriptLog -Level WARN -Message ("Book '{0}' has no valid UUID. The cache is not used for this book." -f $Book.title)
         } else {
-            $CachedBook = Get-CachedBookExport -Path $CachePath -LastModified $LastModifiedText
+            $CachedBook = Get-CachedBookExport -Path $CachePath -LastModified $LastModifiedText -CacheVersion $BookCacheVersion
         }
 
         $BookContent = $null
@@ -557,7 +573,7 @@ try {
             $CachedBookCount++
             Write-ScriptLog ("Book {0} of {1}: {2} (cached)" -f $BookNumber, $TotalBooks, $Book.title)
         } else {
-            $BookFiles = @(Get-BookFile -Book $Book -BookDirectories $BookDirectories)
+            $BookFiles = @(Get-BookFile -Book $Book -LibraryPath $LibraryPath)
             $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
             if ($PrimaryBookFile) {
                 Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
@@ -566,6 +582,8 @@ try {
                     $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
                     if ($null -eq $BookContent) {
                         Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
+                    } elseif ($BookContent -eq '') {
+                        Write-ScriptLog -Level WARN -Message ("No text found in '{0}' (e.g. a comic with images only)." -f $PrimaryBookFile.Name)
                     }
                 } catch {
                     Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
@@ -591,9 +609,20 @@ try {
         }
         $Batch.Add($BookRecord)
 
-        # Store newly extracted books in the cache. Books without content (failed extraction or no supported book file) are not cached, so the next run tries again.
-        if ($null -eq $CachedBook -and $null -ne $CachePath -and $null -ne $BookContent) {
+        # Store newly extracted books in the cache. Books without content (failed extraction, no text, or no supported book file) are not cached, so the next run tries again, and an outdated cache file of such a book is deleted.
+        if ($null -eq $CachedBook -and $null -ne $CachePath -and [string]::IsNullOrEmpty($BookContent)) {
+            if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
+                try {
+                    Remove-Item -LiteralPath $CachePath -Force -ErrorAction Stop
+                } catch {
+                    Write-ScriptLog -Level WARN -Message ("Could not delete outdated cache file '{0}': {1}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot), $_.Exception.Message)
+                }
+            }
+        }
+
+        if ($null -eq $CachedBook -and $null -ne $CachePath -and -not [string]::IsNullOrEmpty($BookContent)) {
             $CacheRecord = [PSCustomObject]@{
+                CacheVersion = $BookCacheVersion
                 Uuid         = ([string]$Book.uuid).ToLowerInvariant()
                 LastModified = $LastModifiedText
             }

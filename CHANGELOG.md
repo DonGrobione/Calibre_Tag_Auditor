@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-02
 
 ### Scripts
+- `01-Export-CalibreBooks.ps1` 4.2: more reliable book files and cache.
+  - The book files are read from the calibredb field `formats` instead of scanning the library for folders named `(<id>)`. Empty leftover folders from renamed titles, or several folders with the same book ID, no longer hide the real book file or supply the file of another folder. Paths outside the library folder are ignored. The recursive folder scan of the whole library is gone, which also makes the export start faster. `Get-BookFile` now takes `-LibraryPath` instead of `-BookDirectories`.
+  - Books with empty `BookContent` (`""`, e.g. comics with images only) are no longer cached either, and the log warns "No text found". An outdated cache file of a book without content is deleted.
+  - Cache files carry a `CacheVersion` (currently 1). Files with a different or missing version are ignored and rebuilt, so all cache files written by 4.0 and 4.1 are rebuilt once on their next export.
 - `01-Export-CalibreBooks.ps1` 4.1: books without `BookContent` are no longer cached. Before, a book without a supported book file was cached with `BookContent: null` and kept that value until its `last_modified` changed, even after the cause was fixed (e.g. an empty leftover book folder in the library hid the real one). Such books are now checked again on every run, and existing cache files with `BookContent: null` are treated as missing, so their content is extracted again.
 - `01-Export-CalibreBooks.ps1` 4.0: new per-book export cache in `01-Cache/` (git-ignored), so the slow content extraction is not repeated for unchanged books.
   - Every exported book is stored as `01-Cache/<uuid>.json`, named after its Calibre UUID (calibredb now also exports the field `uuid`). The file holds the exported fields plus `Uuid` and `LastModified`.
