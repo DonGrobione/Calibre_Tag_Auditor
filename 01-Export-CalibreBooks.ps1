@@ -22,7 +22,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.3
+    Version: 4.4
 #>
 
 [CmdletBinding()]
@@ -572,12 +572,12 @@ try {
         if ($null -ne $CachedBook) {
             $BookContent = $CachedBook.BookContent
             $CachedBookCount++
-            Write-ScriptLog ("Book {0} of {1}: {2} (cached)" -f $BookNumber, $TotalBooks, $Book.title)
+            Write-ScriptLog ("Book {0}/{1}: {2} (cached)" -f $BookNumber, $TotalBooks, $Book.title)
         } else {
             $BookFiles = @(Get-BookFile -Book $Book -LibraryPath $LibraryPath)
             $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
             if ($PrimaryBookFile) {
-                Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
+                Write-ScriptLog ("Book {0}/{1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
                 $ExtractedBookCount++
                 try {
                     $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
@@ -590,7 +590,7 @@ try {
                     Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
                 }
             } else {
-                Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $Book.title)
+                Write-ScriptLog ("Book {0}/{1}: {2}" -f $BookNumber, $TotalBooks, $Book.title)
                 $AvailableFormats = ConvertTo-FormatDisplayText -Extensions @($BookFiles | ForEach-Object Extension)
                 Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'. Supported: {1}. Available: {2}." -f `
                     $Book.title, (ConvertTo-FormatDisplayText -Extensions $SupportedBookExtensions), $AvailableFormats)

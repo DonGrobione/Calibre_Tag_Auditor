@@ -4,6 +4,7 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-02
 
 ### Scripts
+- `01-Export-CalibreBooks.ps1` 4.4: the book progress uses the same `x/y` numbering as the file progress (`Book 456/2326: Filename.epub` instead of `Book 456 of 2326: ...`), in the terminal and in the log.
 - Prevent garbled characters at their source instead of only repairing them; the repair functions stay as a safety net.
   - `02-Process-CalibreDataWithLLM.ps1` 5.3: the Gemini request is sent as UTF-8 bytes, and the response is read with `Invoke-WebRequest -UseBasicParsing` and decoded as UTF-8 by the new function `ConvertFrom-Utf8JsonResponse`. Before, `Invoke-RestMethod` decoded the response with the charset named by the server and fell back to ISO-8859-1 without one, which produces mojibake such as `Ã¼`. API error bodies are read as UTF-8 too.
   - `01-Export-CalibreBooks.ps1` 4.3: `ebook-convert.exe` is called with `--txt-output-encoding=utf-8`, and the text file is read as UTF-8 explicitly. Both were the defaults already, so the extracted text and the cache are unchanged (verified on cached books).
