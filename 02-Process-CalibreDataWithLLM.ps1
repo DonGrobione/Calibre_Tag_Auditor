@@ -11,7 +11,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 5.2
+    Version: 5.3
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -236,7 +236,7 @@ try {
         }
 
         try {
-            $reader = New-Object System.IO.StreamReader($ErrorRecord.Exception.Response.GetResponseStream())
+            $reader = New-Object System.IO.StreamReader($ErrorRecord.Exception.Response.GetResponseStream(), [System.Text.Encoding]::UTF8)
             return $reader.ReadToEnd()
         }
         catch {
@@ -570,7 +570,23 @@ try {
         return [pscustomobject]$result
     }
 
-    # Sends the book data with the prompt as system instruction to the Gemini Interactions API with automatic retry on rate limits and HTTP server errors.
+    # Decodes the raw bytes of a web response as UTF-8 and parses them as JSON, independent of the charset in the server's Content-Type header (Windows PowerShell 5.1 falls back to ISO-8859-1 without one).
+    function ConvertFrom-Utf8JsonResponse {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$WebResponse
+        )
+
+        $bytes = $WebResponse.RawContentStream.ToArray()
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+        if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+            $text = $text.Substring(1)
+        }
+
+        return (ConvertFrom-Json -InputObject $text -ErrorAction Stop)
+    }
+
+    # Sends the book data with the prompt as system instruction to the Gemini Interactions API with automatic retry on rate limits and HTTP server errors. The request body is sent as UTF-8 bytes and the response is decoded as UTF-8, so umlauts and typographic characters do not depend on PowerShell's encoding defaults.
     function Invoke-GeminiRequest {
         param([string]$PayloadText)
 
@@ -585,13 +601,15 @@ try {
             generation_config  = @{ thinking_level = $script:ThinkingLevel }
             store              = $false
         } | ConvertTo-Json -Depth 10
+        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
 
         $maxRetries = $script:MaxRequestRetries
         $retryCount = 0
 
         while ($retryCount -lt $maxRetries) {
             try {
-                $response = Invoke-RestMethod -Uri $script:InteractionsUrl -Method Post -Headers $headers -Body $body -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec
+                $webResponse = Invoke-WebRequest -Uri $script:InteractionsUrl -Method Post -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec -UseBasicParsing
+                $response = ConvertFrom-Utf8JsonResponse -WebResponse $webResponse
                 $text = Get-GeminiResponseText -Response $response
                 return [pscustomobject]@{
                     Text        = $text

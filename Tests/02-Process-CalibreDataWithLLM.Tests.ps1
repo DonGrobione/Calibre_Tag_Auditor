@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, Invoke-GeminiRequest, and Convert-ResponseTextToResultObject. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-RestMethod and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes), and Convert-ResponseTextToResultObject. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -18,7 +18,7 @@ $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPa
 $functionNames = @(
     'Get-GeminiApiKey', 'Repair-MojibakeText', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException',
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Invoke-GeminiRequest',
-    'Repair-JsonArrayFormatting', 'Get-JsonText', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject'
+    'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject'
 )
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
@@ -194,44 +194,81 @@ Describe 'Get-GeminiResponseText' {
     }
 }
 
+# Builds a fake Invoke-WebRequest result whose raw content is the given object as UTF-8 JSON bytes, like a server response without charset handling.
+function Get-TestWebResponse {
+    param([Parameter(Mandatory = $true)][object]$InputObject)
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($InputObject | ConvertTo-Json -Depth 10))
+    return [pscustomobject]@{ RawContentStream = (New-Object -TypeName System.IO.MemoryStream -ArgumentList (, $bytes)) }
+}
+
+# Text with an umlaut, an en dash, and a typographic apostrophe, built from character codes.
+$specialText = "Begr$([char]0xFC)ndung $([char]0x2013) it$([char]0x2019)s"
+
+Describe 'ConvertFrom-Utf8JsonResponse' {
+    It 'decodes the raw response bytes as UTF-8' {
+        $result = ConvertFrom-Utf8JsonResponse -WebResponse (Get-TestWebResponse -InputObject @{ text = $specialText })
+        $result.text | Should BeExactly $specialText
+    }
+
+    It 'ignores a UTF-8 byte order mark' {
+        $bytes = [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::UTF8.GetBytes('{ "a": 1 }')
+        $webResponse = [pscustomobject]@{ RawContentStream = (New-Object -TypeName System.IO.MemoryStream -ArgumentList (, [byte[]]$bytes)) }
+        (ConvertFrom-Utf8JsonResponse -WebResponse $webResponse).a | Should Be 1
+    }
+}
+
 Describe 'Invoke-GeminiRequest' {
     Mock Start-Sleep { }
 
     It 'sends model, system instruction, input, and thinking level with the API key header' {
-        Mock Invoke-RestMethod { Get-TestInteractionResponse -Text 'ok' }
+        Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'ok') }
         $result = Invoke-GeminiRequest -PayloadText 'book data'
         $result.Text | Should Be 'ok'
         $result.TokenUsage.TotalTokens | Should Be 150
-        Assert-MockCalled Invoke-RestMethod -Scope It -Times 1 -Exactly -ParameterFilter {
-            $sent = $Body | ConvertFrom-Json
-            $Uri -eq 'https://api.example.invalid/v1beta/interactions' -and $Method -eq 'Post' -and
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly -ParameterFilter {
+            $sent = [System.Text.Encoding]::UTF8.GetString([byte[]]$Body) | ConvertFrom-Json
+            $Uri -eq 'https://api.example.invalid/v1beta/interactions' -and $Method -eq 'Post' -and $UseBasicParsing -and
             $Headers['x-goog-api-key'] -eq 'test-api-key' -and
             $sent.model -eq 'test-model' -and $sent.system_instruction -eq 'Test prompt' -and $sent.input -eq 'book data' -and
             $sent.generation_config.thinking_level -eq 'medium' -and $sent.store -eq $false
         }
     }
 
+    It 'sends the request body as UTF-8 bytes' {
+        Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'ok') }
+        $null = Invoke-GeminiRequest -PayloadText $specialText
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly -ParameterFilter {
+            $Body -is [byte[]] -and ([System.Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json).input -ceq $specialText
+        }
+    }
+
+    It 'returns umlauts and typographic characters of the response unchanged' {
+        Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text $specialText) }
+        (Invoke-GeminiRequest -PayloadText 'book data').Text | Should BeExactly $specialText
+    }
+
     It 'retries after a rate limit (429) and returns the later response' {
         $script:callCount = 0
-        Mock Invoke-RestMethod {
+        Mock Invoke-WebRequest {
             $script:callCount++
             if ($script:callCount -eq 1) {
                 $exception = New-Object System.Exception 'Too many requests'
                 $exception | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = [pscustomobject]@{ value__ = 429 } })
                 throw $exception
             }
-            Get-TestInteractionResponse -Text 'second'
+            Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'second')
         }
         (Invoke-GeminiRequest -PayloadText 'book data').Text | Should Be 'second'
-        Assert-MockCalled Invoke-RestMethod -Scope It -Times 2 -Exactly
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 2 -Exactly
         Assert-MockCalled Start-Sleep -Scope It -Times 1 -Exactly
     }
 
     It 'returns $null and stores the error for a non-retryable error' {
-        Mock Invoke-RestMethod { throw 'Bad request' }
+        Mock Invoke-WebRequest { throw 'Bad request' }
         Invoke-GeminiRequest -PayloadText 'book data' | Should Be $null
         $script:LastApiErrorMessage | Should Match 'Bad request'
-        Assert-MockCalled Invoke-RestMethod -Scope It -Times 1 -Exactly
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly
     }
 }
 

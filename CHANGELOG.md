@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-02
 
 ### Scripts
+- Prevent garbled characters at their source instead of only repairing them; the repair functions stay as a safety net.
+  - `02-Process-CalibreDataWithLLM.ps1` 5.3: the Gemini request is sent as UTF-8 bytes, and the response is read with `Invoke-WebRequest -UseBasicParsing` and decoded as UTF-8 by the new function `ConvertFrom-Utf8JsonResponse`. Before, `Invoke-RestMethod` decoded the response with the charset named by the server and fell back to ISO-8859-1 without one, which produces mojibake such as `Ã¼`. API error bodies are read as UTF-8 too.
+  - `01-Export-CalibreBooks.ps1` 4.3: `ebook-convert.exe` is called with `--txt-output-encoding=utf-8`, and the text file is read as UTF-8 explicitly. Both were the defaults already, so the extracted text and the cache are unchanged (verified on cached books).
+  - Not changed, because it is already safe: `calibredb --for-machine` writes ASCII-only JSON with `\u` escapes, so its output is correct under any console code page (checked with code page 850).
 - Fixed in `02-Process-CalibreDataWithLLM.ps1` 5.2: the mojibake repair of the Gemini responses (`Repair-MojibakeText`) could lose or skip text.
   - Garbled text was not repaired when the response also contained correct umlauts (e.g. `BegrÃ¼ndung für` stayed unchanged), because the whole text was converted at once and any correct non-ASCII character made the conversion fail.
   - When a repair succeeded, characters outside ISO-8859-1 elsewhere in the response were silently replaced (`–` became `-`, `’` became `'`, `„“` became `"`).
