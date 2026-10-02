@@ -59,7 +59,7 @@ Extracting `BookContent` with `ebook-convert.exe` is the slowest part of the boo
 
 - When a book is exported again and its `last_modified` value in Calibre is unchanged, the content from the cache file is reused and the book is logged with `(cached)`. Title, authors, tags, and the other metadata are always read fresh from Calibre.
 - When the book was changed in Calibre, the content is extracted again and the cache file is overwritten.
-- When the content extraction fails, nothing is cached, so the next run tries again.
+- Books without content are not cached, so the next run tries again. This covers failed extractions and books without an EPUB, AZW3, MOBI, or PDF file.
 - On every run, the cache files of books that are no longer in the Calibre library are deleted, independent of `ChangedWithinDays`. When Calibre returns no books at all, the cleanup is skipped, so a wrong library path cannot empty the cache.
 
 The batch files in `01-Export/` are still written on every run, so `02-Process-CalibreDataWithLLM.ps1` works as before. The summary at the end of the export shows how many books came from the cache, how many were extracted, and how many cache files were removed. To force a new content extraction for all books, delete the files in `01-Cache/`.

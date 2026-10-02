@@ -244,12 +244,10 @@ Describe 'Write-BookCacheFile and Get-CachedBookExport' {
         Get-CachedBookExport -Path $partialPath -LastModified 'x' | Should Be $null
     }
 
-    It 'returns a cached record whose BookContent is null' {
+    It 'returns $null for a cache file whose BookContent is null, so the content is extracted again' {
         $nullPath = Join-Path -Path $cacheDirectory -ChildPath 'null-content.json'
         Set-Content -LiteralPath $nullPath -Value '{ "LastModified": "x", "BookContent": null }'
-        $cached = Get-CachedBookExport -Path $nullPath -LastModified 'x'
-        $null -eq $cached | Should Be $false
-        $cached.BookContent | Should Be $null
+        Get-CachedBookExport -Path $nullPath -LastModified 'x' | Should Be $null
     }
 
     It 'writes nothing with -WhatIf' {
@@ -320,6 +318,16 @@ Describe 'Book cache workflow' {
 
     It 'stores the cache in the 01-Cache folder' {
         $scriptAst.Extent.Text | Should Match '-ChildPath "01-Cache"'
+    }
+
+    It 'writes a cache file only for books with content' {
+        $cacheWrite = @($commands | Where-Object { $_.GetCommandName() -eq 'Write-BookCacheFile' })
+        $cacheWrite.Count | Should Be 1
+        $condition = $cacheWrite[0].Parent
+        while ($null -ne $condition -and $condition -isnot [System.Management.Automation.Language.IfStatementAst]) {
+            $condition = $condition.Parent
+        }
+        $condition.Clauses[0].Item1.Extent.Text | Should Match '\$null -ne \$BookContent'
     }
 
     It 'runs the cache cleanup once, before the date filter and the empty export check' {

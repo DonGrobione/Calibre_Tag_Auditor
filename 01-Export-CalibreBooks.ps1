@@ -8,7 +8,7 @@
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
     converted to normalized text and included in the BookContent JSON field.
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
-    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
+    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books without content (failed extraction or no supported book file) are not cached. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -23,7 +23,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.0
+    Version: 4.1
 #>
 
 [CmdletBinding()]
@@ -187,7 +187,7 @@ try {
         return (Join-Path -Path $CacheDirectory -ChildPath ("{0}.json" -f $Uuid.ToLowerInvariant()))
     }
 
-    # Returns the cached book record when the cache file exists, can be parsed, and was written for the given last_modified value; otherwise $null.
+    # Returns the cached book record when the cache file exists, can be parsed, has BookContent, and was written for the given last_modified value; otherwise $null.
     function Get-CachedBookExport {
         param(
             [Parameter(Mandatory = $true)]
@@ -208,7 +208,7 @@ try {
             return $null
         }
 
-        if ($null -eq $Cached -or $null -eq $Cached.PSObject.Properties['LastModified'] -or $null -eq $Cached.PSObject.Properties['BookContent']) {
+        if ($null -eq $Cached -or $null -eq $Cached.PSObject.Properties['LastModified'] -or $null -eq $Cached.BookContent) {
             return $null
         }
 
@@ -552,7 +552,6 @@ try {
         }
 
         $BookContent = $null
-        $IsCacheable = $true
         if ($null -ne $CachedBook) {
             $BookContent = $CachedBook.BookContent
             $CachedBookCount++
@@ -566,11 +565,9 @@ try {
                 try {
                     $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
                     if ($null -eq $BookContent) {
-                        $IsCacheable = $false
                         Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
                     }
                 } catch {
-                    $IsCacheable = $false
                     Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
                 }
             } else {
@@ -594,8 +591,8 @@ try {
         }
         $Batch.Add($BookRecord)
 
-        # Store newly extracted books in the cache; failed extractions are not cached, so the next run tries again.
-        if ($null -eq $CachedBook -and $null -ne $CachePath -and $IsCacheable) {
+        # Store newly extracted books in the cache. Books without content (failed extraction or no supported book file) are not cached, so the next run tries again.
+        if ($null -eq $CachedBook -and $null -ne $CachePath -and $null -ne $BookContent) {
             $CacheRecord = [PSCustomObject]@{
                 Uuid         = ([string]$Book.uuid).ToLowerInvariant()
                 LastModified = $LastModifiedText
