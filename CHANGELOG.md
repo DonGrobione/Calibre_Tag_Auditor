@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-02
 
 ### Scripts
+- `01-Export-CalibreBooks.ps1` 4.0: new per-book export cache in `01-Cache/` (git-ignored), so the slow content extraction is not repeated for unchanged books.
+  - Every exported book is stored as `01-Cache/<uuid>.json`, named after its Calibre UUID (calibredb now also exports the field `uuid`). The file holds the exported fields plus `Uuid` and `LastModified`.
+  - When Calibre's `last_modified` value is unchanged, the cached `BookContent` is reused and `ebook-convert.exe` is skipped; the book is logged with `(cached)`. Metadata is always read fresh from calibredb. Failed extractions are not cached.
+  - On every run, cache files of books that are no longer in the library are deleted. The cleanup is skipped when calibredb returns no books.
+  - The batch files in `01-Export/` and their format are unchanged, so steps 02 and 03 and the pipeline need no change. The export summary shows the cached, extracted, and removed counts.
+  - New functions `Test-CalibreUuid`, `Get-BookCachePath`, `Get-CachedBookExport`, `Write-BookCacheFile`, and `Remove-StaleBookCacheFile`, with tests.
 - `01-Export-CalibreBooks.ps1` 3.10: each export file is written as soon as it holds `BooksPerFile` books (or the last book), instead of after all books are processed. Memory use stays small during large exports, and the files finished before an interrupted run are kept. The progress log shows each written file between the book lines. New function `Get-BookExportFileName`, with tests.
 
 ## 2026-10-01

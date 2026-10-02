@@ -25,6 +25,7 @@ I started this project because I have several thousand books and lost track of t
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).
 - `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)).
+- `01-Cache/`: one cached book export per book, reused by `01-Export-CalibreBooks.ps1` (see [Book Export Cache](#book-export-cache)). Not tracked by Git.
 - `CHANGELOG.md`: notable changes and module versions.
 
 ## Calibre Configuration
@@ -51,7 +52,17 @@ The book export contains the following fields from Calibre:
 - `Year`: Publication year, extracted from the publication date
 - `BookContent`: The first 20,000 words from the preferred EPUB, AZW3, MOBI, or PDF file, with normalized whitespace. Content extraction failures result in an empty value for that book.
 
-The Calibre field `last_modified` is used only to sort the books and apply the `ChangedWithinDays` filter. It is not included in the exported book JSON files.
+The Calibre field `last_modified` is used only to sort the books, apply the `ChangedWithinDays` filter, and check whether a cached book is still current. The Calibre field `uuid` is used only as the name of the cache file. Neither field is included in the exported book JSON files.
+
+## Book Export Cache
+Extracting `BookContent` with `ebook-convert.exe` is the slowest part of the book export. `01-Export-CalibreBooks.ps1` therefore stores every exported book in `01-Cache/<uuid>.json`, named after the Calibre UUID of the book. The cache file holds the exported fields plus `Uuid` and `LastModified`.
+
+- When a book is exported again and its `last_modified` value in Calibre is unchanged, the content from the cache file is reused and the book is logged with `(cached)`. Title, authors, tags, and the other metadata are always read fresh from Calibre.
+- When the book was changed in Calibre, the content is extracted again and the cache file is overwritten.
+- When the content extraction fails, nothing is cached, so the next run tries again.
+- On every run, the cache files of books that are no longer in the Calibre library are deleted, independent of `ChangedWithinDays`. When Calibre returns no books at all, the cleanup is skipped, so a wrong library path cannot empty the cache.
+
+The batch files in `01-Export/` are still written on every run, so `02-Process-CalibreDataWithLLM.ps1` works as before. The summary at the end of the export shows how many books came from the cache, how many were extracted, and how many cache files were removed. To force a new content extraction for all books, delete the files in `01-Cache/`.
 
 ## Google Gemini
 `02-Process-CalibreDataWithLLM.ps1` sends each book export file to the Gemini Interactions API (`gemini-3.8-flash`). The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Prompt.txt` and sent as system instruction with every request. Model, thinking level (`low`, `medium`, or `high`), timeouts, and retry intervals are set near the top of the script.
@@ -102,6 +113,7 @@ To export a different period for a single run without editing `01-CalibreExport.
 After a successful run, the generated files are located here:
 
 - `01-Export`: exported books and tag definitions
+- `01-Cache`: cached book exports, one file per book (see [Book Export Cache](#book-export-cache))
 - `02-LLM-Result`: Gemini validation results
 - `03-ODS`: formatted ODS file for LibreOffice
 
@@ -130,6 +142,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **Calibre is not found:** Update `CalibrePaths` in `01-CalibreExport.config.json`.
 - **The Gemini request failed:** Check that `Secrets/Gemini_API.json.key` is valid JSON with the property `APIKey` and that the key is valid. The API response body is written to the log.
 - **A book has no `BookContent`:** The book export reads the content from the first EPUB, AZW3, MOBI, or PDF file of a book, in this order. If a book has none of these formats, the log contains a warning with the supported formats and the formats that are available for the book. Convert the book to a supported format in Calibre to include its content.
+- **A book keeps outdated `BookContent`:** The content is taken from `01-Cache/` as long as Calibre's `last_modified` value of the book is unchanged. Delete the book's file `01-Cache/<uuid>.json`, or all files in `01-Cache/`, to extract the content again.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 2.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the tag export, Gemini, and ODS steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.

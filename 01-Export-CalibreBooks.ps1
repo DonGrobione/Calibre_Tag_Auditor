@@ -8,6 +8,7 @@
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
     converted to normalized text and included in the BookContent JSON field.
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
+    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -22,7 +23,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 3.10
+    Version: 4.0
 #>
 
 [CmdletBinding()]
@@ -94,6 +95,12 @@ try {
     Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" -File |
     Remove-Item -Force
 
+    # Create the cache folder that holds one export file per book, keyed by the Calibre UUID.
+    $CacheDir = Join-Path -Path $ScriptDir -ChildPath "01-Cache"
+    if (-not (Test-Path -LiteralPath $CacheDir -PathType Container)) {
+        New-Item -Path $CacheDir -ItemType Directory | Out-Null
+    }
+
     $CalibreEnvironment = Get-CalibreEnvironment -Configuration $CalibreConfig
     $CalibrePortablePath = $CalibreEnvironment.PortablePath
     $LibraryPath = $CalibreEnvironment.LibraryPath
@@ -105,6 +112,7 @@ try {
     Write-ScriptLog "Converter:  $(ConvertTo-DisplayPath -Path $EbookConvertExe.FullName -BasePath $PSScriptRoot)"
     Write-ScriptLog "Library:    $(ConvertTo-DisplayPath -Path $LibraryPath -BasePath $PSScriptRoot)"
     Write-ScriptLog "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
+    Write-ScriptLog "Cache:      $(ConvertTo-DisplayPath -Path $CacheDir -BasePath $PSScriptRoot)"
     Write-ScriptLog "Books/file: $BooksPerFile"
     Write-ScriptLog "Changed:    $ChangedWithinDays day(s) ($ChangedWithinDaysSource)"
     if ($DebugBookExport) {
@@ -147,10 +155,125 @@ try {
         [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
     }
 
+    # Returns $true when the value is a Calibre UUID in the canonical form 8-4-4-4-12 hex digits, so it can safely be used as a file name.
+    function Test-CalibreUuid {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$Uuid
+        )
+
+        # \z instead of $, because $ also matches before a trailing line break.
+        return ($Uuid -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\z')
+    }
+
+    # Returns the path of the cache file <uuid>.json in the cache directory, or $null when the UUID is not valid.
+    function Get-BookCachePath {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$CacheDirectory,
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$Uuid
+        )
+
+        if (-not (Test-CalibreUuid -Uuid $Uuid)) {
+            return $null
+        }
+
+        return (Join-Path -Path $CacheDirectory -ChildPath ("{0}.json" -f $Uuid.ToLowerInvariant()))
+    }
+
+    # Returns the cached book record when the cache file exists, can be parsed, and was written for the given last_modified value; otherwise $null.
+    function Get-CachedBookExport {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyString()]
+            [string]$LastModified
+        )
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $null
+        }
+
+        try {
+            $Cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        } catch {
+            return $null
+        }
+
+        if ($null -eq $Cached -or $null -eq $Cached.PSObject.Properties['LastModified'] -or $null -eq $Cached.PSObject.Properties['BookContent']) {
+            return $null
+        }
+
+        if ([string]$Cached.LastModified -cne $LastModified) {
+            return $null
+        }
+
+        return $Cached
+    }
+
+    # Writes a book record to its cache file as UTF-8 JSON without BOM.
+    function Write-BookCacheFile {
+        [CmdletBinding(SupportsShouldProcess = $true)]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [object]$Record
+        )
+
+        if ($PSCmdlet.ShouldProcess($Path, 'Write book cache file')) {
+            Write-JsonFile -Path $Path -InputObject $Record -Depth 10
+        }
+    }
+
+    # Deletes the cache files whose UUID file name is not in the given set of library UUIDs and returns the deleted files. Files without a UUID name (e.g. .gitkeep) are kept.
+    function Remove-StaleBookCacheFile {
+        [CmdletBinding(SupportsShouldProcess = $true)]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$CacheDirectory,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [string[]]$LibraryUuids
+        )
+
+        if (-not (Test-Path -LiteralPath $CacheDirectory -PathType Container)) {
+            return
+        }
+
+        $KnownUuids = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($LibraryUuid in $LibraryUuids) {
+            if ($LibraryUuid) {
+                [void]$KnownUuids.Add($LibraryUuid)
+            }
+        }
+
+        foreach ($CacheFile in @(Get-ChildItem -LiteralPath $CacheDirectory -Filter '*.json' -File)) {
+            if (-not (Test-CalibreUuid -Uuid $CacheFile.BaseName) -or $KnownUuids.Contains($CacheFile.BaseName)) {
+                continue
+            }
+
+            if ($PSCmdlet.ShouldProcess($CacheFile.FullName, 'Remove stale book cache file')) {
+                Remove-Item -LiteralPath $CacheFile.FullName -Force -ErrorAction Stop
+                $CacheFile
+            }
+        }
+    }
+
     # Query the Calibre library via calibredb, including the modification date used for descending sort order and the optional date filter.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
-        --fields=id,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
+        --fields=id,uuid,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified `
         "--with-library=$LibraryPath"
 
     if ($LASTEXITCODE -ne 0) {
@@ -159,6 +282,19 @@ try {
 
     $JsonString = $JsonOutput -join "`n"
     $Books = ConvertFrom-Json -InputObject $JsonString
+
+    # Delete cache files of books that are no longer in the library. An empty book list skips the cleanup, so a wrong or empty library cannot wipe the cache.
+    $RemovedCacheFileCount = 0
+    if (@($Books).Count -eq 0) {
+        Write-ScriptLog -Level WARN -Message "calibredb returned no books. The cache cleanup was skipped."
+    } else {
+        $RemovedCacheFiles = @(Remove-StaleBookCacheFile -CacheDirectory $CacheDir -LibraryUuids @($Books | ForEach-Object { [string]$_.uuid }))
+        foreach ($RemovedCacheFile in $RemovedCacheFiles) {
+            Write-ScriptLog -Level DEBUG -Message ("Removed cache file of deleted book: {0}" -f $RemovedCacheFile.Name)
+        }
+        $RemovedCacheFileCount = $RemovedCacheFiles.Count
+        Write-ScriptLog ("Cache cleanup: {0} file(s) of deleted books removed" -f $RemovedCacheFileCount)
+    }
 
     # Parse modification dates once so invalid values cannot abort the export.
     # With a filter enabled, only valid dates within the configured period pass.
@@ -389,6 +525,8 @@ try {
 
     # Transform the raw data into a simple object format and write each export file as soon as it is full, so memory use stays small and finished files survive an interrupted run.
     $BookNumber = 0
+    $CachedBookCount = 0
+    $ExtractedBookCount = 0
     $FileNumber = 0
     $BatchStartNumber = 1
     $Batch = New-Object -TypeName 'System.Collections.Generic.List[object]'
@@ -403,27 +541,47 @@ try {
             }) -join ", ")
         }
 
-        $BookFiles = @(Get-BookFile -Book $Book -BookDirectories $BookDirectories)
-        $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
-        $BookContent = $null
-        if ($PrimaryBookFile) {
-            Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
-            try {
-                $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
-                if ($null -eq $BookContent) {
-                    Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
-                }
-            } catch {
-                Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
-            }
+        # Reuse the cached content while Calibre's last_modified value is unchanged; otherwise extract it again.
+        $LastModifiedText = [string]$Book.last_modified
+        $CachePath = Get-BookCachePath -CacheDirectory $CacheDir -Uuid ([string]$Book.uuid)
+        $CachedBook = $null
+        if ($null -eq $CachePath) {
+            Write-ScriptLog -Level WARN -Message ("Book '{0}' has no valid UUID. The cache is not used for this book." -f $Book.title)
         } else {
-            Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $Book.title)
-            $AvailableFormats = ConvertTo-FormatDisplayText -Extensions @($BookFiles | ForEach-Object Extension)
-            Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'. Supported: {1}. Available: {2}." -f `
-                $Book.title, (ConvertTo-FormatDisplayText -Extensions $SupportedBookExtensions), $AvailableFormats)
+            $CachedBook = Get-CachedBookExport -Path $CachePath -LastModified $LastModifiedText
         }
 
-        $Batch.Add([PSCustomObject]@{
+        $BookContent = $null
+        $IsCacheable = $true
+        if ($null -ne $CachedBook) {
+            $BookContent = $CachedBook.BookContent
+            $CachedBookCount++
+            Write-ScriptLog ("Book {0} of {1}: {2} (cached)" -f $BookNumber, $TotalBooks, $Book.title)
+        } else {
+            $BookFiles = @(Get-BookFile -Book $Book -BookDirectories $BookDirectories)
+            $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
+            if ($PrimaryBookFile) {
+                Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
+                $ExtractedBookCount++
+                try {
+                    $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
+                    if ($null -eq $BookContent) {
+                        $IsCacheable = $false
+                        Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
+                    }
+                } catch {
+                    $IsCacheable = $false
+                    Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
+                }
+            } else {
+                Write-ScriptLog ("Book {0} of {1}: {2}" -f $BookNumber, $TotalBooks, $Book.title)
+                $AvailableFormats = ConvertTo-FormatDisplayText -Extensions @($BookFiles | ForEach-Object Extension)
+                Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'. Supported: {1}. Available: {2}." -f `
+                    $Book.title, (ConvertTo-FormatDisplayText -Extensions $SupportedBookExtensions), $AvailableFormats)
+            }
+        }
+
+        $BookRecord = [PSCustomObject]@{
             Title       = Clear-ExportText -Value $Book.title
             Author      = Clear-ExportText -Value $Book.authors
             Series      = Clear-ExportText -Value $Book.series
@@ -433,7 +591,24 @@ try {
             Publisher   = Clear-ExportText -Value $Book.publisher
             Year        = Get-ExportYear -PubDate $Book.pubdate
             BookContent = $BookContent
-        })
+        }
+        $Batch.Add($BookRecord)
+
+        # Store newly extracted books in the cache; failed extractions are not cached, so the next run tries again.
+        if ($null -eq $CachedBook -and $null -ne $CachePath -and $IsCacheable) {
+            $CacheRecord = [PSCustomObject]@{
+                Uuid         = ([string]$Book.uuid).ToLowerInvariant()
+                LastModified = $LastModifiedText
+            }
+            foreach ($Property in $BookRecord.PSObject.Properties) {
+                $CacheRecord | Add-Member -MemberType NoteProperty -Name $Property.Name -Value $Property.Value
+            }
+            try {
+                Write-BookCacheFile -Path $CachePath -Record $CacheRecord
+            } catch {
+                Write-ScriptLog -Level WARN -Message ("Could not write cache file '{0}': {1}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot), $_.Exception.Message)
+            }
+        }
 
         if ($Batch.Count -lt $BooksInFile -and $BookNumber -lt $TotalBooks) {
             continue
@@ -454,6 +629,9 @@ try {
     Write-ScriptLog ("  Books:    {0}" -f $TotalBooks)
     Write-ScriptLog ("  Files:    {0}" -f $FileCount)
     Write-ScriptLog ("  Per file: max {0}" -f $BooksInFile)
+    Write-ScriptLog ("  Cached:   {0}" -f $CachedBookCount)
+    Write-ScriptLog ("  Extracted: {0}" -f $ExtractedBookCount)
+    Write-ScriptLog ("  Cache removed: {0}" -f $RemovedCacheFileCount)
 } catch {
     Write-ScriptLog -Level ERROR -Message $_.Exception.Message -ErrorRecord $_
     throw
