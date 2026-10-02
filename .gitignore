@@ -11,3 +11,7 @@ Secrets
 !02-LLM-Result/.gitkeep
 03-ODS/*
 !03-ODS/.gitkeep
+
+# Per-book export cache (reused by 01-Export-CalibreBooks.ps1)
+01-Cache/*
+!01-Cache/.gitkeep

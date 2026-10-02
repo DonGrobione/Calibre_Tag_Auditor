@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile, Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, and Write-JsonFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book directories are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile, Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, and that the cache cleanup runs before the date filter. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book directories are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '01-Export-CalibreBooks.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile')
+$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -180,15 +180,171 @@ Describe 'Write-JsonFile' {
     }
 }
 
+Describe 'Test-CalibreUuid' {
+    It 'accepts a canonical UUID in any case' {
+        Test-CalibreUuid -Uuid '0f8fad5b-d9cb-469f-a165-70867728950e' | Should Be $true
+        Test-CalibreUuid -Uuid '0F8FAD5B-D9CB-469F-A165-70867728950E' | Should Be $true
+    }
+
+    It 'rejects empty, braced, and path-like values' {
+        Test-CalibreUuid -Uuid '' | Should Be $false
+        Test-CalibreUuid -Uuid $null | Should Be $false
+        Test-CalibreUuid -Uuid '{0f8fad5b-d9cb-469f-a165-70867728950e}' | Should Be $false
+        Test-CalibreUuid -Uuid '..\0f8fad5b-d9cb-469f-a165-70867728950e' | Should Be $false
+        Test-CalibreUuid -Uuid "0f8fad5b-d9cb-469f-a165-70867728950e`n" | Should Be $false
+    }
+}
+
+Describe 'Get-BookCachePath' {
+    It 'returns <uuid>.json in lower case inside the cache directory' {
+        $path = Get-BookCachePath -CacheDirectory 'C:\Cache' -Uuid '0F8FAD5B-D9CB-469F-A165-70867728950E'
+        $path | Should Be 'C:\Cache\0f8fad5b-d9cb-469f-a165-70867728950e.json'
+    }
+
+    It 'returns $null for an invalid UUID' {
+        Get-BookCachePath -CacheDirectory 'C:\Cache' -Uuid '..\..\evil' | Should Be $null
+        Get-BookCachePath -CacheDirectory 'C:\Cache' -Uuid '' | Should Be $null
+    }
+}
+
+Describe 'Write-BookCacheFile and Get-CachedBookExport' {
+    $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'cache-read'
+    $null = New-Item -Path $cacheDirectory -ItemType Directory -Force
+    $path = Join-Path -Path $cacheDirectory -ChildPath '0f8fad5b-d9cb-469f-a165-70867728950e.json'
+    $record = [PSCustomObject]@{ Uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'; LastModified = '2026-10-01T10:00:00+00:00'; Title = 'Book'; BookContent = 'Begründung' }
+
+    It 'writes the cache file in UTF-8 without BOM' {
+        Write-BookCacheFile -Path $path -Record $record
+        [System.IO.File]::ReadAllBytes($path)[0] | Should Not Be 0xEF
+    }
+
+    It 'returns the cached record with non-ASCII content when last_modified matches' {
+        $cached = Get-CachedBookExport -Path $path -LastModified '2026-10-01T10:00:00+00:00'
+        $cached.BookContent | Should Be 'Begründung'
+        $cached.Title | Should Be 'Book'
+    }
+
+    It 'returns $null when last_modified differs' {
+        Get-CachedBookExport -Path $path -LastModified '2026-10-02T10:00:00+00:00' | Should Be $null
+    }
+
+    It 'returns $null when the cache file does not exist' {
+        Get-CachedBookExport -Path (Join-Path -Path $cacheDirectory -ChildPath 'missing.json') -LastModified 'x' | Should Be $null
+    }
+
+    It 'returns $null for a corrupt cache file' {
+        $corruptPath = Join-Path -Path $cacheDirectory -ChildPath 'corrupt.json'
+        Set-Content -LiteralPath $corruptPath -Value '{ not json'
+        Get-CachedBookExport -Path $corruptPath -LastModified 'x' | Should Be $null
+    }
+
+    It 'returns $null for a cache file without BookContent' {
+        $partialPath = Join-Path -Path $cacheDirectory -ChildPath 'partial.json'
+        Set-Content -LiteralPath $partialPath -Value '{ "LastModified": "x" }'
+        Get-CachedBookExport -Path $partialPath -LastModified 'x' | Should Be $null
+    }
+
+    It 'returns a cached record whose BookContent is null' {
+        $nullPath = Join-Path -Path $cacheDirectory -ChildPath 'null-content.json'
+        Set-Content -LiteralPath $nullPath -Value '{ "LastModified": "x", "BookContent": null }'
+        $cached = Get-CachedBookExport -Path $nullPath -LastModified 'x'
+        $null -eq $cached | Should Be $false
+        $cached.BookContent | Should Be $null
+    }
+
+    It 'writes nothing with -WhatIf' {
+        $whatIfPath = Join-Path -Path $cacheDirectory -ChildPath 'whatif.json'
+        Write-BookCacheFile -Path $whatIfPath -Record $record -WhatIf
+        Test-Path -LiteralPath $whatIfPath | Should Be $false
+    }
+}
+
+# Creates a cache directory under $TestDrive with a known, a stale, a .gitkeep, and a non-UUID file, and returns its path.
+function Add-TestCacheDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $directory = Join-Path -Path $TestDrive -ChildPath $Name
+    $null = New-Item -Path $directory -ItemType Directory -Force
+    foreach ($fileName in @('0f8fad5b-d9cb-469f-a165-70867728950e.json', '7c9e6679-7425-40de-944b-e07fc1f90ae7.json', '.gitkeep', 'notes.json')) {
+        Set-Content -LiteralPath (Join-Path -Path $directory -ChildPath $fileName) -Value '{}'
+    }
+
+    return $directory
+}
+
+Describe 'Remove-StaleBookCacheFile' {
+    $knownUuid = '0f8fad5b-d9cb-469f-a165-70867728950e'
+    $staleUuid = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
+
+    It 'removes only cache files of books that are not in the library and returns them' {
+        $directory = Add-TestCacheDirectory -Name 'cache-clean'
+        $removed = @(Remove-StaleBookCacheFile -CacheDirectory $directory -LibraryUuids @($knownUuid.ToUpperInvariant()))
+        $removed.Count | Should Be 1
+        $removed[0].Name | Should Be "$staleUuid.json"
+        Test-Path -LiteralPath (Join-Path -Path $directory -ChildPath "$staleUuid.json") | Should Be $false
+        Test-Path -LiteralPath (Join-Path -Path $directory -ChildPath "$knownUuid.json") | Should Be $true
+        Test-Path -LiteralPath (Join-Path -Path $directory -ChildPath '.gitkeep') | Should Be $true
+        Test-Path -LiteralPath (Join-Path -Path $directory -ChildPath 'notes.json') | Should Be $true
+    }
+
+    It 'removes nothing with -WhatIf' {
+        $directory = Add-TestCacheDirectory -Name 'cache-whatif'
+        $removed = @(Remove-StaleBookCacheFile -CacheDirectory $directory -LibraryUuids @() -WhatIf)
+        $removed.Count | Should Be 0
+        Test-Path -LiteralPath (Join-Path -Path $directory -ChildPath "$staleUuid.json") | Should Be $true
+    }
+
+    It 'returns nothing for a missing cache directory' {
+        @(Remove-StaleBookCacheFile -CacheDirectory (Join-Path -Path $TestDrive -ChildPath 'no-cache') -LibraryUuids @($knownUuid)).Count | Should Be 0
+    }
+}
+
+Describe 'Book cache workflow' {
+    $commands = @($scriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $cleanupCalls = @($commands | Where-Object { $_.GetCommandName() -eq 'Remove-StaleBookCacheFile' })
+    $emptyCheck = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -match '^-not \$Books'
+        }, $true)
+    $dateFilter = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$BooksWithDates'
+        }, $true)
+
+    It 'asks calibredb for the uuid field' {
+        $scriptAst.Extent.Text | Should Match '--fields=\S*\buuid\b'
+    }
+
+    It 'stores the cache in the 01-Cache folder' {
+        $scriptAst.Extent.Text | Should Match '-ChildPath "01-Cache"'
+    }
+
+    It 'runs the cache cleanup once, before the date filter and the empty export check' {
+        $cleanupCalls.Count | Should Be 1
+        $cleanupCalls[0].Extent.StartOffset -lt $dateFilter.Extent.StartOffset | Should Be $true
+        $cleanupCalls[0].Extent.StartOffset -lt $emptyCheck.Extent.StartOffset | Should Be $true
+    }
+}
+
 Describe 'Incremental file writing' {
     $bookLoop = $scriptAst.Find({
             param($node)
             $node -is [System.Management.Automation.Language.ForEachStatementAst] -and $node.Condition.Extent.Text -eq '$Books'
         }, $true)
+    # Write-BookCacheFile calls Write-JsonFile too, so only calls outside function definitions are counted.
     $writeCalls = @($scriptAst.FindAll({
                 param($node)
                 $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-JsonFile'
-            }, $true))
+            }, $true) | Where-Object {
+            $parent = $_.Parent
+            while ($null -ne $parent -and $parent -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+                $parent = $parent.Parent
+            }
+            $null -eq $parent
+        })
 
     It 'writes every export file inside the book loop' {
         $writeCalls.Count | Should Be 1
