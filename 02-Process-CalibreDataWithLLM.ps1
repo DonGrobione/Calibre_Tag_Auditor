@@ -11,7 +11,7 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .NOTES
-    Version: 5.1
+    Version: 5.2
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -136,7 +136,9 @@ try {
     Write-ScriptLog "Target:   $(ConvertTo-DisplayPath -Path $OutputDir -BasePath $PSScriptRoot)"
     Write-Information -MessageData '' -InformationAction Continue
 
-    # Reverse up to four rounds of UTF-8 text that was decoded as ISO-8859-1 (mojibake such as "Ã¤" instead of "ä").
+    # Repairs mojibake, i.e. UTF-8 text that was decoded as Windows-1252 or ISO-8859-1 (such as "Ã¼" instead of "ü" or "â€™" instead of "’"), in up to four rounds for text that was garbled several times.
+    # Only the garbled character sequences are replaced, each by exactly one valid UTF-8 character, so correct text around them stays unchanged; a sequence that does not decode cleanly is kept as it is.
+    # Detected are the UTF-8 lead bytes 0xC2-0xC5 (Latin-1 letters such as umlauts and accents, Œ, Š, Ž) and 0xE2 (punctuation such as – — ’ “ ” … € ™), which cover Western text; the check is case-sensitive, so correct letters such as "ã" or "â" do not start a repair.
     function Repair-MojibakeText {
         param([string]$Text)
 
@@ -144,25 +146,63 @@ try {
             return $Text
         }
 
-        if ($Text -notmatch 'Ã|Â') {
-            return $Text
+        # Map the characters that Windows-1252 shows for the bytes 0x80-0x9F back to their byte values.
+        $windows1252 = [System.Text.Encoding]::GetEncoding(1252)
+        $byteByCharacter = @{}
+        foreach ($byteValue in 0x80..0x9F) {
+            $character = $windows1252.GetString([byte[]]@($byteValue))
+            if ($character.Length -eq 1 -and [int][char]$character -gt 0xFF) {
+                $byteByCharacter[[int][char]$character] = [byte]$byteValue
+            }
+        }
+
+        $continuation = '[\u0080-\u00BF\u0152\u0153\u0160\u0161\u0178\u017D\u017E\u0192\u02C6\u02DC\u2013\u2014\u2018-\u201A\u201C-\u201E\u2020-\u2022\u2026\u2030\u2039\u203A\u20AC\u2122]'
+        $pattern = '[\u00C2-\u00C5]{0}|\u00E2{0}{0}' -f $continuation
+        $strictUtf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false, $true
+
+        $repairSequence = {
+            param($match)
+
+            $bytes = New-Object -TypeName 'byte[]' -ArgumentList $match.Value.Length
+            for ($index = 0; $index -lt $match.Value.Length; $index++) {
+                $code = [int]$match.Value[$index]
+                if ($code -le 0xFF) {
+                    $bytes[$index] = [byte]$code
+                }
+                elseif ($byteByCharacter.ContainsKey($code)) {
+                    $bytes[$index] = $byteByCharacter[$code]
+                }
+                else {
+                    return $match.Value
+                }
+            }
+
+            try {
+                $decoded = $strictUtf8.GetString($bytes)
+            }
+            catch {
+                return $match.Value
+            }
+
+            if ($decoded.Length -ne 1) {
+                return $match.Value
+            }
+
+            return $decoded
         }
 
         $current = $Text
-        for ($i = 0; $i -lt 4; $i++) {
-            try {
-                $bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($current)
-                $decoded = [System.Text.Encoding]::UTF8.GetString($bytes)
-            }
-            catch {
+        for ($round = 0; $round -lt 4; $round++) {
+            if ($current -cnotmatch $pattern) {
                 break
             }
 
-            if ($decoded -eq $current -or $decoded -match '�') {
+            $repaired = [System.Text.RegularExpressions.Regex]::Replace($current, $pattern, $repairSequence)
+            if ($repaired -ceq $current) {
                 break
             }
 
-            $current = $decoded
+            $current = $repaired
         }
 
         return $current

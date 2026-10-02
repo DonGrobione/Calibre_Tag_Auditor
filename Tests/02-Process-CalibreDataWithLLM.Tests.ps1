@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Invoke-GeminiRequest, and Convert-ResponseTextToResultObject. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-RestMethod and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, Invoke-GeminiRequest, and Convert-ResponseTextToResultObject. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-RestMethod and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -94,6 +94,63 @@ Describe 'Get-GeminiApiKey' {
         $path = Join-Path -Path $TestDrive -ChildPath 'empty.json.key'
         Set-Content -LiteralPath $path -Value '{ "APIKey": "  " }' -Encoding UTF8
         { Get-GeminiApiKey -Path $path } | Should Throw "no value for the property 'APIKey'"
+    }
+}
+
+Describe 'Repair-MojibakeText' {
+    # The test strings are built from character codes, so this file does not depend on how an editor shows the garbled characters.
+    $uUmlaut = [string][char]0xFC
+    $garbledUUmlaut = [string][char]0xC3 + [char]0xBC
+    $doubleGarbledUUmlaut = [string][char]0xC3 + [char]0x0192 + [char]0xC2 + [char]0xBC
+    $rightQuote = [string][char]0x2019
+    $garbledRightQuote = [string][char]0xE2 + [char]0x20AC + [char]0x2122
+    $enDash = [string][char]0x2013
+    $garbledEnDash = [string][char]0xE2 + [char]0x20AC + [char]0x201C
+    $garbledLatin1EnDash = [string][char]0xE2 + [char]0x80 + [char]0x93
+    $sharpS = [string][char]0xDF
+    $leftLowQuote = [string][char]0x201E
+    $leftQuote = [string][char]0x201C
+
+    It 'repairs a garbled umlaut' {
+        Repair-MojibakeText -Text "Begr$($garbledUUmlaut)ndung" | Should BeExactly "Begr$($uUmlaut)ndung"
+    }
+
+    It 'repairs garbled umlauts next to correct umlauts' {
+        Repair-MojibakeText -Text "Begr$($garbledUUmlaut)ndung f$($uUmlaut)r" | Should BeExactly "Begr$($uUmlaut)ndung f$($uUmlaut)r"
+    }
+
+    It 'keeps typographic characters that are not garbled' {
+        Repair-MojibakeText -Text "Begr$($garbledUUmlaut)ndung $enDash it$($rightQuote)s" | Should BeExactly "Begr$($uUmlaut)ndung $enDash it$($rightQuote)s"
+    }
+
+    It 'repairs garbled typographic characters from Windows-1252 and ISO-8859-1' {
+        Repair-MojibakeText -Text "it$($garbledRightQuote)s" | Should BeExactly "it$($rightQuote)s"
+        Repair-MojibakeText -Text "A $garbledEnDash B" | Should BeExactly "A $enDash B"
+        Repair-MojibakeText -Text "A $garbledLatin1EnDash B" | Should BeExactly "A $enDash B"
+    }
+
+    It 'repairs text that was garbled twice' {
+        Repair-MojibakeText -Text "Begr$($doubleGarbledUUmlaut)ndung" | Should BeExactly "Begr$($uUmlaut)ndung"
+    }
+
+    It 'leaves correct text with a-circumflex, a-tilde, and capital A-tilde unchanged' {
+        $text = "liver p$([char]0xE2)t$([char]0xE9), S$([char]0xE3)o Paulo, S$([char]0xC3)O PAULO"
+        Repair-MojibakeText -Text $text | Should BeExactly $text
+    }
+
+    It 'leaves a word ending in sharp s before a closing German quote unchanged' {
+        $text = "$($leftLowQuote)Gro$($sharpS)$($leftQuote)"
+        Repair-MojibakeText -Text $text | Should BeExactly $text
+    }
+
+    It 'keeps a sequence that is not valid UTF-8' {
+        $text = "A$([char]0xC3) B"
+        Repair-MojibakeText -Text $text | Should BeExactly $text
+    }
+
+    It 'returns empty and whitespace text unchanged' {
+        Repair-MojibakeText -Text '' | Should BeExactly ''
+        Repair-MojibakeText -Text '  ' | Should BeExactly '  '
     }
 }
 
