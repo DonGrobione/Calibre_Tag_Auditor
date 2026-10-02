@@ -149,6 +149,11 @@ Describe 'Book file resolution in the export loop' {
         $loopStatement.Right.Extent.Text | Should Match '^@\(\s*Get-BookFile\b'
     }
 
+    It 'requests UTF-8 from ebook-convert and reads the text file as UTF-8' {
+        $scriptAst.Extent.Text | Should Match "'--txt-output-encoding=utf-8'"
+        $scriptAst.Extent.Text | Should Match 'ReadAllText\(\$TempTextFile, \[System\.Text\.Encoding\]::UTF8\)'
+    }
+
     It 'asks calibredb for the formats field' {
         $scriptAst.Extent.Text | Should Match '--fields=\S*\bformats\b'
     }

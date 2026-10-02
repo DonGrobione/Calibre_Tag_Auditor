@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-10-02
 
 ### Scripts
+- Prevent garbled characters at their source instead of only repairing them; the repair functions stay as a safety net.
+  - `02-Process-CalibreDataWithLLM.ps1` 5.3: the Gemini request is sent as UTF-8 bytes, and the response is read with `Invoke-WebRequest -UseBasicParsing` and decoded as UTF-8 by the new function `ConvertFrom-Utf8JsonResponse`. Before, `Invoke-RestMethod` decoded the response with the charset named by the server and fell back to ISO-8859-1 without one, which produces mojibake such as `Ã¼`. API error bodies are read as UTF-8 too.
+  - `01-Export-CalibreBooks.ps1` 4.3: `ebook-convert.exe` is called with `--txt-output-encoding=utf-8`, and the text file is read as UTF-8 explicitly. Both were the defaults already, so the extracted text and the cache are unchanged (verified on cached books).
+  - Not changed, because it is already safe: `calibredb --for-machine` writes ASCII-only JSON with `\u` escapes, so its output is correct under any console code page (checked with code page 850).
+- Fixed in `02-Process-CalibreDataWithLLM.ps1` 5.2: the mojibake repair of the Gemini responses (`Repair-MojibakeText`) could lose or skip text.
+  - Garbled text was not repaired when the response also contained correct umlauts (e.g. `BegrÃ¼ndung für` stayed unchanged), because the whole text was converted at once and any correct non-ASCII character made the conversion fail.
+  - When a repair succeeded, characters outside ISO-8859-1 elsewhere in the response were silently replaced (`–` became `-`, `’` became `'`, `„“` became `"`).
+  - The check for garbled text ignored case, so correct letters such as `â` or `ã` (e.g. "pâté") started an unnecessary repair attempt.
+  - The repair now replaces only the garbled character sequences, each by exactly one strictly decoded UTF-8 character, and keeps all other text unchanged. It also repairs garbled punctuation from Windows-1252 such as `â€™` (`’`) and `â€“` (`–`), and text that was garbled twice. The check is case-sensitive. Added tests.
 - `01-Export-CalibreBooks.ps1` 4.2: more reliable book files and cache.
   - The book files are read from the calibredb field `formats` instead of scanning the library for folders named `(<id>)`. Empty leftover folders from renamed titles, or several folders with the same book ID, no longer hide the real book file or supply the file of another folder. Paths outside the library folder are ignored. The recursive folder scan of the whole library is gone, which also makes the export start faster. `Get-BookFile` now takes `-LibraryPath` instead of `-BookDirectories`.
   - Books with empty `BookContent` (`""`, e.g. comics with images only) are no longer cached either, and the log warns "No text found". An outdated cache file of a book without content is deleted.

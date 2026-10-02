@@ -22,7 +22,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.2
+    Version: 4.3
 #>
 
 [CmdletBinding()]
@@ -509,12 +509,13 @@ try {
 
         try {
             New-Item -Path $TempDirectory -ItemType Directory -Force | Out-Null
-            & $EbookConvertExe.FullName $SourceFile.FullName $TempTextFile 2>&1 | Out-Null
+            # Request UTF-8 explicitly and read the file as UTF-8, so the text does not depend on encoding defaults.
+            & $EbookConvertExe.FullName $SourceFile.FullName $TempTextFile '--txt-output-encoding=utf-8' 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $TempTextFile -PathType Leaf)) {
                 return $null
             }
 
-            $RawText = [System.IO.File]::ReadAllText($TempTextFile)
+            $RawText = [System.IO.File]::ReadAllText($TempTextFile, [System.Text.Encoding]::UTF8)
             $NormalizedLines = @()
             foreach ($Line in ($RawText -split "`r?`n")) {
                 $NormalizedLine = ($Line -replace '\s+', ' ').Trim()
