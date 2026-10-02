@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-10-02
+
+### Scripts
+- `01-Export-CalibreBooks.ps1` 3.10: each export file is written as soon as it holds `BooksPerFile` books (or the last book), instead of after all books are processed. Memory use stays small during large exports, and the files finished before an interrupted run are kept. The progress log shows each written file between the book lines. New function `Get-BookExportFileName`, with tests.
+
 ## 2026-10-01
 
 ### Calibre.Console 1.1.1

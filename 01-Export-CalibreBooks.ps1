@@ -7,6 +7,7 @@
     Uses calibredb.exe from the Calibre Portable installation.
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are
     converted to normalized text and included in the BookContent JSON field.
+    Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -21,7 +22,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 3.9
+    Version: 3.10
 #>
 
 [CmdletBinding()]
@@ -216,8 +217,13 @@ try {
             }
         }
 
+    # Without splitting all books go into one file; otherwise each file holds up to BooksPerFile books.
     $TotalBooks = $Books.Count
-    $NeedsSplitting = ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile)
+    $BooksInFile = $TotalBooks
+    if ($BooksPerFile -gt 0 -and $TotalBooks -gt $BooksPerFile) {
+        $BooksInFile = $BooksPerFile
+    }
+    $FileCount = [int][Math]::Ceiling($TotalBooks / $BooksInFile)
 
     # Supported book formats in order of preference for the content extraction.
     $SupportedBookExtensions = @('.epub', '.azw3', '.mobi', '.pdf')
@@ -319,6 +325,24 @@ try {
         return ($Formats -join ', ')
     }
 
+    # Returns the file name of a book export file; the file number is zero-padded to at least two digits or to the digit count of the file count.
+    function Get-BookExportFileName {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(1, [int]::MaxValue)]
+            [int]$FileNumber,
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(1, [int]::MaxValue)]
+            [int]$FileCount,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$ExportDate
+        )
+
+        $PadWidth = [Math]::Max(2, $FileCount.ToString().Length)
+        return ("01-Export-CalibreBooks_{0}_{1}.json" -f $FileNumber.ToString("D$PadWidth"), $ExportDate)
+    }
+
     # Converts a book to text, normalizes whitespace, and keeps the first 20,000 words.
     function Get-BookContent {
         param(
@@ -363,9 +387,12 @@ try {
         }
     }
 
-    # Transform the raw data into a simple object format for JSON export.
+    # Transform the raw data into a simple object format and write each export file as soon as it is full, so memory use stays small and finished files survive an interrupted run.
     $BookNumber = 0
-    $Results = foreach ($Book in $Books) {
+    $FileNumber = 0
+    $BatchStartNumber = 1
+    $Batch = New-Object -TypeName 'System.Collections.Generic.List[object]'
+    foreach ($Book in $Books) {
         $BookNumber++
 
         # identifiers come back as a map (e.g. isbn/amazon/google) joined into a readable string
@@ -396,7 +423,7 @@ try {
                 $Book.title, (ConvertTo-FormatDisplayText -Extensions $SupportedBookExtensions), $AvailableFormats)
         }
 
-        [PSCustomObject]@{
+        $Batch.Add([PSCustomObject]@{
             Title       = Clear-ExportText -Value $Book.title
             Author      = Clear-ExportText -Value $Book.authors
             Series      = Clear-ExportText -Value $Book.series
@@ -406,45 +433,27 @@ try {
             Publisher   = Clear-ExportText -Value $Book.publisher
             Year        = Get-ExportYear -PubDate $Book.pubdate
             BookContent = $BookContent
-        }
-    }
+        })
 
-    # Write the export data either to a single file or split across multiple files.
-    if (-not $NeedsSplitting) {
-        $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_01_$ExportDate.json"
-        Write-JsonFile -Path $JsonFile -InputObject $Results -Depth 10
-
-        Write-Information -MessageData '' -InformationAction Continue
-        Write-ScriptLog "Export complete:"
-        Write-ScriptLog ("  Books: {0}" -f $Results.Count)
-        Write-ScriptLog ("  File:  {0}" -f (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
-    } else {
-        $FileCount = [Math]::Ceiling($TotalBooks / $BooksPerFile)
-        $PadWidth = [Math]::Max(2, $FileCount.ToString().Length)
-        $CurrentFile = 0
-        $StartIndex = 0
-
-        while ($StartIndex -lt $TotalBooks) {
-            $CurrentFile++
-            $EndIndex = [Math]::Min($StartIndex + $BooksPerFile, $TotalBooks) - 1
-            $Batch = $Results[$StartIndex..$EndIndex]
-            $Suffix = $CurrentFile.ToString("D$PadWidth")
-            $JsonFile = Join-Path $ExportDir "01-Export-CalibreBooks_${Suffix}_$ExportDate.json"
-
-            Write-JsonFile -Path $JsonFile -InputObject $Batch -Depth 10
-
-            Write-ScriptLog ("  File {0}/{1}: Books {2}-{3} ({4}) -> {5}" -f `
-                $CurrentFile, $FileCount, ($StartIndex + 1), ($EndIndex + 1), $Batch.Count, (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
-
-            $StartIndex += $BooksPerFile
+        if ($Batch.Count -lt $BooksInFile -and $BookNumber -lt $TotalBooks) {
+            continue
         }
 
-        Write-Information -MessageData '' -InformationAction Continue
-        Write-ScriptLog "Export complete:"
-        Write-ScriptLog ("  Books:   {0}" -f $TotalBooks)
-        Write-ScriptLog ("  Files:   {0}" -f $FileCount)
-        Write-ScriptLog ("  Per file: max {0}" -f $BooksPerFile)
+        $FileNumber++
+        $JsonFile = Join-Path -Path $ExportDir -ChildPath (Get-BookExportFileName -FileNumber $FileNumber -FileCount $FileCount -ExportDate $ExportDate)
+        Write-JsonFile -Path $JsonFile -InputObject $Batch.ToArray() -Depth 10
+        Write-ScriptLog ("File {0}/{1}: Books {2}-{3} ({4}) -> {5}" -f `
+            $FileNumber, $FileCount, $BatchStartNumber, $BookNumber, $Batch.Count, (ConvertTo-DisplayPath -Path $JsonFile -BasePath $PSScriptRoot))
+
+        $BatchStartNumber = $BookNumber + 1
+        $Batch.Clear()
     }
+
+    Write-Information -MessageData '' -InformationAction Continue
+    Write-ScriptLog "Export complete:"
+    Write-ScriptLog ("  Books:    {0}" -f $TotalBooks)
+    Write-ScriptLog ("  Files:    {0}" -f $FileCount)
+    Write-ScriptLog ("  Per file: max {0}" -f $BooksInFile)
 } catch {
     Write-ScriptLog -Level ERROR -Message $_.Exception.Message -ErrorRecord $_
     throw

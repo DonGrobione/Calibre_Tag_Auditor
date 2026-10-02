@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile, Get-PrimaryBookFile, and ConvertTo-FormatDisplayText. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book directories are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile, Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, and Write-JsonFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book directories are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '01-Export-CalibreBooks.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText')
+$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -145,6 +145,64 @@ Describe 'ConvertTo-FormatDisplayText' {
 
     It 'returns "none" for an empty list' {
         ConvertTo-FormatDisplayText -Extensions @() | Should Be 'none'
+    }
+}
+
+Describe 'Get-BookExportFileName' {
+    It 'pads the file number to two digits' {
+        Get-BookExportFileName -FileNumber 1 -FileCount 1 -ExportDate '2026-10-02_10-00-00' | Should Be '01-Export-CalibreBooks_01_2026-10-02_10-00-00.json'
+    }
+
+    It 'pads the file number to the digit count of the file count' {
+        Get-BookExportFileName -FileNumber 7 -FileCount 466 -ExportDate '2026-10-02_10-00-00' | Should Be '01-Export-CalibreBooks_007_2026-10-02_10-00-00.json'
+    }
+
+    It 'rejects a file number of 0' {
+        { Get-BookExportFileName -FileNumber 0 -FileCount 1 -ExportDate '2026-10-02_10-00-00' } | Should Throw
+    }
+}
+
+Describe 'Write-JsonFile' {
+    It 'writes a batch as a JSON array in UTF-8 without BOM and keeps non-ASCII characters' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'batch.json'
+        $batch = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $batch.Add([PSCustomObject]@{ Title = 'Begründung' })
+        $batch.Add([PSCustomObject]@{ Title = 'Second' })
+        Write-JsonFile -Path $path -InputObject $batch.ToArray() -Depth 10
+
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        $bytes[0] | Should Not Be 0xEF
+        $text = [System.IO.File]::ReadAllText($path)
+        $text | Should Match 'Begründung'
+        $parsed = ConvertFrom-Json -InputObject $text
+        $parsed.Count | Should Be 2
+        $parsed[1].Title | Should Be 'Second'
+    }
+}
+
+Describe 'Incremental file writing' {
+    $bookLoop = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.ForEachStatementAst] -and $node.Condition.Extent.Text -eq '$Books'
+        }, $true)
+    $writeCalls = @($scriptAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-JsonFile'
+            }, $true))
+
+    It 'writes every export file inside the book loop' {
+        $writeCalls.Count | Should Be 1
+        $bookLoop.Extent.StartOffset -lt $writeCalls[0].Extent.StartOffset | Should Be $true
+        $writeCalls[0].Extent.EndOffset -lt $bookLoop.Extent.EndOffset | Should Be $true
+    }
+
+    It 'does not collect the output of the book loop in a variable' {
+        $bookLoop.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] | Should Be $false
+        $bookLoop.Parent.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] | Should Be $false
+    }
+
+    It 'clears the batch after writing a file' {
+        $bookLoop.Body.Extent.Text | Should Match '\$Batch\.Clear\(\)'
     }
 }
 
