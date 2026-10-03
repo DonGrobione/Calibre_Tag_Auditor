@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile, and Add-BookContentProfile, and Test-TagDefinitionBaselineUpdate, which decides whether a run counts as a full-library audit of the tag definitions. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache and scope files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content),Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile, and Add-BookContentProfile, and Test-TagDefinitionBaselineUpdate, which decides whether a run counts as a full-library audit of the tag definitions. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache and scope files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -16,7 +16,8 @@ $scriptPath = Join-Path -Path $projectRoot -ChildPath '02-Process-CalibreDataWit
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
 $functionNames = @(
-    'Get-GeminiApiKey', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException',
+    'Get-GeminiApiKey', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException', 'Get-ConnectionFailureStatus', 'Test-ProhibitedContentError',
+    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit',
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
     'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
@@ -38,6 +39,13 @@ Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Te
 function Write-ScriptLog {
     param($Message, $Level, $ErrorRecord)
     $null = $Message, $Level, $ErrorRecord
+}
+
+# Stands in for the Calibre.Console path helper and returns the path unchanged.
+function ConvertTo-DisplayPath {
+    param($Path, $BasePath)
+    $null = $BasePath
+    return $Path
 }
 
 # Builds a Gemini interaction response with the given text items in one model output step.
@@ -69,6 +77,10 @@ $script:RateLimitRetryBaseSeconds = 1
 $script:ServiceUnavailableRetryBaseSeconds = 1
 $script:ServiceUnavailableRetryMaxSeconds = 1
 $script:GatewayTimeoutRetryIntervalSeconds = 1
+$script:ConnectionRetryBaseSeconds = 1
+$script:ConnectionRetryMaxSeconds = 1
+$script:LastApiStatusCode = $null
+$script:LastApiErrorBody = $null
 $script:ContentProfileVersion = 1
 
 Describe '02-Process-CalibreDataWithLLM.ps1 source' {
@@ -209,6 +221,34 @@ Describe 'ConvertFrom-Utf8JsonResponse' {
     }
 }
 
+# The response body of a Gemini request blocked for prohibited content, as logged on 2026-10-03.
+$prohibitedContentBody = '{"error":{"message":"Request blocked due to prohibited content guidelines. Please modify your input and retry.","code":"The model output could not be generated. This output contains sensitive words that violate Google''s Generative AI Prohibited Use policy."}}'
+
+# Builds a WebException without HTTP response with the given status, as Invoke-WebRequest throws it for DNS, connection, and timeout failures.
+function Get-TestWebException {
+    param([Parameter(Mandatory = $true)][System.Net.WebExceptionStatus]$Status)
+    return (New-Object -TypeName System.Net.WebException -ArgumentList "Test failure $Status", $Status)
+}
+
+# Builds an exception with a fake HTTP response that carries the status code and returns the body from GetResponseStream.
+function Get-TestHttpException {
+    param([Parameter(Mandatory = $true)][int]$StatusCode, [string]$Body = '')
+
+    $response = [pscustomobject]@{ StatusCode = [pscustomobject]@{ value__ = $StatusCode }; Body = $Body }
+    $response | Add-Member -MemberType ScriptMethod -Name GetResponseStream -Value {
+        New-Object -TypeName System.IO.MemoryStream -ArgumentList (, [System.Text.Encoding]::UTF8.GetBytes($this.Body))
+    }
+    $exception = New-Object -TypeName System.Exception -ArgumentList "HTTP $StatusCode"
+    $exception | Add-Member -NotePropertyName Response -NotePropertyValue $response
+    return $exception
+}
+
+# Wraps an exception in an ErrorRecord, as a catch block receives it.
+function Get-TestErrorRecord {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+    return (New-Object -TypeName System.Management.Automation.ErrorRecord -ArgumentList $Exception, 'TestError', ([System.Management.Automation.ErrorCategory]::NotSpecified), $null)
+}
+
 Describe 'Invoke-GeminiRequest' {
     Mock Start-Sleep { }
 
@@ -279,6 +319,209 @@ Describe 'Invoke-GeminiRequest' {
         Invoke-GeminiRequest -PayloadText 'book data' | Should Be $null
         $script:LastApiErrorMessage | Should Match 'Bad request'
         Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly
+    }
+
+    It 'retries after a DNS failure without HTTP response and returns the later response' {
+        $script:callCount = 0
+        Mock Invoke-WebRequest {
+            $script:callCount++
+            if ($script:callCount -eq 1) {
+                throw (Get-TestWebException -Status NameResolutionFailure)
+            }
+            Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'second')
+        }
+        (Invoke-GeminiRequest -PayloadText 'book data').Text | Should Be 'second'
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 2 -Exactly
+        Assert-MockCalled Start-Sleep -Scope It -Times 1 -Exactly
+    }
+
+    It 'gives up after the maximum number of attempts on repeated connection failures' {
+        Mock Invoke-WebRequest { throw (Get-TestWebException -Status ConnectFailure) }
+        Invoke-GeminiRequest -PayloadText 'book data' | Should Be $null
+        $script:LastApiErrorMessage | Should Match 'aborted after 3 attempts'
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 3 -Exactly
+    }
+
+    It 'retries after an HTTP 500 or 502 server error' {
+        foreach ($statusCode in @(500, 502)) {
+            $script:callCount = 0
+            $script:testStatusCode = $statusCode
+            Mock Invoke-WebRequest {
+                $script:callCount++
+                if ($script:callCount -eq 1) {
+                    throw (Get-TestHttpException -StatusCode $script:testStatusCode -Body 'server error')
+                }
+                Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'second')
+            }
+            (Invoke-GeminiRequest -PayloadText 'book data').Text | Should Be 'second'
+        }
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 4 -Exactly
+    }
+
+    It 'stores status code and body of a prohibited content block without retry' {
+        Mock Invoke-WebRequest { throw (Get-TestHttpException -StatusCode 400 -Body $prohibitedContentBody) }
+        Invoke-GeminiRequest -PayloadText 'book data' | Should Be $null
+        $script:LastApiStatusCode | Should Be 400
+        $script:LastApiErrorBody | Should Be $prohibitedContentBody
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly
+    }
+
+    It 'resets the stored status code with the next request' {
+        Mock Invoke-WebRequest { throw (Get-TestHttpException -StatusCode 400 -Body $prohibitedContentBody) }
+        $null = Invoke-GeminiRequest -PayloadText 'book data'
+        Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'ok') }
+        $null = Invoke-GeminiRequest -PayloadText 'book data'
+        $script:LastApiStatusCode | Should Be $null
+    }
+}
+
+Describe 'Get-ConnectionFailureStatus' {
+    It 'returns the status name of a transient connection failure without response' {
+        foreach ($status in @('NameResolutionFailure', 'ConnectFailure', 'Timeout', 'ReceiveFailure')) {
+            Get-ConnectionFailureStatus -ErrorRecord (Get-TestErrorRecord -Exception (Get-TestWebException -Status $status)) | Should Be $status
+        }
+    }
+
+    It 'finds the WebException as inner exception' {
+        $exception = New-Object -TypeName System.Exception -ArgumentList 'outer', (Get-TestWebException -Status NameResolutionFailure)
+        Get-ConnectionFailureStatus -ErrorRecord (Get-TestErrorRecord -Exception $exception) | Should Be 'NameResolutionFailure'
+    }
+
+    It 'returns $null for a non-transient status, another exception, or $null' {
+        Get-ConnectionFailureStatus -ErrorRecord (Get-TestErrorRecord -Exception (Get-TestWebException -Status TrustFailure)) | Should Be $null
+        Get-ConnectionFailureStatus -ErrorRecord (Get-TestErrorRecord -Exception (New-Object -TypeName System.Exception -ArgumentList 'other')) | Should Be $null
+        Get-ConnectionFailureStatus -ErrorRecord $null | Should Be $null
+    }
+}
+
+Describe 'Test-ProhibitedContentError' {
+    It 'returns $true for HTTP 400 with a prohibited content message' {
+        Test-ProhibitedContentError -StatusCode 400 -ErrorBody $prohibitedContentBody | Should Be $true
+    }
+
+    It 'returns $false for another HTTP 400, another status code, or a missing body' {
+        Test-ProhibitedContentError -StatusCode 400 -ErrorBody '{"error":{"message":"API key not valid."}}' | Should Be $false
+        Test-ProhibitedContentError -StatusCode 500 -ErrorBody $prohibitedContentBody | Should Be $false
+        Test-ProhibitedContentError -StatusCode $null -ErrorBody $prohibitedContentBody | Should Be $false
+        Test-ProhibitedContentError -StatusCode 400 -ErrorBody $null | Should Be $false
+    }
+}
+
+Describe 'ConvertTo-BookAuditPayload' {
+    It 'joins the tag section and the book records as JSON array with the file name' {
+        $payload = ConvertTo-BookAuditPayload -TagSection 'TAGS: [{"Tag":"T"}]' -BookFileName 'books_001.json' -BookRecords @([ordered]@{ BookId = 2; Title = 'A' })
+        $payload | Should Match '^TAGS: \[\{"Tag":"T"\}\]'
+        $payload | Should Match 'CURRENT CALIBRE TAGS \(from books_001\.json\)'
+        $payload | Should Match '\[\{"BookId":2,"Title":"A"\}\]$'
+    }
+}
+
+# Returns a fresh token usage counter.
+function Get-TestUsageCounter {
+    return [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+}
+
+# Returns a successful Invoke-GeminiRequest result with the given text and 15 tokens.
+function Get-TestRequestResult {
+    param([string]$Text)
+    return [pscustomobject]@{ Text = $Text; TokenUsage = [pscustomobject]@{ PromptTokens = 10; CompletionTokens = 5; TotalTokens = 15 }; SearchQueryCount = 0; Sources = @() }
+}
+
+Describe 'Invoke-BookAuditRequest' {
+    Mock Start-Sleep { }
+    Mock Write-ScriptLog { }
+
+    It 'returns the parsed result, the raw text, and the token usage of a valid response' {
+        Mock Invoke-GeminiRequest { Get-TestRequestResult -Text '{"Results":[{"Title":"A","Author":"X"}]}' }
+        $result = Invoke-BookAuditRequest -PayloadText 'payload' -SourceFile 'file.json' -ExpectedUniqueBookCount 1
+        $result.ResultObject.status | Should Be 'success'
+        $result.RawText | Should Match '"Title":"A"'
+        $result.Attempts | Should Be 1
+        $result.Usage.TotalTokens | Should Be 15
+    }
+
+    It 'retries an invalid response and adds the tokens of all attempts' {
+        $script:auditAttempt = 0
+        Mock Invoke-GeminiRequest {
+            $script:auditAttempt++
+            $text = if ($script:auditAttempt -eq 1) { 'no json' } else { '{"Results":[{"Title":"A","Author":"X"}]}' }
+            Get-TestRequestResult -Text $text
+        }
+        $result = Invoke-BookAuditRequest -PayloadText 'payload' -SourceFile 'file.json' -ExpectedUniqueBookCount 1
+        $result.ResultObject.status | Should Be 'success'
+        $result.Attempts | Should Be 2
+        $result.Usage.TotalTokens | Should Be 30
+    }
+
+    It 'returns no result when the request fails' {
+        Mock Invoke-GeminiRequest { $null }
+        $result = Invoke-BookAuditRequest -PayloadText 'payload' -SourceFile 'file.json'
+        $result.RawText | Should Be $null
+        $result.ResultObject | Should Be $null
+        $result.Attempts | Should Be 1
+        $result.Usage.Available | Should Be $false
+    }
+}
+
+Describe 'Invoke-SingleBookAudit' {
+    Mock Start-Sleep { }
+    Mock Write-ScriptLog { }
+
+    $bookRecords = @(
+        [ordered]@{ BookId = 1; Title = 'Good A'; Author = 'X'; Series = $null; SeriesIndex = $null; ExistingCalibreTags = 'T'; BookContent = 'text a' },
+        [ordered]@{ BookId = 2; Title = 'Bad B'; Author = 'Y'; Series = $null; SeriesIndex = $null; ExistingCalibreTags = 'T'; BookContent = 'text b' },
+        [ordered]@{ BookId = 3; Title = 'Good C'; Author = 'Z'; Series = $null; SeriesIndex = $null; ExistingCalibreTags = 'T'; ContentProfile = 'profile c' }
+    )
+
+    # Answers each single-book request for its title, except that 'Bad B' is blocked for prohibited content.
+    Mock Invoke-GeminiRequest {
+        $script:LastApiStatusCode = $null
+        $script:LastApiErrorBody = $null
+        if ($PayloadText -match '"Title":"Bad B"') {
+            $script:LastApiStatusCode = 400
+            $script:LastApiErrorBody = $prohibitedContentBody
+            return $null
+        }
+        $match = [regex]::Match($PayloadText, '"BookId":(\d+),"Title":"([^"]+)","Author":"([^"]+)"')
+        $text = '{"Results":[{"Title":"' + $match.Groups[2].Value + '","Author":"' + $match.Groups[3].Value + '"}],"ContentProfiles":[{"BookId":' + $match.Groups[1].Value + ',"ContentProfile":"P"}]}'
+        Get-TestRequestResult -Text $text
+    }
+
+    It 'sends each book in its own request with its original BookId' {
+        $null = Invoke-SingleBookAudit -BookRecords $bookRecords -TagSection 'TAGS' -BookFileName 'books_001.json'
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 3 -Exactly
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 1 -Exactly -ParameterFilter { $PayloadText -match '^TAGS' -and $PayloadText -match '\[\{"BookId":3,' -and $PayloadText -notmatch 'Good A' }
+    }
+
+    It 'merges the results of the other books and names the blocked book' {
+        $result = Invoke-SingleBookAudit -BookRecords $bookRecords -TagSection 'TAGS' -BookFileName 'books_001.json'
+        $merged = $result.ResultObject
+        $merged.source_file | Should Be 'books_001.json'
+        $merged.status | Should Be 'warning'
+        @($merged.records).Count | Should Be 2
+        @($merged.content_profiles | ForEach-Object { $_.BookId }) -join ',' | Should Be '1,3'
+        $merged.input_unique_book_count | Should Be 3
+        $merged.output_unique_book_count | Should Be 2
+        $merged.validation_error | Should Match "'Bad B' \(blocked for prohibited content\)"
+        @($merged.raw_response).Count | Should Be 2
+        $result.Usage.TotalTokens | Should Be 30
+    }
+
+    It 'returns success when no book is blocked' {
+        $result = Invoke-SingleBookAudit -BookRecords @($bookRecords[0], $bookRecords[2]) -TagSection 'TAGS' -BookFileName 'books_001.json'
+        $result.ResultObject.status | Should Be 'success'
+        $result.ResultObject.validation_error | Should Be $null
+    }
+
+    It 'returns no result object when every book is blocked' {
+        $result = Invoke-SingleBookAudit -BookRecords @($bookRecords[1]) -TagSection 'TAGS' -BookFileName 'books_001.json'
+        $result.ResultObject | Should Be $null
+    }
+}
+
+Describe 'Prohibited content fallback workflow' {
+    It 'sends the books one at a time only after a prohibited content block of a file with several books' {
+        $scriptAst.Extent.Text | Should Match '(?s)if \(\$null -eq \$apiResult -and \$bookAnalysisRecords\.Count -gt 1 -and \(Test-ProhibitedContentError [^\r\n]+\r?\n.*?Invoke-SingleBookAudit '
     }
 }
 
@@ -577,6 +820,22 @@ Describe 'Update-BookCacheProfile' {
         Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook -Uuid '..\evil') -ProfileData (Get-TestTextProfile -Text 'Profile') | Should Be $false
     }
 
+    It 'logs the stored cache file as DEBUG' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-log'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile')
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'DEBUG' -and $Message -match '\(Text\).*0f8fad5b-d9cb-469f-a165-70867728950e\.json$' }
+    }
+
+    It 'logs nothing when the cache file is not written' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-nolog'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-other'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile')
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 0 -Exactly
+    }
+
     It 'writes nothing with -WhatIf' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-whatif'
         $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
@@ -720,11 +979,6 @@ Describe 'Add-TokenUsage' {
 Describe 'Request-WebContentProfile' {
     Mock Start-Sleep { }
     Mock Write-ScriptLog { }
-
-    # Returns a fresh token usage counter.
-    function Get-TestUsageCounter {
-        return [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
-    }
 
     It 'sends the tag definitions and metadata with the web profile prompt and the google_search tool' {
         Mock Invoke-GeminiRequest { [pscustomobject]@{ Text = '{"ContentProfile":"Web profile"}'; TokenUsage = [pscustomobject]@{ PromptTokens = 10; CompletionTokens = 5; TotalTokens = 15 }; SearchQueryCount = 2; Sources = @([pscustomobject]@{ Title = 'a'; Url = 'https://a.example/1' }) } }
