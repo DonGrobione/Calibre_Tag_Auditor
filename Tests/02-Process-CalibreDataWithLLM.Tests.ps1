@@ -40,6 +40,13 @@ function Write-ScriptLog {
     $null = $Message, $Level, $ErrorRecord
 }
 
+# Stands in for the Calibre.Console path helper and returns the path unchanged.
+function ConvertTo-DisplayPath {
+    param($Path, $BasePath)
+    $null = $BasePath
+    return $Path
+}
+
 # Builds a Gemini interaction response with the given text items in one model output step.
 function Get-TestInteractionResponse {
     param([string[]]$Text, [string]$Status = 'completed')
@@ -575,6 +582,22 @@ Describe 'Update-BookCacheProfile' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-uuid'
         $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
         Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook -Uuid '..\evil') -ProfileData (Get-TestTextProfile -Text 'Profile') | Should Be $false
+    }
+
+    It 'logs the stored cache file as DEBUG' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-log'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile')
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'DEBUG' -and $Message -match '\(Text\).*0f8fad5b-d9cb-469f-a165-70867728950e\.json$' }
+    }
+
+    It 'logs nothing when the cache file is not written' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-nolog'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-other'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile')
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 0 -Exactly
     }
 
     It 'writes nothing with -WhatIf' {
