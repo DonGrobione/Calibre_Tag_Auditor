@@ -3,7 +3,7 @@
     Pester tests for the JSON, CSV, and LibreOffice functions in 03-Convert-LLMResults2ODS.ps1.
 
 .DESCRIPTION
-    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue, Get-BookRecordFromJsonFile, ConvertTo-CsvRow, Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
+    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile, ConvertTo-CsvRow, Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '03-Convert-LLMResults2ODS.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Repair-Mojibake', 'Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-JsonText', 'Get-ParsedJsonObjectFromFile', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-ConfigItemValue')
+$functionNames = @('Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-JsonText', 'Get-ParsedJsonObjectFromFile', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-ConfigItemValue')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -23,6 +23,9 @@ foreach ($functionName in $functionNames) {
         }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
 }
+
+# Repair-MojibakeText comes from the Calibre.Text module, as in the script.
+Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Text.psd1') -Force
 
 # Stands in for the Calibre.Console logging helper so the tests write no log file.
 function Write-ScriptLog {
@@ -96,6 +99,16 @@ Describe 'Convert-JsonValue' {
         $result.Count | Should Be 2
         $result[0] | Should Be $umlautText
         $result[1] | Should Be 'Plain'
+    }
+
+    It 'keeps correct a-tilde, a-circumflex, typographic, and Japanese characters unchanged' {
+        # Before version 1.6, a correct a-tilde started a whole-text ISO-8859-1 round trip that destroyed these characters.
+        $text = "S$([char]0xE3)o Paulo, p$([char]0xE2)t$([char]0xE9) $([char]0x2013) it$([char]0x2019)s $([char]0x3088)$([char]0x3046) M$([char]0xFC)ller"
+        Convert-JsonValue -Item $text | Should BeExactly $text
+    }
+
+    It 'repairs a garbled umlaut next to characters outside ISO-8859-1' {
+        Convert-JsonValue -Item "$mojibakeText $([char]0x2013) $([char]0x3088)" | Should BeExactly "$umlautText $([char]0x2013) $([char]0x3088)"
     }
 
     It 'returns $null for $null' {

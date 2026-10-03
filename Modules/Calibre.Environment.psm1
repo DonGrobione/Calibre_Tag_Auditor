@@ -59,7 +59,8 @@ function Get-CalibreConfiguration {
     }
 
     try {
-        $configuration = Get-Content -LiteralPath $ConfigurationPath -Raw -ErrorAction Stop |
+        # Read as UTF-8 (with or without BOM); Windows PowerShell 5.1 would otherwise read a file without BOM in the ANSI code page and garble non-ASCII paths.
+        $configuration = Get-Content -LiteralPath $ConfigurationPath -Raw -Encoding UTF8 -ErrorAction Stop |
             ConvertFrom-Json -ErrorAction Stop
     }
     catch {

@@ -22,7 +22,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.5
+    Version: 1.6
 #>
 
 [CmdletBinding()]
@@ -40,26 +40,15 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 
 Import-Module -Name $CalibreConsoleModulePath -Force
 
-#region JSON parsing and record extraction
-
-# Repair common mojibake text issues caused by incorrect UTF-8 or Latin-1 decoding.
-function Repair-Mojibake {
-    param([string]$Text)
-    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
-    if ($Text -notmatch 'Ã|Â') { return $Text }
-
-    try {
-        $latin1Bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($Text)
-        $decoded = [System.Text.Encoding]::UTF8.GetString($latin1Bytes)
-        if (-not [string]::IsNullOrWhiteSpace($decoded) -and $decoded -ne $Text) {
-            return $decoded
-        }
-    } catch {
-        return $Text
-    }
-
-    return $Text
+# Repair-MojibakeText replaces only garbled UTF-8 sequences and keeps all other characters, also those outside ISO-8859-1.
+$CalibreTextModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Text.psd1"
+if (-not (Test-Path -LiteralPath $CalibreTextModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Text.psd1'"
 }
+
+Import-Module -Name $CalibreTextModulePath -Force
+
+#region JSON parsing and record extraction
 
 # Returns $true when the text parses as JSON and $false otherwise.
 function Test-JsonText {
@@ -74,7 +63,7 @@ function Test-JsonText {
     }
 }
 
-# Try to restore malformed or misdecoded JSON text into a parsable format.
+# Returns JSON text unchanged when it parses; otherwise repairs mojibake sequences and returns the repaired text when it parses, or the original text.
 function Repair-JsonText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
@@ -83,15 +72,8 @@ function Repair-JsonText {
         return $Text
     }
 
-    if ($Text -notmatch 'Ã|Â') {
-        return $Text
-    }
-
-    try {
-        $latin1Bytes = [System.Text.Encoding]::GetEncoding('iso-8859-1').GetBytes($Text)
-        $decoded = [System.Text.Encoding]::UTF8.GetString($latin1Bytes)
-    }
-    catch {
+    $decoded = Repair-MojibakeText -Text $Text
+    if ($decoded -ceq $Text) {
         return $Text
     }
 
@@ -108,13 +90,13 @@ function Convert-JsonValue {
     if ($null -eq $Item) { return $null }
 
     if ($Item -is [string]) {
-        return Repair-Mojibake -Text $Item
+        return Repair-MojibakeText -Text $Item
     }
 
     if ($Item -is [System.Collections.IDictionary]) {
         $result = @{}
         foreach ($key in $Item.Keys) {
-            $fixedKey = Repair-Mojibake -Text $key
+            $fixedKey = Repair-MojibakeText -Text $key
             $result[$fixedKey] = Convert-JsonValue -Item $Item[$key]
         }
         return $result
@@ -857,8 +839,9 @@ try {
     # Write the merged records as a temporary pipe-delimited UTF-8 CSV under $env:TEMP for LibreOffice to consume.
     $tempCsvPath = Join-Path -Path $env:TEMP -ChildPath ("03-LLM-Result_{0}_{1}.csv" -f $timestamp, [System.Guid]::NewGuid().ToString('N'))
     try {
-        $csvContent = $csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|'
-        $csvContent | Out-File -FilePath $tempCsvPath -Encoding UTF8 -Force
+        $csvContent = @($csvRows | ConvertTo-Csv -NoTypeInformation -Delimiter '|')
+        # UTF-8 without BOM: the LibreOffice import filter sets the character set explicitly (76 = UTF-8), and a BOM could end up in the first header cell.
+        [System.IO.File]::WriteAllLines($tempCsvPath, [string[]]$csvContent, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
 
         Write-ScriptLog "Converting merged records to ODS..."
         $generatedFilePath = Invoke-LibreOfficeConversion -LibreOfficeExe $libreOfficeExe -CsvFilePath $tempCsvPath -OutputFolder $env:TEMP

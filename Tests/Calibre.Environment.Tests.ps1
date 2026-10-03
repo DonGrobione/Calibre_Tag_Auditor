@@ -3,7 +3,7 @@
     Pester tests for Modules\Calibre.Environment.psd1.
 
 .DESCRIPTION
-    Verifies the module manifest, Get-CalibreConfiguration, Get-CalibreEnvironment, and Get-CalibreExecutable, including the error IDs raised with $PSCmdlet.ThrowTerminatingError(). The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
+    Verifies the module manifest, Get-CalibreConfiguration (including non-ASCII paths in a UTF-8 file with and without BOM), Get-CalibreEnvironment, and Get-CalibreExecutable, including the error IDs raised with $PSCmdlet.ThrowTerminatingError(). The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
     All files and folders are created in the Pester TestDrive; no real Calibre installation is required.
 
 .EXAMPLE
@@ -71,6 +71,18 @@ Describe 'Get-CalibreConfiguration' {
         It 'reads DebugBookExport when it is true' {
             Set-Content -LiteralPath $configPath -Value '{ "CalibrePaths": ["C:\\A"], "LibraryName": "Lib", "BooksPerFile": 0, "ChangedWithinDays": 0, "DebugBookExport": true }'
             (Get-CalibreConfiguration -ConfigurationPath $configPath).DebugBookExport | Should Be $true
+        }
+
+        It 'reads non-ASCII paths from a UTF-8 file without BOM and with BOM' {
+            # Built from character codes, so the test does not depend on the encoding of this file.
+            $path = "D:\\B$([char]0xFC)cher \\$([char]0x30DE)$([char]0x30F3)$([char]0x30AC)"
+            $json = '{ "CalibrePaths": ["' + $path + '"], "LibraryName": "Bibliothek ' + [char]0xE4 + '", "BooksPerFile": 1, "ChangedWithinDays": 1 }'
+            foreach ($withBom in @($false, $true)) {
+                [System.IO.File]::WriteAllText($configPath, $json, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $withBom))
+                $configuration = Get-CalibreConfiguration -ConfigurationPath $configPath
+                $configuration.CalibrePaths[0] | Should BeExactly "D:\B$([char]0xFC)cher \$([char]0x30DE)$([char]0x30F3)$([char]0x30AC)"
+                $configuration.LibraryName | Should BeExactly "Bibliothek $([char]0xE4)"
+            }
         }
 
         It 'accepts numbers given as strings' {

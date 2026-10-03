@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The Export scope file tests check in the source that 01-Export-Scope.json marks only an export of all books as full library. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The Export scope file tests check in the source that 01-Export-Scope.json marks only an export of all books as full library. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -222,6 +222,34 @@ Describe 'Write-JsonFile' {
         $parsed = ConvertFrom-Json -InputObject $text
         $parsed.Count | Should Be 2
         $parsed[1].Title | Should Be 'Second'
+    }
+}
+
+Describe 'ConvertTo-JsonUtf8' {
+    It 'writes &, apostrophe, <, and > as characters and keeps non-ASCII characters' {
+        $text = "it's <b> & Begr$([char]0xFC)ndung $([char]0x2013) $([char]0x3088)"
+        $json = ConvertTo-JsonUtf8 -InputObject ([pscustomobject]@{ Text = $text })
+        $json | Should Not Match '\\u00'
+        (ConvertFrom-Json -InputObject $json).Text | Should BeExactly $text
+    }
+
+    It 'keeps control characters escaped, so the JSON stays valid' {
+        $text = 'a' + [char]0x01 + 'b' + [char]0x0B + 'c'
+        $json = ConvertTo-JsonUtf8 -InputObject ([pscustomobject]@{ Text = $text })
+        $json | Should Match '\\u0001'
+        (ConvertFrom-Json -InputObject $json).Text | Should BeExactly $text
+    }
+
+    It 'keeps literal backslash-u text in the content unchanged' {
+        # Built from parts, so no editor turns the escape sequences into characters.
+        $text = 'regex \' + 'u0041 and \\' + 'u0026 and \' + 'u005c'
+        $json = ConvertTo-JsonUtf8 -InputObject ([pscustomobject]@{ Text = $text })
+        (ConvertFrom-Json -InputObject $json).Text | Should BeExactly $text
+    }
+
+    It 'keeps a surrogate pair (emoji)' {
+        $text = 'x' + [char]0xD83D + [char]0xDE00
+        (ConvertFrom-Json -InputObject (ConvertTo-JsonUtf8 -InputObject ([pscustomobject]@{ Text = $text }))).Text | Should BeExactly $text
     }
 }
 
