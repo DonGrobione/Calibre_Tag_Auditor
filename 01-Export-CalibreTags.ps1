@@ -5,13 +5,14 @@
 .DESCRIPTION
     Connects Calibre .calnotes/notes.db with the library metadata.db and exports tag notes as JSON. The first line of each note is removed so the output contains only the tag definition.
     Uses calibre-debug.exe (Calibre's embedded Python interpreter) to query both SQLite databases via ATTACH. The temporary Python script is written to $env:TEMP and deleted after execution.
+    After the export, the definitions are compared with the baseline 01-Cache\TagDefinitions.json, which holds the definitions of the last full-library audit (written by 02-Process-CalibreDataWithLLM.ps1). Added, changed, and removed tags are logged as warnings with the command to re-check all books, on every run until a full-library audit has completed. When no baseline exists yet, the current definitions are saved as baseline. A failure of this check only logs a warning.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER OutputPath
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.4
+    Version: 3.5
 #>
 
 [CmdletBinding()]
@@ -35,6 +36,13 @@ if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) 
 }
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
+
+$CalibreTagDefinitionsModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.TagDefinitions.psd1"
+if (-not (Test-Path -LiteralPath $CalibreTagDefinitionsModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.TagDefinitions.psd1'"
+}
+
+Import-Module -Name $CalibreTagDefinitionsModulePath -Force
 
 # Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
@@ -169,6 +177,28 @@ except Exception as e:
         Write-ScriptLog "Export completed successfully. $Count entries saved to '$(ConvertTo-DisplayPath -Path $FullOutputPath -BasePath $PSScriptRoot)'."
     } else {
         throw "Data export failed: $Result"
+    }
+
+    # Compare the exported definitions with the definitions of the last full-library audit. A failure here only warns, because the export itself succeeded.
+    $BaselinePath = Join-Path -Path $ScriptDir -ChildPath "01-Cache\TagDefinitions.json"
+    try {
+        $CurrentDefinitions = @(Read-TagDefinitionFile -Path $FullOutputPath)
+        $Baseline = Get-TagDefinitionBaseline -Path $BaselinePath
+        if ($null -eq $Baseline) {
+            Save-TagDefinitionBaseline -Path $BaselinePath -Definitions $CurrentDefinitions
+            Write-ScriptLog "No tag definition baseline found. The current definitions were saved as baseline to '$(ConvertTo-DisplayPath -Path $BaselinePath -BasePath $PSScriptRoot)'; changes are reported from now on."
+        } else {
+            $Change = Compare-TagDefinition -Reference $Baseline.Definitions -Difference $CurrentDefinitions
+            if ($Change.HasChanges) {
+                foreach ($Line in (Format-TagDefinitionChange -Change $Change -AuditedAt $Baseline.AuditedAt)) {
+                    Write-ScriptLog -Level WARN -Message $Line
+                }
+            } else {
+                Write-ScriptLog "Tag definitions unchanged since the last full audit ($($Baseline.AuditedAt))."
+            }
+        }
+    } catch {
+        Write-ScriptLog -Level WARN -Message "Could not check the tag definitions for changes: $($_.Exception.Message)"
     }
 }
 catch {

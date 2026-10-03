@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, and the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, and the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, and Test-TagDefinitionBaselineUpdate, which decides whether a run counts as a full-library audit of the tag definitions. The cache and scope files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -19,7 +19,8 @@ $functionNames = @(
     'Get-GeminiApiKey', 'Repair-MojibakeText', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException',
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
-    'ConvertTo-CompactJson', 'Test-ContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile'
+    'ConvertTo-CompactJson', 'Test-ContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
+    'Test-TagDefinitionBaselineUpdate'
 )
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
@@ -507,6 +508,60 @@ Describe 'Save-ContentProfile' {
 
     It 'returns 0 for an empty profile list' {
         Save-ContentProfile -ContentProfiles @() -FullTextBooksById @{} -CacheDirectory $TestDrive | Should Be 0
+    }
+}
+
+Describe 'Test-TagDefinitionBaselineUpdate' {
+    It 'returns $true for a full-library export without error files' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'scope-full.json'
+        Set-Content -LiteralPath $path -Value '{ "FullLibrary": true, "BookCount": 2326 }'
+        Test-TagDefinitionBaselineUpdate -ScopePath $path -ErrorFileCount 0 | Should Be $true
+    }
+
+    It 'returns $false when a file ended with an error' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'scope-full-errors.json'
+        Set-Content -LiteralPath $path -Value '{ "FullLibrary": true }'
+        Test-TagDefinitionBaselineUpdate -ScopePath $path -ErrorFileCount 1 | Should Be $false
+    }
+
+    It 'returns $false for a partial export' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'scope-partial.json'
+        Set-Content -LiteralPath $path -Value '{ "FullLibrary": false }'
+        Test-TagDefinitionBaselineUpdate -ScopePath $path -ErrorFileCount 0 | Should Be $false
+    }
+
+    It 'returns $false for a missing, corrupt, or incomplete scope file' {
+        Test-TagDefinitionBaselineUpdate -ScopePath (Join-Path -Path $TestDrive -ChildPath 'no-scope.json') -ErrorFileCount 0 | Should Be $false
+        $corrupt = Join-Path -Path $TestDrive -ChildPath 'scope-corrupt.json'
+        Set-Content -LiteralPath $corrupt -Value '{ not json'
+        Test-TagDefinitionBaselineUpdate -ScopePath $corrupt -ErrorFileCount 0 | Should Be $false
+        $incomplete = Join-Path -Path $TestDrive -ChildPath 'scope-incomplete.json'
+        Set-Content -LiteralPath $incomplete -Value '{ "BookCount": 5 }'
+        Test-TagDefinitionBaselineUpdate -ScopePath $incomplete -ErrorFileCount 0 | Should Be $false
+    }
+
+    It 'returns $false when FullLibrary is a string instead of a boolean' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'scope-string.json'
+        Set-Content -LiteralPath $path -Value '{ "FullLibrary": "yes" }'
+        Test-TagDefinitionBaselineUpdate -ScopePath $path -ErrorFileCount 0 | Should Be $false
+    }
+}
+
+Describe 'Tag definition baseline update' {
+    $commands = @($scriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $saveCalls = @($commands | Where-Object { $_.GetCommandName() -eq 'Save-TagDefinitionBaseline' })
+
+    It 'saves the baseline once, only after the full-library check' {
+        $saveCalls.Count | Should Be 1
+        $condition = $saveCalls[0].Parent
+        while ($null -ne $condition -and $condition -isnot [System.Management.Automation.Language.IfStatementAst]) {
+            $condition = $condition.Parent
+        }
+        $condition.Clauses[0].Item1.Extent.Text | Should Match 'Test-TagDefinitionBaselineUpdate -ScopePath \$ScopePath -ErrorFileCount \$errorFileCount'
+    }
+
+    It 'counts parse errors and API errors as error files' {
+        @([regex]::Matches($scriptAst.Extent.Text, '\$errorFileCount\+\+')).Count | Should Be 2
     }
 }
 

@@ -9,6 +9,7 @@
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
     Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre and the cache file has the current cache format version, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books without content (failed extraction, no text, or no supported book file) are not cached, and an outdated cache file of such a book is deleted. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
     Each export record also holds the book's Uuid, the SHA256 ContentHash of BookContent, and the ContentProfile with its ContentProfileVersion. 02-Process-CalibreDataWithLLM.ps1 stores a content profile (a short summary of the book text written by the LLM) in the cache file. The export carries it over as long as the book text has the same ContentHash, even after last_modified changed (e.g. after a tag edit), so the LLM step can send the short profile instead of the full text. A cache file written before ContentHash existed is rewritten with the hash when it is reused.
+    After the export, the file 01-Export\01-Export-Scope.json records whether the export covers the whole library (ChangedWithinDays 0 without DebugBookExport), the book count, and the export date. 02-Process-CalibreDataWithLLM.ps1 uses it to decide whether a run counts as a full-library audit of the tag definitions.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -23,7 +24,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.5
+    Version: 4.6
 #>
 
 [CmdletBinding()]
@@ -94,6 +95,12 @@ try {
 
     Get-ChildItem -Path $ExportDir -Filter "01-Export-CalibreBooks_*.json" -File |
     Remove-Item -Force
+
+    # The scope file tells 02-Process-CalibreDataWithLLM.ps1 whether this export covers the whole library; the file of an older export is removed first.
+    $ScopePath = Join-Path -Path $ExportDir -ChildPath "01-Export-Scope.json"
+    if (Test-Path -LiteralPath $ScopePath -PathType Leaf) {
+        Remove-Item -LiteralPath $ScopePath -Force
+    }
 
     # Create the cache folder that holds one export file per book, keyed by the Calibre UUID.
     # Increase BookCacheVersion whenever the content extraction or the cache file format changes, so all older cache files are rebuilt.
@@ -727,9 +734,17 @@ try {
         $Batch.Clear()
     }
 
+    # Only an export of all books (ChangedWithinDays 0, no debug export) counts as a full-library export.
+    $Scope = [PSCustomObject]@{
+        FullLibrary = (-not $DebugBookExport -and $ChangedWithinDays -eq 0)
+        BookCount   = $TotalBooks
+        ExportDate  = $ExportDate
+    }
+    Write-JsonFile -Path $ScopePath -InputObject $Scope -Depth 3
+
     Write-Information -MessageData '' -InformationAction Continue
     Write-ScriptLog "Export complete:"
-    Write-ScriptLog ("  Books:    {0}" -f $TotalBooks)
+    Write-ScriptLog ("  Books:    {0}{1}" -f $TotalBooks, $(if ($Scope.FullLibrary) { ' (full library)' } else { '' }))
     Write-ScriptLog ("  Files:    {0}" -f $FileCount)
     Write-ScriptLog ("  Per file: max {0}" -f $BooksInFile)
     Write-ScriptLog ("  Cached:   {0}" -f $CachedBookCount)
