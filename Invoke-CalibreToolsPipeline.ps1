@@ -6,7 +6,7 @@
     Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts.
     On failure, the error is shown and the script waits for Enter before exit.
     The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
-    On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
+    On successful completion, the pipeline prints the total prompt, completion, and combined token usage and the number of Google Search queries (billed per query, used for web content profiles of books without text) across all LLM result files.
     When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline still runs 01-Export-CalibreTags.ps1, so changed tag definitions are reported, skips the LLM and ODS steps, prints a short summary without token usage, and exits with code 0.
     At the end of both summaries, the pipeline compares the latest tag export with the baseline of the last full-library audit (01-Cache\TagDefinitions.json) and repeats the warning about changed tag definitions, so it is not lost in the step output.
 
@@ -29,7 +29,7 @@
     Validates all books with their full text, e.g. after the tag definitions were changed.
 
 .NOTES
-    Version: 1.14
+    Version: 1.15
 #>
 
 [CmdletBinding()]
@@ -239,6 +239,7 @@ try {
 
     $totalPromptTokens = [int64]0
     $totalCompletionTokens = [int64]0
+    $totalSearchQueries = [int64]0
     $llmResultFiles = Get-ChildItem -Path (Join-Path $PSScriptRoot "02-LLM-Result") -Filter "LLM-Result_*.json" -File -ErrorAction SilentlyContinue
     foreach ($resultFile in $llmResultFiles) {
         $result = Get-Content -Path $resultFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -248,6 +249,9 @@ try {
             }
             if ($null -ne $result.token_usage.completion_tokens) {
                 $totalCompletionTokens += [int64]$result.token_usage.completion_tokens
+            }
+            if ($null -ne $result.token_usage.PSObject.Properties['web_search_queries'] -and $null -ne $result.token_usage.web_search_queries) {
+                $totalSearchQueries += [int64]$result.token_usage.web_search_queries
             }
         }
     }
@@ -264,6 +268,7 @@ try {
     Write-ScriptLog "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))"
     Write-ScriptLog "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))"
     Write-ScriptLog "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))"
+    Write-ScriptLog "Web search queries (billed per query):  $($totalSearchQueries.ToString('N0'))"
     Write-TagDefinitionChangeSummary -ProjectRoot $PSScriptRoot
 }
 catch {
