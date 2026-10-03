@@ -24,6 +24,7 @@ I started this project because I have several thousand books and lost track of t
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
   - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
   - `Calibre.TagDefinitions`: compares the tag definitions with the baseline of the last full-library audit (see [Changing Tag Definitions](#changing-tag-definitions)).
+  - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet.
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).
 - `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)).

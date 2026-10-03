@@ -25,7 +25,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.7
+    Version: 4.8
 #>
 
 [CmdletBinding()]
@@ -132,7 +132,7 @@ try {
     # Create a timestamp for the output files.
     $ExportDate = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 
-    # Converts an input object to a JSON string with unescaped UTF-8 unicode characters.
+    # Converts an input object to JSON and turns the &, ', <, and > escapes that Windows PowerShell 5.1 writes for &, ', <, and > back into the characters (PowerShell 5.1 writes non-ASCII characters unescaped). Control character escapes stay escaped, because raw control characters are not valid in JSON strings, and an escaped backslash before such a sequence is kept, so literal backslash-u text in the content stays unchanged.
     function ConvertTo-JsonUtf8 {
         param(
             [Parameter(Mandatory = $true)]
@@ -141,13 +141,10 @@ try {
         )
 
         $json = $InputObject | ConvertTo-Json -Depth $Depth
-        $json = [System.Text.RegularExpressions.Regex]::Replace($json, '\\u([0-9A-Fa-f]{4})', {
+        return [System.Text.RegularExpressions.Regex]::Replace($json, '(?<!\\)((?:\\\\)*)\\u00(26|27|3[cCeE])', {
             param($match)
-            $codePoint = [int]::Parse($match.Groups[1].Value, [System.Globalization.NumberStyles]::HexNumber)
-            return [char]$codePoint
+            return $match.Groups[1].Value + [char][Convert]::ToInt32($match.Groups[2].Value, 16)
         })
-
-        return $json
     }
 
     # Writes an object to a JSON file using UTF-8 encoding without BOM.

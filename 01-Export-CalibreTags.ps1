@@ -12,7 +12,7 @@
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.5
+    Version: 3.6
 #>
 
 [CmdletBinding()]
@@ -134,7 +134,8 @@ try:
     conn = sqlite3.connect(notes_db)
     cursor = conn.cursor()
 
-    cursor.execute(f"ATTACH DATABASE '{meta_db}' AS meta;")
+    # Bind the path as a parameter, so quotes or other special characters in the library path cannot break the statement.
+    cursor.execute("ATTACH DATABASE ? AS meta;", (meta_db,))
 
     query = """
     SELECT
@@ -164,11 +165,12 @@ try:
     conn.close()
 
 except Exception as e:
-    print(f"ERROR:{e}")
+    # Print ASCII only (non-ASCII as \x, \u escapes), because PowerShell decodes the output with the console code page.
+    print("ERROR:" + str(e).encode('ascii', 'backslashreplace').decode('ascii'))
 "@
 
-    # Write the temporary script and run it.
-    Set-Content -Path $TempScript -Value $PythonScriptContent -Encoding UTF8 -Force
+    # Write the temporary script as UTF-8 without BOM (Python's default source encoding), so non-ASCII library paths reach Python unchanged, and run it.
+    [System.IO.File]::WriteAllText($TempScript, $PythonScriptContent, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
     $Result = & $CalibreDebugExe.FullName $TempScript
 
     if ($Result -like "*SUCCESS:*") {
