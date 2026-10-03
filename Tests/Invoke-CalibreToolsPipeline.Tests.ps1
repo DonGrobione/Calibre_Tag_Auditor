@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays and FullContent script parameters, Test-BookExportFile, which decides whether the pipeline continues after the book export, and Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
+    Covers the ChangedWithinDays and FullContent script parameters, Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step, Test-PipelineStepSkipped, which keeps the tag export running without a book export, and Get-TagDefinitionChangeWarning, which repeats the tag definition change warning in the summary. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,9 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath 'Invoke-CalibreToolsPipeline.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter')) {
+Get-Module -Name Calibre.TagDefinitions | Remove-Module -Force
+Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.TagDefinitions.psd1') -Force
+foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter', 'Test-PipelineStepSkipped', 'Get-TagDefinitionChangeWarning')) {
     $definition = $scriptAst.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -102,6 +104,52 @@ Describe 'Get-StepScriptParameter' {
 
     It 'returns no parameters for the LLM step when FullContent was not given' {
         (Get-StepScriptParameter -ScriptName '02-Process-CalibreDataWithLLM.ps1' -PipelineParameters @{ ChangedWithinDays = 7 }).Count | Should Be 0
+    }
+}
+
+Describe 'Test-PipelineStepSkipped' {
+    It 'runs every step when a book export exists' {
+        foreach ($script in '01-Export-CalibreBooks.ps1', '01-Export-CalibreTags.ps1', '02-Process-CalibreDataWithLLM.ps1', '03-Convert-LLMResults2ODS.ps1') {
+            Test-PipelineStepSkipped -ScriptName $script -NoBooksToProcess $false | Should Be $false
+        }
+    }
+
+    It 'still runs the tag export without a book export, so changed definitions are reported' {
+        Test-PipelineStepSkipped -ScriptName '01-Export-CalibreTags.ps1' -NoBooksToProcess $true | Should Be $false
+    }
+
+    It 'skips the LLM and ODS steps without a book export' {
+        Test-PipelineStepSkipped -ScriptName '02-Process-CalibreDataWithLLM.ps1' -NoBooksToProcess $true | Should Be $true
+        Test-PipelineStepSkipped -ScriptName '03-Convert-LLMResults2ODS.ps1' -NoBooksToProcess $true | Should Be $true
+    }
+}
+
+Describe 'Get-TagDefinitionChangeWarning' {
+    $exportDirectory = Join-Path -Path $TestDrive -ChildPath 'export'
+    $null = New-Item -Path $exportDirectory -ItemType Directory -Force
+    $baselinePath = Join-Path -Path $TestDrive -ChildPath 'TagDefinitions.json'
+    Set-Content -LiteralPath (Join-Path -Path $exportDirectory -ChildPath '02-Export-CalibreTags_2026-10-03_10-00-00.json') -Value '[ { "Tag": "Fantasy", "NoteText": "New text." }, { "Tag": "Cozy", "NoteText": "Low stakes." } ]'
+
+    It 'returns nothing without a baseline' {
+        @(Get-TagDefinitionChangeWarning -ExportDirectory $exportDirectory -BaselinePath $baselinePath).Count | Should Be 0
+    }
+
+    It 'returns nothing without a tag export' {
+        Save-TagDefinitionBaseline -Path $baselinePath -Definitions @([PSCustomObject]@{ Tag = 'Fantasy'; NoteText = 'Old text.' })
+        $emptyDirectory = Join-Path -Path $TestDrive -ChildPath 'empty-export'
+        $null = New-Item -Path $emptyDirectory -ItemType Directory -Force
+        @(Get-TagDefinitionChangeWarning -ExportDirectory $emptyDirectory -BaselinePath $baselinePath).Count | Should Be 0
+    }
+
+    It 'returns the warning lines for changed definitions' {
+        Save-TagDefinitionBaseline -Path $baselinePath -Definitions @([PSCustomObject]@{ Tag = 'Fantasy'; NoteText = 'Old text.' })
+        $lines = @(Get-TagDefinitionChangeWarning -ExportDirectory $exportDirectory -BaselinePath $baselinePath)
+        $lines[0] | Should Match 'added: Cozy; changed: Fantasy\.$'
+    }
+
+    It 'returns nothing when the definitions match the baseline' {
+        Save-TagDefinitionBaseline -Path $baselinePath -Definitions @([PSCustomObject]@{ Tag = 'Fantasy'; NoteText = 'New text.' }, [PSCustomObject]@{ Tag = 'Cozy'; NoteText = 'Low stakes.' })
+        @(Get-TagDefinitionChangeWarning -ExportDirectory $exportDirectory -BaselinePath $baselinePath).Count | Should Be 0
     }
 }
 

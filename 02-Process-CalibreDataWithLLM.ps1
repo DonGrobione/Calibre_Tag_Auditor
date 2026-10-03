@@ -12,6 +12,7 @@
 
     Content profiles: for every book sent with its full text, the LLM also returns a short content profile (a factual summary of the excerpt). The script stores it in the book's cache file 01-Cache/<uuid>.json, but only when that file still holds the same book text (same ContentHash). On later runs, 01-Export-CalibreBooks.ps1 exports the profile with the book, and this script sends the profile instead of the full text while the profile has the current $ContentProfileVersion. This cuts the input tokens of a re-audited book from about 28,000 to a few hundred. Increase $ContentProfileVersion when the profile instructions in the prompt change, so all profiles are rebuilt.
     The book data and tag definitions are sent as compact JSON without indentation.
+    Tag definition baseline: when the book export covered the whole library (01-Export\01-Export-Scope.json with FullLibrary true) and no file ended with an error, the used tag definitions are saved to 01-Cache\TagDefinitions.json. 01-Export-CalibreTags.ps1 compares later exports with this baseline and warns about changed definitions.
 
 .PARAMETER FullContent
     Sends the full book text for every book, even when a content profile exists, and stores new profiles from the responses. Use it after tag definitions with new concepts were added, so the decisions and profiles are based on the full text again.
@@ -25,7 +26,7 @@
     Validates the latest book export with the full book text of every book.
 
 .NOTES
-    Version: 6.0
+    Version: 6.1
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, content profiles, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -46,6 +47,13 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 
 Import-Module -Name $CalibreConsoleModulePath -Force
 
+$CalibreTagDefinitionsModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.TagDefinitions.psd1"
+if (-not (Test-Path -LiteralPath $CalibreTagDefinitionsModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.TagDefinitions.psd1'"
+}
+
+Import-Module -Name $CalibreTagDefinitionsModulePath -Force
+
 # Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
 if ($ownsLogSession) {
@@ -65,6 +73,8 @@ try {
     $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Gemini_API.json.key"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
     $CacheDir = Join-Path -Path $ScriptDir -ChildPath "01-Cache"
+    $ScopePath = Join-Path -Path $ExportDir -ChildPath "01-Export-Scope.json"
+    $TagDefinitionBaselinePath = Join-Path -Path $CacheDir -ChildPath "TagDefinitions.json"
 
     # Increase ContentProfileVersion whenever the profile instructions in the prompt change, so all stored content profiles are rebuilt from the full text.
     $script:ContentProfileVersion = 1
@@ -615,6 +625,31 @@ try {
         return (ConvertFrom-Json -InputObject $text -ErrorAction Stop)
     }
 
+    # Returns $true when the run counts as a full-library audit: the scope file of the book export says FullLibrary and no export file ended with an error. A missing or unreadable scope file counts as not full.
+    function Test-TagDefinitionBaselineUpdate {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$ScopePath,
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(0, [int]::MaxValue)]
+            [int]$ErrorFileCount
+        )
+
+        if ($ErrorFileCount -gt 0 -or -not (Test-Path -LiteralPath $ScopePath -PathType Leaf)) {
+            return $false
+        }
+
+        try {
+            $scope = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($ScopePath, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        }
+        catch {
+            return $false
+        }
+
+        return ($null -ne $scope -and $null -ne $scope.PSObject.Properties['FullLibrary'] -and $scope.FullLibrary -eq $true)
+    }
+
     # Converts an object to JSON without indentation and turns the \u00XX escapes that Windows PowerShell 5.1 writes for &, ', <, and > back into the characters, because every escape costs several tokens. An escaped backslash before such a sequence is kept, so literal backslash-u text in the content stays unchanged.
     function ConvertTo-CompactJson {
         param(
@@ -899,6 +934,7 @@ try {
     $totalFullTextBookCount = 0
     $totalProfileBookCount = 0
     $totalSavedProfileCount = 0
+    $errorFileCount = 0
 
     if ($FullContent) {
         Write-ScriptLog "FullContent: the full book text is sent for every book; stored content profiles are not used."
@@ -1064,6 +1100,7 @@ $bookAnalysisInput
                 Write-ScriptLog "  -> Saved with validation warning: $outName"
             }
             else {
+                $errorFileCount++
                 $validationErrorText = "Validation error in '$($bookFile.Name)': $($resultObject.parse_error)"
                 Write-ScriptLog -Level ERROR -Message $validationErrorText
                 Write-ScriptLog "  -> Saved with parse error: $outName"
@@ -1071,6 +1108,7 @@ $bookAnalysisInput
         }
         else {
             $savedCount++
+            $errorFileCount++
             $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
             $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
@@ -1119,6 +1157,20 @@ $bookAnalysisInput
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
     Write-ScriptLog "Books sent: $totalFullTextBookCount with full text, $totalProfileBookCount with content profile; $totalSavedProfileCount content profile(s) stored."
     Write-ScriptLog "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))"
+
+    # A completed full-library audit records the used tag definitions as the new baseline, so the change warning of 01-Export-CalibreTags.ps1 stops.
+    if (Test-TagDefinitionBaselineUpdate -ScopePath $ScopePath -ErrorFileCount $errorFileCount) {
+        try {
+            Save-TagDefinitionBaseline -Path $TagDefinitionBaselinePath -Definitions @(Read-TagDefinitionFile -Path $tagFile.FullName)
+            Write-ScriptLog "Full-library audit complete. Tag definitions recorded as audited in '$(ConvertTo-DisplayPath -Path $TagDefinitionBaselinePath -BasePath $PSScriptRoot)'."
+        }
+        catch {
+            Write-ScriptLog -Level WARN -Message "Could not record the audited tag definitions: $($_.Exception.Message)"
+        }
+    }
+    elseif ($errorFileCount -gt 0 -and (Test-TagDefinitionBaselineUpdate -ScopePath $ScopePath -ErrorFileCount 0)) {
+        Write-ScriptLog -Level WARN -Message "$errorFileCount file(s) ended with an error, so this full-library run does not count as audit of the tag definitions. Run again with -ChangedWithinDays 0."
+    }
 
 }
 catch {

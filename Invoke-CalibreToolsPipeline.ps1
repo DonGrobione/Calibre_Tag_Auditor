@@ -7,7 +7,8 @@
     On failure, the error is shown and the script waits for Enter before exit.
     The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
     On successful completion, the pipeline prints the total prompt, completion, and combined token usage across all LLM result files.
-    When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline skips the remaining steps, prints a short summary without token usage, and exits with code 0.
+    When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline still runs 01-Export-CalibreTags.ps1, so changed tag definitions are reported, skips the LLM and ODS steps, prints a short summary without token usage, and exits with code 0.
+    At the end of both summaries, the pipeline compares the latest tag export with the baseline of the last full-library audit (01-Cache\TagDefinitions.json) and repeats the warning about changed tag definitions, so it is not lost in the step output.
 
 .PARAMETER ChangedWithinDays
     Exports only books changed within this number of days; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
@@ -28,7 +29,7 @@
     Validates all books with their full text, e.g. after the tag definitions were changed.
 
 .NOTES
-    Version: 1.13
+    Version: 1.14
 #>
 
 [CmdletBinding()]
@@ -49,6 +50,13 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
+
+$CalibreTagDefinitionsModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.TagDefinitions.psd1"
+if (-not (Test-Path -LiteralPath $CalibreTagDefinitionsModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.TagDefinitions.psd1'"
+}
+
+Import-Module -Name $CalibreTagDefinitionsModulePath -Force
 
 # Clear the console to keep the output readable for each run.
 Clear-Host
@@ -102,6 +110,77 @@ function Get-StepScriptParameter {
     return $stepParameters
 }
 
+# Returns $true when a step is skipped: without a book export only the tag export still runs, so changed tag definitions are reported; the LLM and ODS steps have nothing to process.
+function Test-PipelineStepSkipped {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ScriptName,
+        [Parameter(Mandatory = $true)]
+        [bool]$NoBooksToProcess
+    )
+
+    return ($NoBooksToProcess -and $ScriptName -ne '01-Export-CalibreTags.ps1')
+}
+
+# Returns the warning lines about tag definitions that changed since the last full-library audit, comparing the latest tag export in the export folder with the baseline file; returns nothing when no tag export or no baseline exists or nothing changed.
+function Get-TagDefinitionChangeWarning {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExportDirectory,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$BaselinePath
+    )
+
+    if (-not (Test-Path -LiteralPath $ExportDirectory -PathType Container)) {
+        return
+    }
+
+    $tagFile = Get-ChildItem -LiteralPath $ExportDirectory -Filter '02-Export-CalibreTags_*.json' -File |
+        Sort-Object -Property LastWriteTime -Descending |
+        Select-Object -First 1
+    $baseline = Get-TagDefinitionBaseline -Path $BaselinePath
+    if ($null -eq $tagFile -or $null -eq $baseline) {
+        return
+    }
+
+    $change = Compare-TagDefinition -Reference $baseline.Definitions -Difference @(Read-TagDefinitionFile -Path $tagFile.FullName)
+    Format-TagDefinitionChange -Change $change -AuditedAt $baseline.AuditedAt
+}
+
+# Logs the tag definition change warning at the end of the summary; a failure of the check only logs a warning, because all steps succeeded.
+function Write-TagDefinitionChangeSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ProjectRoot
+    )
+
+    try {
+        $lines = @(Get-TagDefinitionChangeWarning -ExportDirectory (Join-Path -Path $ProjectRoot -ChildPath '01-Export') -BaselinePath (Join-Path -Path $ProjectRoot -ChildPath '01-Cache\TagDefinitions.json'))
+    }
+    catch {
+        Write-ScriptLog -Level WARN -Message "Could not check the tag definitions for changes: $($_.Exception.Message)"
+        return
+    }
+
+    if ($lines.Count -eq 0) {
+        return
+    }
+
+    Write-Information -MessageData '' -InformationAction Continue
+    foreach ($line in $lines) {
+        Write-ScriptLog -Level WARN -Message $line
+    }
+}
+
 # Collect the parameters given to the pipeline so they can be forwarded to the step scripts.
 $pipelineParameters = @{}
 if ($PSBoundParameters.ContainsKey('ChangedWithinDays')) {
@@ -123,6 +202,10 @@ try {
     # Run each script in sequence.
     $noBooksToProcess = $false
     foreach ($script in $scripts) {
+        if (Test-PipelineStepSkipped -ScriptName $script -NoBooksToProcess $noBooksToProcess) {
+            continue
+        }
+
         $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $script
         $stepParameters = Get-StepScriptParameter -ScriptName $script -PipelineParameters $pipelineParameters
         Write-ScriptLog "=== Starting: $script ==="
@@ -136,12 +219,11 @@ try {
         Write-ScriptLog "=== Completed: $script ==="
         Write-Information -MessageData '' -InformationAction Continue
 
-        # Without a book export there is nothing to validate, so the remaining steps are skipped.
+        # Without a book export there is nothing to validate, so only the tag export still runs to report changed tag definitions.
         if ($script -eq '01-Export-CalibreBooks.ps1' -and -not (Test-BookExportFile -ExportDirectory (Join-Path -Path $PSScriptRoot -ChildPath '01-Export'))) {
             $noBooksToProcess = $true
-            Write-ScriptLog "No book export file was written, so there is nothing to validate. The remaining steps are skipped."
+            Write-ScriptLog "No book export file was written, so there is nothing to validate. Only the tag export runs to check the tag definitions; the LLM and ODS steps are skipped."
             Write-Information -MessageData '' -InformationAction Continue
-            break
         }
     }
 
@@ -151,6 +233,7 @@ try {
         Write-ScriptLog "Start:    $($startTime.ToString('HH:mm:ss'))"
         Write-ScriptLog "End:      $($endTime.ToString('HH:mm:ss'))"
         Write-ScriptLog "Duration: $(($endTime - $startTime).ToString('hh\:mm\:ss'))"
+        Write-TagDefinitionChangeSummary -ProjectRoot $PSScriptRoot
         return
     }
 
@@ -181,6 +264,7 @@ try {
     Write-ScriptLog "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))"
     Write-ScriptLog "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))"
     Write-ScriptLog "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))"
+    Write-TagDefinitionChangeSummary -ProjectRoot $PSScriptRoot
 }
 catch {
     # Report the error and stop execution. Every child script already logs and rethrows its own errors, so this catch block only prints to terminal and never writes a second logfile entry for the same failure.
