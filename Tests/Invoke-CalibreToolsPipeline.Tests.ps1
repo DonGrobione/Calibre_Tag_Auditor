@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Test-BookExportFile, which decides whether the pipeline continues after the book export, and Get-StepScriptParameter, which forwards the parameter to the book export. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
+    Covers the ChangedWithinDays and FullContent script parameters, Test-BookExportFile, which decides whether the pipeline continues after the book export, and Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -35,6 +35,10 @@ Describe 'Invoke-CalibreToolsPipeline.ps1 source' {
         $range.MinRange | Should Be 0
         $range.MaxRange | Should Be 36500
         @($parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count | Should Be 0
+    }
+
+    It 'has an optional switch parameter FullContent' {
+        (Get-Command -Name $scriptPath).Parameters['FullContent'].ParameterType | Should Be ([switch])
     }
 }
 
@@ -83,8 +87,21 @@ Describe 'Get-StepScriptParameter' {
     }
 
     It 'returns no parameters for the other steps' {
-        $result = Get-StepScriptParameter -ScriptName '01-Export-CalibreTags.ps1' -PipelineParameters @{ ChangedWithinDays = 7 }
+        $result = Get-StepScriptParameter -ScriptName '01-Export-CalibreTags.ps1' -PipelineParameters @{ ChangedWithinDays = 7; FullContent = $true }
         $result.Count | Should Be 0
+    }
+
+    It 'forwards FullContent only to the LLM step' {
+        $parameters = @{ ChangedWithinDays = 7; FullContent = $true }
+        $llmStep = Get-StepScriptParameter -ScriptName '02-Process-CalibreDataWithLLM.ps1' -PipelineParameters $parameters
+        $llmStep.Count | Should Be 1
+        $llmStep['FullContent'] | Should Be $true
+        (Get-StepScriptParameter -ScriptName '01-Export-CalibreBooks.ps1' -PipelineParameters $parameters).ContainsKey('FullContent') | Should Be $false
+        (Get-StepScriptParameter -ScriptName '03-Convert-LLMResults2ODS.ps1' -PipelineParameters $parameters).Count | Should Be 0
+    }
+
+    It 'returns no parameters for the LLM step when FullContent was not given' {
+        (Get-StepScriptParameter -ScriptName '02-Process-CalibreDataWithLLM.ps1' -PipelineParameters @{ ChangedWithinDays = 7 }).Count | Should Be 0
     }
 }
 

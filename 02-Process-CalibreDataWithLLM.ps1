@@ -3,19 +3,39 @@
     Validate Calibre export data with the Google Gemini API.
 
 .DESCRIPTION
-    Reads the latest Calibre book export and tag-definition JSON files, sends each book's extracted content and existing tags together with the tag definitions to the Gemini Interactions API (prompt as system instruction), and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
+    Reads the latest Calibre book export and tag-definition JSON files, sends each book's extracted content (or its stored content profile, see below) and existing tags together with the tag definitions to the Gemini Interactions API (prompt as system instruction), and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
+    Content profiles: for every book sent with its full text, the LLM also returns a short content profile (a factual summary of the excerpt). The script stores it in the book's cache file 01-Cache/<uuid>.json, but only when that file still holds the same book text (same ContentHash). On later runs, 01-Export-CalibreBooks.ps1 exports the profile with the book, and this script sends the profile instead of the full text while the profile has the current $ContentProfileVersion. This cuts the input tokens of a re-audited book from about 28,000 to a few hundred. Increase $ContentProfileVersion when the profile instructions in the prompt change, so all profiles are rebuilt.
+    The book data and tag definitions are sent as compact JSON without indentation.
+
+.PARAMETER FullContent
+    Sends the full book text for every book, even when a content profile exists, and stores new profiles from the responses. Use it after tag definitions with new concepts were added, so the decisions and profiles are based on the full text again.
+
+.EXAMPLE
+    .\02-Process-CalibreDataWithLLM.ps1
+    Validates the latest book export and uses stored content profiles where available.
+
+.EXAMPLE
+    .\02-Process-CalibreDataWithLLM.ps1 -FullContent
+    Validates the latest book export with the full book text of every book.
+
 .NOTES
-    Version: 5.3
+    Version: 6.0
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and a prompt file named 02-CalibreDataLLM-Prompt.txt in the script folder.
-    Each output file is written as a valid JSON object with metadata, records, token usage, the raw response text, parse errors, and validation details for unique-book counts.
+    Each output file is written as a valid JSON object with metadata, records, content profiles, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [switch]$FullContent
+)
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
@@ -44,6 +64,10 @@ try {
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
     $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Gemini_API.json.key"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
+    $CacheDir = Join-Path -Path $ScriptDir -ChildPath "01-Cache"
+
+    # Increase ContentProfileVersion whenever the profile instructions in the prompt change, so all stored content profiles are rebuilt from the full text.
+    $script:ContentProfileVersion = 1
 
     $Model = "gemini-3.8-flash"
     $ThinkingLevel = "medium"                             # Gemini thinking level: low, medium, or high.
@@ -500,6 +524,7 @@ try {
             unique_book_count_match = $null
             validation_error        = $null
             records                 = @()
+            content_profiles        = @()
             token_usage             = $null
             raw_response            = $RawText
             parse_error             = $null
@@ -544,8 +569,12 @@ try {
             return [pscustomobject]$result
         }
 
-        if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
-            $result.records = @($parsed)
+        # The prompt asks for an object with Results and ContentProfiles; a plain array of result objects is still accepted.
+        if ($parsed -isnot [System.Array] -and $null -ne $parsed.PSObject.Properties['Results']) {
+            $result.records = @($parsed.Results | Where-Object { $null -ne $_ })
+            if ($null -ne $parsed.PSObject.Properties['ContentProfiles']) {
+                $result.content_profiles = @($parsed.ContentProfiles | Where-Object { $null -ne $_ })
+            }
         }
         else {
             $result.records = @($parsed)
@@ -584,6 +613,176 @@ try {
         }
 
         return (ConvertFrom-Json -InputObject $text -ErrorAction Stop)
+    }
+
+    # Converts an object to JSON without indentation and turns the \u00XX escapes that Windows PowerShell 5.1 writes for &, ', <, and > back into the characters, because every escape costs several tokens. An escaped backslash before such a sequence is kept, so literal backslash-u text in the content stays unchanged.
+    function ConvertTo-CompactJson {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [object]$InputObject,
+            [ValidateRange(1, 100)]
+            [int]$Depth = 10
+        )
+
+        $json = ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress
+        return [System.Text.RegularExpressions.Regex]::Replace($json, '(?<!\\)((?:\\\\)*)\\u00(26|27|3[cCeE])', {
+            param($match)
+            return $match.Groups[1].Value + [char][Convert]::ToInt32($match.Groups[2].Value, 16)
+        })
+    }
+
+    # Returns $true when the book export record holds a non-empty content profile of the current $script:ContentProfileVersion.
+    function Test-ContentProfile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Book
+        )
+
+        if ($null -eq $Book.PSObject.Properties['ContentProfile'] -or $null -eq $Book.PSObject.Properties['ContentProfileVersion']) {
+            return $false
+        }
+
+        if ([string]::IsNullOrWhiteSpace([string]$Book.ContentProfile)) {
+            return $false
+        }
+
+        return ([string]$Book.ContentProfileVersion -eq [string]$script:ContentProfileVersion)
+    }
+
+    # Builds the LLM input record of one book with a request-local BookId: the identity fields, the current tags, and either the stored content profile (when it is valid and FullContent is not set) or the extracted BookContent.
+    function ConvertTo-BookAnalysisRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Book,
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(1, [int]::MaxValue)]
+            [int]$BookId,
+            [switch]$FullContent
+        )
+
+        $record = [ordered]@{
+            BookId              = $BookId
+            Title               = $Book.Title
+            Author              = $Book.Author
+            Series              = $Book.Series
+            SeriesIndex         = $Book.SeriesIndex
+            ExistingCalibreTags = $Book.Tags
+        }
+
+        if (-not $FullContent -and (Test-ContentProfile -Book $Book)) {
+            $record.ContentProfile = [string]$Book.ContentProfile
+        }
+        else {
+            $record.BookContent = $Book.BookContent
+        }
+
+        return $record
+    }
+
+    # Stores a content profile in the book's cache file 01-Cache/<uuid>.json and returns $true. Returns $false without writing when the UUID is invalid, the cache file is missing or unreadable, or the file holds a different book text (ContentHash), so a profile never belongs to another text.
+    function Update-BookCacheProfile {
+        [CmdletBinding(SupportsShouldProcess = $true)]
+        [OutputType([bool])]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$CacheDirectory,
+            [Parameter(Mandatory = $true)]
+            [object]$Book,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$ContentProfile
+        )
+
+        $uuid = $null
+        $contentHash = $null
+        if ($null -ne $Book.PSObject.Properties['Uuid']) { $uuid = [string]$Book.Uuid }
+        if ($null -ne $Book.PSObject.Properties['ContentHash']) { $contentHash = [string]$Book.ContentHash }
+
+        # \z instead of $, because $ also matches before a trailing line break.
+        if ($uuid -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\z' -or [string]::IsNullOrEmpty($contentHash)) {
+            return $false
+        }
+
+        $path = Join-Path -Path $CacheDirectory -ChildPath ("{0}.json" -f $uuid.ToLowerInvariant())
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            return $false
+        }
+
+        try {
+            $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        }
+        catch {
+            return $false
+        }
+
+        if ($null -eq $cached -or $null -eq $cached.PSObject.Properties['ContentHash'] -or [string]$cached.ContentHash -cne $contentHash) {
+            return $false
+        }
+
+        $cached | Add-Member -MemberType NoteProperty -Name 'ContentProfile' -Value $ContentProfile -Force
+        $cached | Add-Member -MemberType NoteProperty -Name 'ContentProfileVersion' -Value $script:ContentProfileVersion -Force
+
+        if (-not $PSCmdlet.ShouldProcess($path, 'Store content profile')) {
+            return $false
+        }
+
+        $utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
+        [System.IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $cached -Depth 10), $utf8NoBom)
+        return $true
+    }
+
+    # Stores the content profiles of an LLM response in the cache files and returns the number of stored profiles. Only profiles whose BookId belongs to a book of this request that was sent with its full text are stored; unknown IDs, books sent as a profile, and empty profiles are skipped.
+    function Save-ContentProfile {
+        [CmdletBinding(SupportsShouldProcess = $true)]
+        [OutputType([int])]
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [object[]]$ContentProfiles,
+            [Parameter(Mandatory = $true)]
+            [hashtable]$FullTextBooksById,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$CacheDirectory
+        )
+
+        $savedCount = 0
+        foreach ($contentProfile in $ContentProfiles) {
+            if ($null -eq $contentProfile -or $null -eq $contentProfile.PSObject.Properties['BookId'] -or $null -eq $contentProfile.PSObject.Properties['ContentProfile']) {
+                continue
+            }
+
+            $bookId = 0
+            if (-not [int]::TryParse([string]$contentProfile.BookId, [ref]$bookId) -or -not $FullTextBooksById.ContainsKey($bookId)) {
+                continue
+            }
+
+            $profileText = ([string]$contentProfile.ContentProfile).Trim()
+            if ([string]::IsNullOrWhiteSpace($profileText)) {
+                continue
+            }
+
+            $book = $FullTextBooksById[$bookId]
+            if (-not $PSCmdlet.ShouldProcess([string]$book.Title, 'Store content profile')) {
+                continue
+            }
+
+            try {
+                if (Update-BookCacheProfile -CacheDirectory $CacheDirectory -Book $book -ContentProfile $profileText) {
+                    $savedCount++
+                }
+                else {
+                    Write-ScriptLog -Level WARN -Message ("Content profile of '{0}' was not stored: no matching cache file for this book text." -f $book.Title)
+                }
+            }
+            catch {
+                Write-ScriptLog -Level WARN -Message ("Content profile of '{0}' was not stored: {1}" -f $book.Title, $_.Exception.Message)
+            }
+        }
+
+        return $savedCount
     }
 
     # Sends the book data with the prompt as system instruction to the Gemini Interactions API with automatic retry on rate limits and HTTP server errors. The request body is sent as UTF-8 bytes and the response is decoded as UTF-8, so umlauts and typographic characters do not depend on PowerShell's encoding defaults.
@@ -677,6 +876,14 @@ try {
         return $null
     }
 
+    # Send the tag definitions as compact JSON; the indentation of the export file only costs tokens.
+    try {
+        $tagContent = ConvertTo-CompactJson -InputObject @(ConvertFrom-Json -InputObject $tagContent -ErrorAction Stop) -Depth 5
+    }
+    catch {
+        throw "The tag export file '$($tagFile.Name)' is not valid JSON: $($_.Exception.Message)"
+    }
+
     Write-ScriptLog "Model:    $Model (thinking level: $ThinkingLevel)"
     Write-Information -MessageData '' -InformationAction Continue
 
@@ -689,6 +896,14 @@ try {
     $totalPromptTokens = [int64]0
     $totalCompletionTokens = [int64]0
     $totalTokens = [int64]0
+    $totalFullTextBookCount = 0
+    $totalProfileBookCount = 0
+    $totalSavedProfileCount = 0
+
+    if ($FullContent) {
+        Write-ScriptLog "FullContent: the full book text is sent for every book; stored content profiles are not used."
+        Write-Information -MessageData '' -InformationAction Continue
+    }
 
     foreach ($bookFile in $bookFiles) {
         $counter++
@@ -697,6 +912,7 @@ try {
         # Read the current book export and build the full prompt payload.
         $bookContent = Get-Content -Path $bookFile.FullName -Raw -Encoding UTF8
         $inputUniqueBookCount = -1
+        $parsedInputBooks = $null
 
         # Count the number of unique books in the input file for output validation.
         try {
@@ -713,18 +929,26 @@ try {
             Write-ScriptLog -Level WARN -Message $validationWarningText
         }
 
-        # Send extracted content and current tags in an explicit two-stage input shape.
-        $bookAnalysisRecords = @($parsedInputBooks | ForEach-Object {
-            [ordered]@{
-                Title               = $_.Title
-                Author              = $_.Author
-                Series              = $_.Series
-                SeriesIndex         = $_.SeriesIndex
-                ExistingCalibreTags = $_.Tags
-                BookContent         = $_.BookContent
+        # Send the current tags with either the stored content profile or the extracted content of each book. Books sent with their full text are remembered by BookId, so their new content profiles can be stored after the response.
+        $bookAnalysisRecords = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $fullTextBooksById = @{}
+        $fileProfileBookCount = 0
+        $bookId = 0
+        foreach ($inputBook in @($parsedInputBooks | Where-Object { $null -ne $_ })) {
+            $bookId++
+            $bookAnalysisRecord = ConvertTo-BookAnalysisRecord -Book $inputBook -BookId $bookId -FullContent:$FullContent
+            $bookAnalysisRecords.Add($bookAnalysisRecord)
+            if ($bookAnalysisRecord.Contains('ContentProfile')) {
+                $fileProfileBookCount++
             }
-        })
-        $bookAnalysisInput = ConvertTo-Json -InputObject $bookAnalysisRecords -Depth 10
+            elseif (-not [string]::IsNullOrEmpty([string]$inputBook.BookContent)) {
+                $fullTextBooksById[$bookId] = $inputBook
+            }
+        }
+        $bookAnalysisInput = ConvertTo-CompactJson -InputObject $bookAnalysisRecords.ToArray() -Depth 10
+        $totalProfileBookCount += $fileProfileBookCount
+        $totalFullTextBookCount += $bookAnalysisRecords.Count - $fileProfileBookCount
+        Write-ScriptLog "  -> Input: $($bookAnalysisRecords.Count - $fileProfileBookCount) book(s) with full text, $fileProfileBookCount with content profile"
 
         # The prompt itself is sent as system instruction, so the input holds only the data.
         $bookPayload = @"
@@ -810,6 +1034,13 @@ $bookAnalysisInput
             total_tokens      = if ($fileTokenUsageAvailable) { $fileTotalTokens } else { $null }
         }
 
+        # Store the content profiles of the books sent with their full text, so later runs can send the profile instead.
+        if ($null -ne $apiResult -and $resultObject.status -ne 'error' -and $fullTextBooksById.Count -gt 0) {
+            $fileSavedProfileCount = Save-ContentProfile -ContentProfiles @($resultObject.content_profiles) -FullTextBooksById $fullTextBooksById -CacheDirectory $CacheDir
+            $totalSavedProfileCount += $fileSavedProfileCount
+            Write-ScriptLog "  -> Content profiles stored: $fileSavedProfileCount of $($fullTextBooksById.Count)"
+        }
+
         if ($null -ne $apiResult) {
             $resultObject.token_usage = $tokenUsage
             $savedCount++
@@ -861,6 +1092,7 @@ $bookAnalysisInput
                 unique_book_count_match  = $null
                 validation_error         = $null
                 records                  = @()
+                content_profiles         = @()
                 token_usage              = $tokenUsage
                 raw_response             = if (-not [string]::IsNullOrWhiteSpace($script:LastApiErrorBody)) { $script:LastApiErrorBody } else { $apiDetail }
                 parse_error              = $apiDetail
@@ -885,6 +1117,7 @@ $bookAnalysisInput
     Write-ScriptLog "--- Processing Complete ---"
     Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))"
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
+    Write-ScriptLog "Books sent: $totalFullTextBookCount with full text, $totalProfileBookCount with content profile; $totalSavedProfileCount content profile(s) stored."
     Write-ScriptLog "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))"
 
 }

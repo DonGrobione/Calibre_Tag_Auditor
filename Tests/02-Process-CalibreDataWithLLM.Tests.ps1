@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes), and Convert-ResponseTextToResultObject. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, and the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -18,7 +18,8 @@ $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPa
 $functionNames = @(
     'Get-GeminiApiKey', 'Repair-MojibakeText', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException',
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Invoke-GeminiRequest',
-    'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject'
+    'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
+    'ConvertTo-CompactJson', 'Test-ContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile'
 )
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
@@ -60,6 +61,7 @@ $script:RateLimitRetryBaseSeconds = 1
 $script:ServiceUnavailableRetryBaseSeconds = 1
 $script:ServiceUnavailableRetryMaxSeconds = 1
 $script:GatewayTimeoutRetryIntervalSeconds = 1
+$script:ContentProfileVersion = 1
 
 Describe '02-Process-CalibreDataWithLLM.ps1 source' {
     It 'parses without errors' {
@@ -284,6 +286,243 @@ Describe 'Convert-ResponseTextToResultObject' {
         $result = Convert-ResponseTextToResultObject -RawText 'no json here' -SourceFile 'file.json' -Model 'test-model'
         $result.status | Should Be 'error'
         $result.parse_error | Should Match 'Gemini response'
+    }
+
+    It 'reads the records from Results and the profiles from ContentProfiles' {
+        $rawText = '{"Results":[{"Title":"A","Author":"X","ProposedAction":"ADD","Tag":"T","Reason":"R"},{"Title":"B","Author":"Y","ProposedAction":"NO_CHANGES","Tag":null,"Reason":null}],"ContentProfiles":[{"BookId":1,"ContentProfile":"Profile A"}]}'
+        $result = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 2
+        $result.status | Should Be 'success'
+        @($result.records).Count | Should Be 2
+        $result.records[0].Title | Should Be 'A'
+        @($result.content_profiles).Count | Should Be 1
+        $result.content_profiles[0].ContentProfile | Should Be 'Profile A'
+    }
+
+    It 'accepts an object form without ContentProfiles' {
+        $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}]}' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 1
+        $result.status | Should Be 'success'
+        @($result.content_profiles).Count | Should Be 0
+    }
+
+    It 'reports a count mismatch in the object form' {
+        $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}],"ContentProfiles":[]}' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 2
+        $result.status | Should Be 'warning'
+    }
+
+    It 'still accepts a plain array without profiles' {
+        $result = Convert-ResponseTextToResultObject -RawText '[{"Title":"A","Author":"X"},{"Title":"B","Author":"Y"}]' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 2
+        $result.status | Should Be 'success'
+        @($result.records).Count | Should Be 2
+        @($result.content_profiles).Count | Should Be 0
+    }
+}
+
+Describe 'ConvertTo-CompactJson' {
+    It 'writes JSON without line breaks or indentation' {
+        $json = ConvertTo-CompactJson -InputObject @([ordered]@{ Title = 'A'; Tags = 'X, Y' })
+        $json | Should Not Match "`n"
+        $json | Should Not Match '\{ '
+    }
+
+    It 'writes &, apostrophe, <, and > as characters instead of \u escapes' {
+        $text = "it's <b> & more"
+        $json = ConvertTo-CompactJson -InputObject ([ordered]@{ Text = $text })
+        $json | Should Not Match '\\u00'
+        (ConvertFrom-Json -InputObject $json).Text | Should BeExactly $text
+    }
+
+    It 'keeps literal backslash-u text in the content unchanged' {
+        # Built from parts, so no editor turns the escape sequences into characters.
+        $text = 'literal \' + 'u0027 and \\' + 'u0026'
+        $json = ConvertTo-CompactJson -InputObject ([ordered]@{ Text = $text })
+        (ConvertFrom-Json -InputObject $json).Text | Should BeExactly $text
+    }
+
+    It 'keeps umlauts and typographic characters' {
+        (ConvertFrom-Json -InputObject (ConvertTo-CompactJson -InputObject ([ordered]@{ Text = $specialText }))).Text | Should BeExactly $specialText
+    }
+}
+
+# Builds a book export record as written by 01-Export-CalibreBooks.ps1.
+function Get-TestExportBook {
+    param(
+        [AllowNull()]
+        [string]$ContentProfile,
+        [AllowNull()]
+        [object]$ContentProfileVersion = 1,
+        [string]$Uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'
+    )
+
+    return [pscustomobject]@{
+        Uuid                  = $Uuid
+        Title                 = 'Book'
+        Author                = 'Author'
+        Series                = 'Series'
+        SeriesIndex           = 2
+        Tags                  = 'Fantasy, LitRPG'
+        ContentHash           = 'hash-1'
+        ContentProfile        = $ContentProfile
+        ContentProfileVersion = $ContentProfileVersion
+        BookContent           = 'Full book text'
+    }
+}
+
+Describe 'ConvertTo-BookAnalysisRecord' {
+    It 'sends the content profile instead of the book text when a current profile exists' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestExportBook -ContentProfile 'Profile') -BookId 3
+        $record.BookId | Should Be 3
+        $record.ExistingCalibreTags | Should Be 'Fantasy, LitRPG'
+        $record.ContentProfile | Should Be 'Profile'
+        $record.Contains('BookContent') | Should Be $false
+    }
+
+    It 'sends the book text with -FullContent' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestExportBook -ContentProfile 'Profile') -BookId 1 -FullContent
+        $record.BookContent | Should Be 'Full book text'
+        $record.Contains('ContentProfile') | Should Be $false
+    }
+
+    It 'sends the book text when the profile version is outdated' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestExportBook -ContentProfile 'Profile' -ContentProfileVersion 0) -BookId 1
+        $record.Contains('ContentProfile') | Should Be $false
+        $record.BookContent | Should Be 'Full book text'
+    }
+
+    It 'sends the book text when the profile is empty' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestExportBook -ContentProfile ' ') -BookId 1
+        $record.Contains('ContentProfile') | Should Be $false
+    }
+
+    It 'sends the book text for an export record without profile fields' {
+        $book = [pscustomobject]@{ Title = 'Old'; Author = 'A'; Series = $null; SeriesIndex = $null; Tags = 'X'; BookContent = 'Text' }
+        $record = ConvertTo-BookAnalysisRecord -Book $book -BookId 1
+        $record.BookContent | Should Be 'Text'
+        $record.Contains('ContentProfile') | Should Be $false
+    }
+
+    It 'does not send Uuid or ContentHash to the LLM' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestExportBook -ContentProfile 'Profile') -BookId 1
+        $record.Contains('Uuid') | Should Be $false
+        $record.Contains('ContentHash') | Should Be $false
+    }
+}
+
+# Writes a cache file for the test book with the given content hash and returns its path.
+function Add-TestBookCacheFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CacheDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$ContentHash
+    )
+
+    $null = New-Item -Path $CacheDirectory -ItemType Directory -Force
+    $path = Join-Path -Path $CacheDirectory -ChildPath '0f8fad5b-d9cb-469f-a165-70867728950e.json'
+    $json = '{ "CacheVersion": 1, "LastModified": "x", "Uuid": "0f8fad5b-d9cb-469f-a165-70867728950e", "ContentHash": "' + $ContentHash + '", "BookContent": "Full book text" }'
+    [System.IO.File]::WriteAllText($path, $json, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
+    return $path
+}
+
+Describe 'Update-BookCacheProfile' {
+    It 'stores the profile and its version in the cache file and keeps the other fields' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-match'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile $specialText | Should Be $true
+
+        [System.IO.File]::ReadAllBytes($path)[0] | Should Not Be 0xEF
+        $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))
+        $cached.ContentProfile | Should BeExactly $specialText
+        $cached.ContentProfileVersion | Should Be 1
+        $cached.BookContent | Should Be 'Full book text'
+        $cached.ContentHash | Should Be 'hash-1'
+    }
+
+    It 'replaces an older profile' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-replace'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'First'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'Second'
+        (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))).ContentProfile | Should Be 'Second'
+    }
+
+    It 'writes nothing when the cache file holds a different book text' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-mismatch'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-other'
+        $before = [System.IO.File]::ReadAllText($path)
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'Profile' | Should Be $false
+        [System.IO.File]::ReadAllText($path) | Should BeExactly $before
+    }
+
+    It 'returns $false when the cache file is missing' {
+        Update-BookCacheProfile -CacheDirectory (Join-Path -Path $TestDrive -ChildPath 'update-missing') -Book (Get-TestExportBook) -ContentProfile 'Profile' | Should Be $false
+    }
+
+    It 'returns $false for an invalid UUID' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-uuid'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook -Uuid '..\evil') -ContentProfile 'Profile' | Should Be $false
+    }
+
+    It 'writes nothing with -WhatIf' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-whatif'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'Profile' -WhatIf | Should Be $false
+        [System.IO.File]::ReadAllText($path) | Should Not Match 'ContentProfile'
+    }
+}
+
+Describe 'Save-ContentProfile' {
+    It 'stores only profiles of books that were sent with their full text' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-filter'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $profiles = @(
+            [pscustomobject]@{ BookId = 1; ContentProfile = ' Stored profile ' },
+            [pscustomobject]@{ BookId = 2; ContentProfile = 'Book sent as profile' },
+            [pscustomobject]@{ BookId = 9; ContentProfile = 'Unknown book' },
+            [pscustomobject]@{ ContentProfile = 'No BookId' }
+        )
+        Save-ContentProfile -ContentProfiles $profiles -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory | Should Be 1
+        (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))).ContentProfile | Should BeExactly 'Stored profile'
+    }
+
+    It 'accepts a BookId given as a string' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-string'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Save-ContentProfile -ContentProfiles @([pscustomobject]@{ BookId = '1'; ContentProfile = 'Profile' }) -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory | Should Be 1
+    }
+
+    It 'skips empty profiles' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-empty'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Save-ContentProfile -ContentProfiles @([pscustomobject]@{ BookId = 1; ContentProfile = '  ' }) -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory | Should Be 0
+    }
+
+    It 'warns and continues when the cache file does not match' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-mismatch'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-other'
+        Save-ContentProfile -ContentProfiles @([pscustomobject]@{ BookId = 1; ContentProfile = 'Profile' }) -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory | Should Be 0
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' }
+    }
+
+    It 'returns 0 for an empty profile list' {
+        Save-ContentProfile -ContentProfiles @() -FullTextBooksById @{} -CacheDirectory $TestDrive | Should Be 0
+    }
+}
+
+Describe 'Content profile workflow' {
+    It 'has an optional switch parameter FullContent' {
+        $parameter = (Get-Command -Name $scriptPath).Parameters['FullContent']
+        $parameter.ParameterType | Should Be ([switch])
+    }
+
+    It 'sends the book data and the tag definitions as compact JSON' {
+        $scriptAst.Extent.Text | Should Match '\$bookAnalysisInput = ConvertTo-CompactJson'
+        $scriptAst.Extent.Text | Should Match '\$tagContent = ConvertTo-CompactJson'
+    }
+
+    It 'stores the profiles in the 01-Cache folder' {
+        $scriptAst.Extent.Text | Should Match '-ChildPath "01-Cache"'
     }
 }
 

@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that only books with content are cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash and Get-CachedContentProfile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that only books with content are cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The Export record tests check in the source that the export record holds the Uuid, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '01-Export-CalibreBooks.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile')
+$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-CachedContentProfile')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -414,6 +414,104 @@ Describe 'Book cache workflow' {
         $cleanupCalls.Count | Should Be 1
         $cleanupCalls[0].Extent.StartOffset -lt $dateFilter.Extent.StartOffset | Should Be $true
         $cleanupCalls[0].Extent.StartOffset -lt $emptyCheck.Extent.StartOffset | Should Be $true
+    }
+}
+
+Describe 'Get-ContentHash' {
+    It 'returns the lower-case SHA256 hex string of the text' {
+        Get-ContentHash -Text 'abc' | Should BeExactly 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+    }
+
+    It 'hashes the UTF-8 bytes of non-ASCII text' {
+        $text = "Begr$([char]0xFC)ndung"
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $expected = (($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object { $_.ToString('x2') }) -join '')
+        $sha256.Dispose()
+        Get-ContentHash -Text $text | Should BeExactly $expected
+    }
+
+    It 'returns $null for null or empty text' {
+        Get-ContentHash -Text $null | Should Be $null
+        Get-ContentHash -Text '' | Should Be $null
+    }
+}
+
+Describe 'Get-CachedContentProfile' {
+    $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'cache-profile'
+    $null = New-Item -Path $cacheDirectory -ItemType Directory -Force
+
+    # Writes a cache file with the given JSON text to the test cache directory and returns its path.
+    function Add-TestProfileFile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Name,
+            [Parameter(Mandatory = $true)]
+            [string]$Json
+        )
+
+        $filePath = Join-Path -Path $cacheDirectory -ChildPath $Name
+        [System.IO.File]::WriteAllText($filePath, $Json, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
+        return $filePath
+    }
+
+    $profilePath = Add-TestProfileFile -Name 'profile.json' -Json '{ "CacheVersion": 1, "LastModified": "old", "ContentHash": "abc123", "ContentProfileVersion": 1, "ContentProfile": "Begründung profile", "BookContent": "Text" }'
+
+    It 'returns the profile for the same content hash, independent of last_modified' {
+        $result = Get-CachedContentProfile -Path $profilePath -ContentHash 'abc123'
+        $result.ContentProfile | Should BeExactly "Begr$([char]0xFC)ndung profile"
+        $result.ContentProfileVersion | Should Be 1
+    }
+
+    It 'returns $null when the content hash differs' {
+        Get-CachedContentProfile -Path $profilePath -ContentHash 'other' | Should Be $null
+        Get-CachedContentProfile -Path $profilePath -ContentHash 'ABC123' | Should Be $null
+    }
+
+    It 'returns $null for an empty content hash' {
+        Get-CachedContentProfile -Path $profilePath -ContentHash '' | Should Be $null
+        Get-CachedContentProfile -Path $profilePath -ContentHash $null | Should Be $null
+    }
+
+    It 'returns $null when the cache file has no profile or an empty profile' {
+        $noProfile = Add-TestProfileFile -Name 'no-profile.json' -Json '{ "ContentHash": "abc123", "BookContent": "Text" }'
+        $emptyProfile = Add-TestProfileFile -Name 'empty-profile.json' -Json '{ "ContentHash": "abc123", "ContentProfileVersion": 1, "ContentProfile": " " }'
+        Get-CachedContentProfile -Path $noProfile -ContentHash 'abc123' | Should Be $null
+        Get-CachedContentProfile -Path $emptyProfile -ContentHash 'abc123' | Should Be $null
+    }
+
+    It 'returns $null for a missing or corrupt cache file' {
+        $corrupt = Add-TestProfileFile -Name 'corrupt-profile.json' -Json '{ not json'
+        Get-CachedContentProfile -Path (Join-Path -Path $cacheDirectory -ChildPath 'missing.json') -ContentHash 'abc123' | Should Be $null
+        Get-CachedContentProfile -Path $corrupt -ContentHash 'abc123' | Should Be $null
+    }
+}
+
+Describe 'Export record' {
+    $bookRecord = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$BookRecord'
+        }, $true)
+    $cacheRecord = $scriptAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$CacheRecord'
+        }, $true)
+
+    It 'holds the Uuid, the content hash, and the content profile fields' {
+        foreach ($fieldName in @('Uuid', 'ContentHash', 'ContentProfile', 'ContentProfileVersion', 'BookContent')) {
+            $bookRecord.Right.Extent.Text | Should Match ("(?m)^\s*{0}\s*=" -f $fieldName)
+        }
+    }
+
+    It 'adds Uuid to the cache record only through the export record' {
+        $cacheRecord.Right.Extent.Text | Should Not Match 'Uuid'
+    }
+
+    It 'looks up the content profile by content hash' {
+        $scriptAst.Extent.Text | Should Match 'Get-CachedContentProfile -Path \$CachePath -ContentHash \$ContentHash'
+    }
+
+    It 'rewrites a reused cache file that has no ContentHash yet' {
+        $scriptAst.Extent.Text | Should Match '\$CachedBook\.PSObject\.Properties\[''ContentHash''\]'
     }
 }
 

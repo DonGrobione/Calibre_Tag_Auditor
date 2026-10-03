@@ -12,6 +12,9 @@
 .PARAMETER ChangedWithinDays
     Exports only books changed within this number of days; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
 
+.PARAMETER FullContent
+    Passed to 02-Process-CalibreDataWithLLM.ps1, which then sends the full book text for every book instead of stored content profiles. Use it after tag definitions with new concepts were added.
+
 .EXAMPLE
     .\Invoke-CalibreToolsPipeline.ps1
     Runs all steps with the settings from 01-CalibreExport.config.json.
@@ -20,15 +23,22 @@
     .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 7
     Runs all steps for the books changed within the last 7 days.
 
+.EXAMPLE
+    .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 0 -FullContent
+    Validates all books with their full text, e.g. after the tag definitions were changed.
+
 .NOTES
-    Version: 1.12
+    Version: 1.13
 #>
 
 [CmdletBinding()]
 param(
     [Parameter()]
     [ValidateRange(0, 36500)]
-    [int]$ChangedWithinDays
+    [int]$ChangedWithinDays,
+
+    [Parameter()]
+    [switch]$FullContent
 )
 
 # Import the central logging module and the console/log output helpers.
@@ -67,7 +77,7 @@ function Test-BookExportFile {
     return (@(Get-ChildItem -LiteralPath $ExportDirectory -Filter '01-Export-CalibreBooks_*.json' -File).Count -gt 0)
 }
 
-# Returns the parameters for a step script: the book export receives the pipeline's ChangedWithinDays override when it was given; all other steps receive none.
+# Returns the parameters for a step script: the book export receives the pipeline's ChangedWithinDays override and the LLM step receives the FullContent switch when they were given; the other steps receive none.
 function Get-StepScriptParameter {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -85,6 +95,10 @@ function Get-StepScriptParameter {
         $stepParameters['ChangedWithinDays'] = $PipelineParameters['ChangedWithinDays']
     }
 
+    if ($ScriptName -eq '02-Process-CalibreDataWithLLM.ps1' -and $PipelineParameters.ContainsKey('FullContent') -and $PipelineParameters['FullContent']) {
+        $stepParameters['FullContent'] = $true
+    }
+
     return $stepParameters
 }
 
@@ -92,6 +106,9 @@ function Get-StepScriptParameter {
 $pipelineParameters = @{}
 if ($PSBoundParameters.ContainsKey('ChangedWithinDays')) {
     $pipelineParameters['ChangedWithinDays'] = $ChangedWithinDays
+}
+if ($FullContent) {
+    $pipelineParameters['FullContent'] = $true
 }
 
 try {
