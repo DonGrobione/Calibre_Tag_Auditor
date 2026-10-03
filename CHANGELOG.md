@@ -1,6 +1,16 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-10-03
+
+### Scripts
+- Content profiles cut the input tokens of re-checked books: the book text is about 95% of the input (about 28,000 tokens per book), and it was sent again on every re-check, e.g. after tag corrections were applied in Calibre. The last full run used 30.3M prompt tokens for 212 requests.
+  - `02-CalibreDataLLM-Prompt.txt`: the response is now an object `{"Results": [...], "ContentProfiles": [...]}`. `Results` holds the result objects as before. `ContentProfiles` holds one factual 150 to 300 word summary per book that was sent with its full text, identified by a request-local `BookId`. Books sent with a profile are checked against the profile, and a concept the profile does not mention is not a reason for REMOVE.
+  - `02-Process-CalibreDataWithLLM.ps1` 6.0: sends a book's content profile instead of its text when the export holds a profile of the current `$ContentProfileVersion`, and stores new profiles in `01-Cache/<uuid>.json`, only when that file still holds the same text (`ContentHash`). New switch `-FullContent` sends the full text for every book. The book data and tag definitions are sent as compact JSON, and the `\u00XX` escapes that PowerShell 5.1 writes for `&`, `'`, `<`, and `>` are turned back into characters. The result files get the field `content_profiles`; `records` is unchanged, so `03-Convert-LLMResults2ODS.ps1` needs no change. A plain array response is still accepted. New functions `ConvertTo-CompactJson`, `Test-ContentProfile`, `ConvertTo-BookAnalysisRecord`, `Update-BookCacheProfile`, and `Save-ContentProfile`, with tests.
+  - `01-Export-CalibreBooks.ps1` 4.5: the export records hold `Uuid`, `ContentHash` (SHA256 of `BookContent`), `ContentProfile`, and `ContentProfileVersion`. The profile is carried over by content hash, so it survives a changed `last_modified` (e.g. a tag edit) as long as the book text is the same. Cache files written before this version get the hash when they are reused. New functions `Get-ContentHash` and `Get-CachedContentProfile`, with tests.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.13: new switch `-FullContent`, forwarded only to `02-Process-CalibreDataWithLLM.ps1`.
+- Fixed in `02-Process-CalibreDataWithLLM.ps1` 6.0: when the input JSON of a book export file could not be parsed, the books of the previous file were sent instead.
+
 ## 2026-10-02
 
 ### Scripts

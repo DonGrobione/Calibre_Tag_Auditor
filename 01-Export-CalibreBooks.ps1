@@ -8,6 +8,7 @@
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are converted to normalized text and included in the BookContent JSON field. The paths of the book files are read from Calibre (calibredb field formats); only files inside the library folder are used.
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
     Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre and the cache file has the current cache format version, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books without content (failed extraction, no text, or no supported book file) are not cached, and an outdated cache file of such a book is deleted. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
+    Each export record also holds the book's Uuid, the SHA256 ContentHash of BookContent, and the ContentProfile with its ContentProfileVersion. 02-Process-CalibreDataWithLLM.ps1 stores a content profile (a short summary of the book text written by the LLM) in the cache file. The export carries it over as long as the book text has the same ContentHash, even after last_modified changed (e.g. after a tag edit), so the LLM step can send the short profile instead of the full text. A cache file written before ContentHash existed is rewritten with the hash when it is reused.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -22,7 +23,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.4
+    Version: 4.5
 #>
 
 [CmdletBinding()]
@@ -225,6 +226,65 @@ try {
         }
 
         return $Cached
+    }
+
+    # Returns the SHA256 hash of the UTF-8 text as a lower-case hex string, or $null for null or empty text.
+    function Get-ContentHash {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$Text
+        )
+
+        if ([string]::IsNullOrEmpty($Text)) {
+            return $null
+        }
+
+        $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $HashBytes = $Sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))
+        } finally {
+            $Sha256.Dispose()
+        }
+
+        return (($HashBytes | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+
+    # Returns the content profile (ContentProfile and ContentProfileVersion) that 02-Process-CalibreDataWithLLM.ps1 stored in the cache file, when the file was written for the same book text (same ContentHash), regardless of last_modified; otherwise $null.
+    function Get-CachedContentProfile {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$ContentHash
+        )
+
+        if ([string]::IsNullOrEmpty($ContentHash) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $null
+        }
+
+        try {
+            $Cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)) -ErrorAction Stop
+        } catch {
+            return $null
+        }
+
+        if ($null -eq $Cached -or $null -eq $Cached.PSObject.Properties['ContentHash'] -or $null -eq $Cached.PSObject.Properties['ContentProfile'] -or $null -eq $Cached.PSObject.Properties['ContentProfileVersion']) {
+            return $null
+        }
+
+        if ([string]$Cached.ContentHash -cne $ContentHash -or [string]::IsNullOrWhiteSpace([string]$Cached.ContentProfile)) {
+            return $null
+        }
+
+        return [PSCustomObject]@{
+            ContentProfile        = [string]$Cached.ContentProfile
+            ContentProfileVersion = $Cached.ContentProfileVersion
+        }
     }
 
     # Writes a book record to its cache file as UTF-8 JSON without BOM.
@@ -544,6 +604,7 @@ try {
     $BookNumber = 0
     $CachedBookCount = 0
     $ExtractedBookCount = 0
+    $ProfileBookCount = 0
     $FileNumber = 0
     $BatchStartNumber = 1
     $Batch = New-Object -TypeName 'System.Collections.Generic.List[object]'
@@ -597,16 +658,30 @@ try {
             }
         }
 
+        # Carry over the content profile of an earlier LLM run while the book text is unchanged, even when last_modified changed (e.g. after a tag edit).
+        $ContentHash = Get-ContentHash -Text $BookContent
+        $ContentProfile = $null
+        if ($null -ne $CachePath) {
+            $ContentProfile = Get-CachedContentProfile -Path $CachePath -ContentHash $ContentHash
+        }
+        if ($null -ne $ContentProfile) {
+            $ProfileBookCount++
+        }
+
         $BookRecord = [PSCustomObject]@{
-            Title       = Clear-ExportText -Value $Book.title
-            Author      = Clear-ExportText -Value $Book.authors
-            Series      = Clear-ExportText -Value $Book.series
-            SeriesIndex = Clear-ExportText -Value $Book.series_index
-            Tags        = Clear-ExportText -Value ($Book.tags -join ", ")
-            IDs         = Clear-ExportText -Value $IdentifierText
-            Publisher   = Clear-ExportText -Value $Book.publisher
-            Year        = Get-ExportYear -PubDate $Book.pubdate
-            BookContent = $BookContent
+            Uuid                  = if ($null -ne $CachePath) { ([string]$Book.uuid).ToLowerInvariant() } else { $null }
+            Title                 = Clear-ExportText -Value $Book.title
+            Author                = Clear-ExportText -Value $Book.authors
+            Series                = Clear-ExportText -Value $Book.series
+            SeriesIndex           = Clear-ExportText -Value $Book.series_index
+            Tags                  = Clear-ExportText -Value ($Book.tags -join ", ")
+            IDs                   = Clear-ExportText -Value $IdentifierText
+            Publisher             = Clear-ExportText -Value $Book.publisher
+            Year                  = Get-ExportYear -PubDate $Book.pubdate
+            ContentHash           = $ContentHash
+            ContentProfile        = if ($null -ne $ContentProfile) { $ContentProfile.ContentProfile } else { $null }
+            ContentProfileVersion = if ($null -ne $ContentProfile) { $ContentProfile.ContentProfileVersion } else { $null }
+            BookContent           = $BookContent
         }
         $Batch.Add($BookRecord)
 
@@ -621,10 +696,11 @@ try {
             }
         }
 
-        if ($null -eq $CachedBook -and $null -ne $CachePath -and -not [string]::IsNullOrEmpty($BookContent)) {
+        # The cache file is also rewritten for a cached book whose file was written before ContentHash existed, so 02-Process-CalibreDataWithLLM.ps1 can store a content profile in it. The record carries over the content profile found above.
+        $CacheFileNeedsWrite = $null -eq $CachedBook -or $null -eq $CachedBook.PSObject.Properties['ContentHash']
+        if ($CacheFileNeedsWrite -and $null -ne $CachePath -and -not [string]::IsNullOrEmpty($BookContent)) {
             $CacheRecord = [PSCustomObject]@{
                 CacheVersion = $BookCacheVersion
-                Uuid         = ([string]$Book.uuid).ToLowerInvariant()
                 LastModified = $LastModifiedText
             }
             foreach ($Property in $BookRecord.PSObject.Properties) {
@@ -658,6 +734,7 @@ try {
     Write-ScriptLog ("  Per file: max {0}" -f $BooksInFile)
     Write-ScriptLog ("  Cached:   {0}" -f $CachedBookCount)
     Write-ScriptLog ("  Extracted: {0}" -f $ExtractedBookCount)
+    Write-ScriptLog ("  With content profile: {0}" -f $ProfileBookCount)
     Write-ScriptLog ("  Cache removed: {0}" -f $RemovedCacheFileCount)
 } catch {
     Write-ScriptLog -Level ERROR -Message $_.Exception.Message -ErrorRecord $_
