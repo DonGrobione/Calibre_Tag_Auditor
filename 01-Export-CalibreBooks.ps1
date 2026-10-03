@@ -7,8 +7,9 @@
     Uses calibredb.exe from the Calibre Portable installation.
     The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are converted to normalized text and included in the BookContent JSON field. The paths of the book files are read from Calibre (calibredb field formats); only files inside the library folder are used.
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
-    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre and the cache file has the current cache format version, the cached BookContent is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books without content (failed extraction, no text, or no supported book file) are not cached, and an outdated cache file of such a book is deleted. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
-    Each export record also holds the book's Uuid, the SHA256 ContentHash of BookContent, and the ContentProfile with its ContentProfileVersion. 02-Process-CalibreDataWithLLM.ps1 stores a content profile (a short summary of the book text written by the LLM) in the cache file. The export carries it over as long as the book text has the same ContentHash, even after last_modified changed (e.g. after a tag edit), so the LLM step can send the short profile instead of the full text. A cache file written before ContentHash existed is rewritten with the hash when it is reused.
+    Books without text: a book whose extracted text has fewer than $MinimumContentWords words (e.g. a comic, manga, or graphic novel made of images) or that has no supported book file (e.g. only CBZ or CBR) gets ContentStatus NoText and no BookContent. 02-Process-CalibreDataWithLLM.ps1 writes a content profile for such a book from a Google Search. Books with text get ContentStatus Text; a failed extraction gets ContentStatus Failed.
+    Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre and the cache file has the current cache format version, the cached BookContent (or the NoText status) is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books whose extraction failed are not cached, so the next run tries again, and an outdated cache file of such a book is deleted. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
+    Each export record also holds the book's Uuid, the plain-text Calibre description (Description), the ContentStatus, the SHA256 ContentHash, and the ContentProfile with its ContentProfileVersion, ContentProfileSource (Text, Web, or WebNotFound), and ContentProfileSources (web citations). The ContentHash is the hash of BookContent for books with text, and the hash of the identity metadata (title, author, series, series index, identifiers, description) for books without text, so a metadata correction leads to a new web search. 02-Process-CalibreDataWithLLM.ps1 stores a content profile (a short factual summary written by the LLM) in the cache file. The export carries it over as long as the ContentHash is the same, even after last_modified changed (e.g. after a tag edit), so the LLM step can send the short profile instead of the full text. A cache file written before ContentHash existed is rewritten with the hash when it is reused.
     After the export, the file 01-Export\01-Export-Scope.json records whether the export covers the whole library (ChangedWithinDays 0 without DebugBookExport), the book count, and the export date. 02-Process-CalibreDataWithLLM.ps1 uses it to decide whether a run counts as a full-library audit of the tag definitions.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
@@ -24,7 +25,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.6
+    Version: 4.7
 #>
 
 [CmdletBinding()]
@@ -196,7 +197,7 @@ try {
         return (Join-Path -Path $CacheDirectory -ChildPath ("{0}.json" -f $Uuid.ToLowerInvariant()))
     }
 
-    # Returns the cached book record when the cache file exists, can be parsed, has the given cache format version, has non-empty BookContent, and was written for the given last_modified value; otherwise $null.
+    # Returns the cached book record when the cache file exists, can be parsed, has the given cache format version, has non-empty BookContent or ContentStatus NoText, and was written for the given last_modified value; otherwise $null.
     function Get-CachedBookExport {
         param(
             [Parameter(Mandatory = $true)]
@@ -224,7 +225,12 @@ try {
             return $null
         }
 
-        if ([string]$Cached.CacheVersion -ne [string]$CacheVersion -or [string]::IsNullOrEmpty([string]$Cached.BookContent)) {
+        if ([string]$Cached.CacheVersion -ne [string]$CacheVersion) {
+            return $null
+        }
+
+        $IsNoTextBook = $null -ne $Cached.PSObject.Properties['ContentStatus'] -and [string]$Cached.ContentStatus -eq 'NoText'
+        if (-not $IsNoTextBook -and [string]::IsNullOrEmpty([string]$Cached.BookContent)) {
             return $null
         }
 
@@ -258,7 +264,22 @@ try {
         return (($HashBytes | ForEach-Object { $_.ToString('x2') }) -join '')
     }
 
-    # Returns the content profile (ContentProfile and ContentProfileVersion) that 02-Process-CalibreDataWithLLM.ps1 stored in the cache file, when the file was written for the same book text (same ContentHash), regardless of last_modified; otherwise $null.
+    # Returns the SHA256 hash of the identity metadata (Title, Author, Series, SeriesIndex, IDs, Description) of an export record, used as ContentHash of a book without text, so a changed title, identifier, or description leads to a new web profile.
+    function Get-MetadataHash {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Record
+        )
+
+        $Parts = foreach ($PropertyName in @('Title', 'Author', 'Series', 'SeriesIndex', 'IDs', 'Description')) {
+            $Property = $Record.PSObject.Properties[$PropertyName]
+            if ($null -ne $Property -and $null -ne $Property.Value) { [string]$Property.Value } else { '' }
+        }
+
+        return (Get-ContentHash -Text ('metadata:' + ($Parts -join '|')))
+    }
+
+    # Returns the content profile (ContentProfile, ContentProfileVersion, ContentProfileSource, ContentProfileSources) that 02-Process-CalibreDataWithLLM.ps1 stored in the cache file, when the file was written for the same ContentHash, regardless of last_modified; otherwise $null. A profile without source counts as Text; an empty profile is returned only as a WebNotFound marker (no reliable web information found).
     function Get-CachedContentProfile {
         param(
             [Parameter(Mandatory = $true)]
@@ -284,13 +305,29 @@ try {
             return $null
         }
 
-        if ([string]$Cached.ContentHash -cne $ContentHash -or [string]::IsNullOrWhiteSpace([string]$Cached.ContentProfile)) {
+        if ([string]$Cached.ContentHash -cne $ContentHash) {
             return $null
+        }
+
+        $Source = 'Text'
+        if ($null -ne $Cached.PSObject.Properties['ContentProfileSource'] -and -not [string]::IsNullOrWhiteSpace([string]$Cached.ContentProfileSource)) {
+            $Source = [string]$Cached.ContentProfileSource
+        }
+
+        if ([string]::IsNullOrWhiteSpace([string]$Cached.ContentProfile) -and $Source -ne 'WebNotFound') {
+            return $null
+        }
+
+        $Sources = $null
+        if ($null -ne $Cached.PSObject.Properties['ContentProfileSources'] -and $null -ne $Cached.ContentProfileSources) {
+            $Sources = @($Cached.ContentProfileSources)
         }
 
         return [PSCustomObject]@{
             ContentProfile        = [string]$Cached.ContentProfile
             ContentProfileVersion = $Cached.ContentProfileVersion
+            ContentProfileSource  = $Source
+            ContentProfileSources = $Sources
         }
     }
 
@@ -348,7 +385,7 @@ try {
     # Query the Calibre library via calibredb, including the modification date used for descending sort order and the optional date filter, and the paths of the book files.
     $JsonOutput = & $CalibredbExe.FullName list `
         --for-machine `
-        --fields=id,uuid,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified,formats `
+        --fields=id,uuid,title,authors,series,series_index,tags,identifiers,publisher,pubdate,last_modified,formats,comments `
         "--with-library=$LibraryPath"
 
     if ($LASTEXITCODE -ne 0) {
@@ -429,6 +466,56 @@ try {
 
     # Supported book formats in order of preference for the content extraction.
     $SupportedBookExtensions = @('.epub', '.azw3', '.mobi', '.pdf')
+
+    # Books with fewer extracted words are handled as books without text (e.g. comics made of images, whose files often still hold a copyright or navigation page).
+    $MinimumContentWords = 500
+
+    # Returns the number of whitespace-separated words in the text, or 0 for null or empty text.
+    function Get-WordCount {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$Text
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Text)) {
+            return 0
+        }
+
+        return @($Text -split '\s+' | Where-Object { $_ }).Count
+    }
+
+    # Converts the HTML of a Calibre description (field comments) to plain text: block ends become line breaks, tags are removed, HTML entities are decoded, and whitespace is normalized. Returns $null for empty input.
+    function ConvertTo-PlainText {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$Html
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Html)) {
+            return $null
+        }
+
+        $Text = $Html -replace '(?i)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>', "`n"
+        $Text = $Text -replace '<[^>]*>', ' '
+        $Text = [System.Net.WebUtility]::HtmlDecode($Text)
+        $Lines = foreach ($Line in ($Text -split "`r?`n")) {
+            $NormalizedLine = ($Line -replace '\s+', ' ').Trim()
+            if ($NormalizedLine) {
+                $NormalizedLine
+            }
+        }
+
+        $PlainText = @($Lines) -join "`n"
+        if ([string]::IsNullOrEmpty($PlainText)) {
+            return $null
+        }
+
+        return $PlainText
+    }
 
     # Removes invisible formatting characters and soft hyphens from a string.
     function Clear-ExportText {
@@ -612,6 +699,7 @@ try {
     $CachedBookCount = 0
     $ExtractedBookCount = 0
     $ProfileBookCount = 0
+    $NoTextBookCount = 0
     $FileNumber = 0
     $BatchStartNumber = 1
     $Batch = New-Object -TypeName 'System.Collections.Generic.List[object]'
@@ -636,9 +724,12 @@ try {
             $CachedBook = Get-CachedBookExport -Path $CachePath -LastModified $LastModifiedText -CacheVersion $BookCacheVersion
         }
 
+        # ContentStatus: Text (BookContent holds the text), NoText (no or almost no text, e.g. a comic made of images, or no supported book file), or Failed (the extraction failed).
         $BookContent = $null
+        $ContentStatus = 'Failed'
         if ($null -ne $CachedBook) {
             $BookContent = $CachedBook.BookContent
+            $ContentStatus = if ($null -ne $CachedBook.PSObject.Properties['ContentStatus'] -and [string]$CachedBook.ContentStatus -eq 'NoText') { 'NoText' } else { 'Text' }
             $CachedBookCount++
             Write-ScriptLog ("Book {0}/{1}: {2} (cached)" -f $BookNumber, $TotalBooks, $Book.title)
         } else {
@@ -651,8 +742,8 @@ try {
                     $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
                     if ($null -eq $BookContent) {
                         Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
-                    } elseif ($BookContent -eq '') {
-                        Write-ScriptLog -Level WARN -Message ("No text found in '{0}' (e.g. a comic with images only)." -f $PrimaryBookFile.Name)
+                    } else {
+                        $ContentStatus = 'Text'
                     }
                 } catch {
                     Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}': {1}" -f $PrimaryBookFile.Name, $_.Exception.Message)
@@ -660,19 +751,23 @@ try {
             } else {
                 Write-ScriptLog ("Book {0}/{1}: {2}" -f $BookNumber, $TotalBooks, $Book.title)
                 $AvailableFormats = ConvertTo-FormatDisplayText -Extensions @($BookFiles | ForEach-Object Extension)
-                Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'. Supported: {1}. Available: {2}." -f `
+                Write-ScriptLog -Level WARN -Message ("No supported primary book file found for '{0}'. Supported: {1}. Available: {2}. The book is handled as a book without text." -f `
                     $Book.title, (ConvertTo-FormatDisplayText -Extensions $SupportedBookExtensions), $AvailableFormats)
+                $ContentStatus = 'NoText'
             }
         }
 
-        # Carry over the content profile of an earlier LLM run while the book text is unchanged, even when last_modified changed (e.g. after a tag edit).
-        $ContentHash = Get-ContentHash -Text $BookContent
-        $ContentProfile = $null
-        if ($null -ne $CachePath) {
-            $ContentProfile = Get-CachedContentProfile -Path $CachePath -ContentHash $ContentHash
+        # A book with (almost) no extracted text is handled as a book without text; 02-Process-CalibreDataWithLLM.ps1 writes its content profile from a web search.
+        if ($ContentStatus -eq 'Text') {
+            $WordCount = Get-WordCount -Text $BookContent
+            if ($WordCount -lt $MinimumContentWords) {
+                Write-ScriptLog -Level WARN -Message ("Only {0} word(s) of text found for '{1}' (e.g. a comic with images only). The book is handled as a book without text." -f $WordCount, $Book.title)
+                $ContentStatus = 'NoText'
+                $BookContent = $null
+            }
         }
-        if ($null -ne $ContentProfile) {
-            $ProfileBookCount++
+        if ($ContentStatus -eq 'NoText') {
+            $NoTextBookCount++
         }
 
         $BookRecord = [PSCustomObject]@{
@@ -685,15 +780,43 @@ try {
             IDs                   = Clear-ExportText -Value $IdentifierText
             Publisher             = Clear-ExportText -Value $Book.publisher
             Year                  = Get-ExportYear -PubDate $Book.pubdate
-            ContentHash           = $ContentHash
-            ContentProfile        = if ($null -ne $ContentProfile) { $ContentProfile.ContentProfile } else { $null }
-            ContentProfileVersion = if ($null -ne $ContentProfile) { $ContentProfile.ContentProfileVersion } else { $null }
+            Description           = Clear-ExportText -Value (ConvertTo-PlainText -Html ([string]$Book.comments))
+            ContentStatus         = $ContentStatus
+            ContentHash           = $null
+            ContentProfile        = $null
+            ContentProfileVersion = $null
+            ContentProfileSource  = $null
+            ContentProfileSources = $null
             BookContent           = $BookContent
+        }
+
+        # The ContentHash identifies what a content profile was written from: the book text, or the identity metadata of a book without text.
+        $ContentHash = $null
+        if ($ContentStatus -eq 'Text') {
+            $ContentHash = Get-ContentHash -Text $BookContent
+        } elseif ($ContentStatus -eq 'NoText') {
+            $ContentHash = Get-MetadataHash -Record $BookRecord
+        }
+        $BookRecord.ContentHash = $ContentHash
+
+        # Carry over the content profile of an earlier LLM run while the ContentHash is unchanged, even when last_modified changed (e.g. after a tag edit).
+        $ContentProfile = $null
+        if ($null -ne $CachePath) {
+            $ContentProfile = Get-CachedContentProfile -Path $CachePath -ContentHash $ContentHash
+        }
+        if ($null -ne $ContentProfile) {
+            $BookRecord.ContentProfile = $ContentProfile.ContentProfile
+            $BookRecord.ContentProfileVersion = $ContentProfile.ContentProfileVersion
+            $BookRecord.ContentProfileSource = $ContentProfile.ContentProfileSource
+            $BookRecord.ContentProfileSources = $ContentProfile.ContentProfileSources
+            if (-not [string]::IsNullOrWhiteSpace($ContentProfile.ContentProfile)) {
+                $ProfileBookCount++
+            }
         }
         $Batch.Add($BookRecord)
 
-        # Store newly extracted books in the cache. Books without content (failed extraction, no text, or no supported book file) are not cached, so the next run tries again, and an outdated cache file of such a book is deleted.
-        if ($null -eq $CachedBook -and $null -ne $CachePath -and [string]::IsNullOrEmpty($BookContent)) {
+        # Books whose extraction failed are not cached, so the next run tries again, and an outdated cache file of such a book is deleted.
+        if ($null -eq $CachedBook -and $null -ne $CachePath -and $ContentStatus -eq 'Failed') {
             if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
                 try {
                     Remove-Item -LiteralPath $CachePath -Force -ErrorAction Stop
@@ -703,9 +826,9 @@ try {
             }
         }
 
-        # The cache file is also rewritten for a cached book whose file was written before ContentHash existed, so 02-Process-CalibreDataWithLLM.ps1 can store a content profile in it. The record carries over the content profile found above.
-        $CacheFileNeedsWrite = $null -eq $CachedBook -or $null -eq $CachedBook.PSObject.Properties['ContentHash']
-        if ($CacheFileNeedsWrite -and $null -ne $CachePath -and -not [string]::IsNullOrEmpty($BookContent)) {
+        # The cache file is also rewritten for a cached book whose file was written before ContentHash existed or whose ContentHash changed (e.g. a cached short text now handled as a book without text), so 02-Process-CalibreDataWithLLM.ps1 can store a content profile in it. The record carries over the content profile found above.
+        $CacheFileNeedsWrite = $null -eq $CachedBook -or $null -eq $CachedBook.PSObject.Properties['ContentHash'] -or [string]$CachedBook.ContentHash -cne [string]$ContentHash
+        if ($CacheFileNeedsWrite -and $null -ne $CachePath -and $ContentStatus -ne 'Failed') {
             $CacheRecord = [PSCustomObject]@{
                 CacheVersion = $BookCacheVersion
                 LastModified = $LastModifiedText
@@ -749,6 +872,7 @@ try {
     Write-ScriptLog ("  Per file: max {0}" -f $BooksInFile)
     Write-ScriptLog ("  Cached:   {0}" -f $CachedBookCount)
     Write-ScriptLog ("  Extracted: {0}" -f $ExtractedBookCount)
+    Write-ScriptLog ("  Without text: {0}" -f $NoTextBookCount)
     Write-ScriptLog ("  With content profile: {0}" -f $ProfileBookCount)
     Write-ScriptLog ("  Cache removed: {0}" -f $RemovedCacheFileCount)
 } catch {

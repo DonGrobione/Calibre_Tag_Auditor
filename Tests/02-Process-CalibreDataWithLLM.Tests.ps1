@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, and the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, and Test-TagDefinitionBaselineUpdate, which decides whether a run counts as a full-library audit of the tag definitions. The cache and scope files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Repair-MojibakeText, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile, and Add-BookContentProfile, and Test-TagDefinitionBaselineUpdate, which decides whether a run counts as a full-library audit of the tag definitions. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache and scope files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -17,9 +17,10 @@ $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
 $functionNames = @(
     'Get-GeminiApiKey', 'Repair-MojibakeText', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException',
-    'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Invoke-GeminiRequest',
+    'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
-    'ConvertTo-CompactJson', 'Test-ContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
+    'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
+    'Add-TokenUsage', 'Request-WebContentProfile', 'Add-BookContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
     'Test-TagDefinitionBaselineUpdate'
 )
 foreach ($functionName in $functionNames) {
@@ -56,6 +57,9 @@ $script:InteractionsUrl = 'https://api.example.invalid/v1beta/interactions'
 $script:Model = 'test-model'
 $script:ThinkingLevel = 'medium'
 $script:PromptSystem = 'Test prompt'
+$script:WebProfilePromptSystem = 'Web profile prompt'
+$script:MaxContentRetries = 3
+$script:ContentRetryDelaySeconds = 0
 $script:ApiTimeoutSec = 5
 $script:MaxRequestRetries = 3
 $script:RateLimitRetryBaseSeconds = 1
@@ -197,6 +201,44 @@ Describe 'Get-GeminiResponseText' {
     }
 }
 
+# Builds a Gemini interaction response with Google Search steps: one search call with the given queries and a model output with url_citation annotations for the given URLs.
+function Get-TestSearchResponse {
+    param([string]$Text, [string[]]$Queries, [string[]]$Urls)
+
+    $annotations = @($Urls | ForEach-Object { [pscustomobject]@{ type = 'url_citation'; url = $_; title = ([uri]$_).Host; start_index = 0; end_index = 5 } })
+    return [pscustomobject]@{
+        status = 'completed'
+        steps  = @(
+            [pscustomobject]@{ type = 'user_input'; content = @([pscustomobject]@{ type = 'text'; text = 'ignored input' }) },
+            [pscustomobject]@{ type = 'google_search_call'; arguments = [pscustomobject]@{ queries = $Queries } },
+            [pscustomobject]@{ type = 'google_search_result'; call_id = 'search_001'; result = @([pscustomobject]@{ search_suggestions = '<div></div>' }) },
+            [pscustomobject]@{ type = 'model_output'; content = @([pscustomobject]@{ type = 'text'; text = $Text; annotations = $annotations }) }
+        )
+        usage  = [pscustomobject]@{ total_input_tokens = 10; total_output_tokens = 5; total_tokens = 15 }
+    }
+}
+
+Describe 'Get-GeminiSearchSummary' {
+    It 'counts the search queries and returns the unique cited sources' {
+        $response = Get-TestSearchResponse -Text 'x' -Queries @('query 1', 'query 2') -Urls @('https://a.example/1', 'https://b.example/2', 'https://a.example/1')
+        $summary = Get-GeminiSearchSummary -Response $response
+        $summary.QueryCount | Should Be 2
+        @($summary.Sources).Count | Should Be 2
+        $summary.Sources[0].Url | Should Be 'https://a.example/1'
+        $summary.Sources[0].Title | Should Be 'a.example'
+    }
+
+    It 'returns 0 queries and no sources for a response without search' {
+        $summary = Get-GeminiSearchSummary -Response (Get-TestInteractionResponse -Text 'x')
+        $summary.QueryCount | Should Be 0
+        @($summary.Sources).Count | Should Be 0
+    }
+
+    It 'handles a $null response' {
+        (Get-GeminiSearchSummary -Response $null).QueryCount | Should Be 0
+    }
+}
+
 # Builds a fake Invoke-WebRequest result whose raw content is the given object as UTF-8 JSON bytes, like a server response without charset handling.
 function Get-TestWebResponse {
     param([Parameter(Mandatory = $true)][object]$InputObject)
@@ -235,6 +277,25 @@ Describe 'Invoke-GeminiRequest' {
             $Headers['x-goog-api-key'] -eq 'test-api-key' -and
             $sent.model -eq 'test-model' -and $sent.system_instruction -eq 'Test prompt' -and $sent.input -eq 'book data' -and
             $sent.generation_config.thinking_level -eq 'medium' -and $sent.store -eq $false
+        }
+    }
+
+    It 'sends no tools without -UseGoogleSearch' {
+        Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'ok') }
+        $null = Invoke-GeminiRequest -PayloadText 'book data'
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly -ParameterFilter {
+            $null -eq ([System.Text.Encoding]::UTF8.GetString([byte[]]$Body) | ConvertFrom-Json).PSObject.Properties['tools']
+        }
+    }
+
+    It 'sends the google_search tool and the given system instruction with -UseGoogleSearch' {
+        Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestSearchResponse -Text '{}' -Queries @('q1', 'q2', 'q3') -Urls @('https://a.example/1')) }
+        $result = Invoke-GeminiRequest -PayloadText 'metadata' -SystemInstruction 'Other prompt' -UseGoogleSearch
+        $result.SearchQueryCount | Should Be 3
+        @($result.Sources).Count | Should Be 1
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 1 -Exactly -ParameterFilter {
+            $sent = [System.Text.Encoding]::UTF8.GetString([byte[]]$Body) | ConvertFrom-Json
+            $sent.system_instruction -eq 'Other prompt' -and @($sent.tools).Count -eq 1 -and $sent.tools[0].type -eq 'google_search'
         }
     }
 
@@ -368,7 +429,69 @@ function Get-TestExportBook {
     }
 }
 
+# Builds a book export record of a book without text (ContentStatus NoText) with the given profile, source, and profile version.
+function Get-TestNoTextBook {
+    param(
+        [AllowNull()]
+        [string]$ContentProfile,
+        [AllowNull()]
+        [string]$ContentProfileSource,
+        [AllowNull()]
+        [object]$ContentProfileVersion = 1
+    )
+
+    return [pscustomobject]@{
+        Uuid                  = '0f8fad5b-d9cb-469f-a165-70867728950e'
+        Title                 = 'Manga 3'
+        Author                = 'Mangaka'
+        Series                = 'Manga'
+        SeriesIndex           = 3
+        Tags                  = 'Manga'
+        IDs                   = 'isbn:9781234567897'
+        Publisher             = 'Publisher'
+        Year                  = 2020
+        Description           = 'Publisher description'
+        ContentStatus         = 'NoText'
+        ContentHash           = 'meta-hash'
+        ContentProfile        = $ContentProfile
+        ContentProfileVersion = $ContentProfileVersion
+        ContentProfileSource  = $ContentProfileSource
+        ContentProfileSources = $null
+        BookContent           = $null
+    }
+}
+
 Describe 'ConvertTo-BookAnalysisRecord' {
+    It 'marks a web profile with ContentProfileSource Web' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web') -BookId 1
+        $record.ContentProfile | Should Be 'Web profile'
+        $record.ContentProfileSource | Should Be 'Web'
+        $record.Contains('BookContent') | Should Be $false
+    }
+
+    It 'sends the web profile of a book without text also with -FullContent' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web') -BookId 1 -FullContent
+        $record.ContentProfile | Should Be 'Web profile'
+    }
+
+    It 'sends a book without text and with a WebNotFound marker without content' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestNoTextBook -ContentProfile '' -ContentProfileSource 'WebNotFound') -BookId 1
+        $record.Contains('ContentProfile') | Should Be $false
+        $record.BookContent | Should Be $null
+    }
+
+    It 'does not send ContentProfileSource for a profile written from the book text' {
+        $book = Get-TestExportBook -ContentProfile 'Profile'
+        $book | Add-Member -NotePropertyName ContentProfileSource -NotePropertyValue 'Text'
+        (ConvertTo-BookAnalysisRecord -Book $book -BookId 1).Contains('ContentProfileSource') | Should Be $false
+    }
+
+    It 'does not send the description or identifiers to the tag audit' {
+        $record = ConvertTo-BookAnalysisRecord -Book (Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web') -BookId 1
+        $record.Contains('Description') | Should Be $false
+        $record.Contains('IDs') | Should Be $false
+    }
+
     It 'sends the content profile instead of the book text when a current profile exists' {
         $record = ConvertTo-BookAnalysisRecord -Book (Get-TestExportBook -ContentProfile 'Profile') -BookId 3
         $record.BookId | Should Be 3
@@ -424,11 +547,55 @@ function Add-TestBookCacheFile {
     return $path
 }
 
+# Builds the profile data of a profile written from the book text, as Save-ContentProfile passes it to Update-BookCacheProfile.
+function Get-TestTextProfile {
+    param([string]$Text)
+
+    return [pscustomobject]@{ ContentProfile = $Text; Source = 'Text'; Sources = $null }
+}
+
 Describe 'Update-BookCacheProfile' {
+    It 'stores a web profile with its source and cited sources' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-web'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'meta-hash'
+        $profileData = [pscustomobject]@{ ContentProfile = 'Web profile'; Source = 'Web'; Sources = @([pscustomobject]@{ Title = 'a.example'; Url = 'https://a.example/1' }) }
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestNoTextBook) -ProfileData $profileData | Should Be $true
+        $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))
+        $cached.ContentProfileSource | Should Be 'Web'
+        $cached.ContentProfileSources[0].Url | Should Be 'https://a.example/1'
+    }
+
+    It 'stores a WebNotFound marker with an empty profile' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-notfound'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'meta-hash'
+        $profileData = [pscustomobject]@{ ContentProfile = ''; Source = 'WebNotFound'; Sources = @() }
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestNoTextBook) -ProfileData $profileData | Should Be $true
+        $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))
+        $cached.ContentProfileSource | Should Be 'WebNotFound'
+        $cached.ContentProfile | Should Be ''
+        $cached.ContentProfileSources | Should Be $null
+    }
+
+    It 'writes nothing for an empty Text or Web profile or an unknown source' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-invalid'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text ' ') | Should Be $false
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData ([pscustomobject]@{ ContentProfile = ''; Source = 'Web' }) | Should Be $false
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData ([pscustomobject]@{ ContentProfile = 'P'; Source = 'Other' }) | Should Be $false
+        [System.IO.File]::ReadAllText($path) | Should Not Match 'ContentProfile'
+    }
+
+    It 'stores the source Text for a profile written from the book text' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-text-source'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile')
+        (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))).ContentProfileSource | Should Be 'Text'
+    }
+
     It 'stores the profile and its version in the cache file and keeps the other fields' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-match'
         $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
-        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile $specialText | Should Be $true
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text $specialText) | Should Be $true
 
         [System.IO.File]::ReadAllBytes($path)[0] | Should Not Be 0xEF
         $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))
@@ -441,8 +608,8 @@ Describe 'Update-BookCacheProfile' {
     It 'replaces an older profile' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-replace'
         $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
-        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'First'
-        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'Second'
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'First')
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Second')
         (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))).ContentProfile | Should Be 'Second'
     }
 
@@ -450,24 +617,24 @@ Describe 'Update-BookCacheProfile' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-mismatch'
         $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-other'
         $before = [System.IO.File]::ReadAllText($path)
-        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'Profile' | Should Be $false
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile') | Should Be $false
         [System.IO.File]::ReadAllText($path) | Should BeExactly $before
     }
 
     It 'returns $false when the cache file is missing' {
-        Update-BookCacheProfile -CacheDirectory (Join-Path -Path $TestDrive -ChildPath 'update-missing') -Book (Get-TestExportBook) -ContentProfile 'Profile' | Should Be $false
+        Update-BookCacheProfile -CacheDirectory (Join-Path -Path $TestDrive -ChildPath 'update-missing') -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile') | Should Be $false
     }
 
     It 'returns $false for an invalid UUID' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-uuid'
         $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
-        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook -Uuid '..\evil') -ContentProfile 'Profile' | Should Be $false
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook -Uuid '..\evil') -ProfileData (Get-TestTextProfile -Text 'Profile') | Should Be $false
     }
 
     It 'writes nothing with -WhatIf' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-whatif'
         $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
-        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ContentProfile 'Profile' -WhatIf | Should Be $false
+        Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile') -WhatIf | Should Be $false
         [System.IO.File]::ReadAllText($path) | Should Not Match 'ContentProfile'
     }
 }
@@ -508,6 +675,185 @@ Describe 'Save-ContentProfile' {
 
     It 'returns 0 for an empty profile list' {
         Save-ContentProfile -ContentProfiles @() -FullTextBooksById @{} -CacheDirectory $TestDrive | Should Be 0
+    }
+}
+
+Describe 'Test-NoTextBook' {
+    It 'returns $true only for ContentStatus NoText' {
+        Test-NoTextBook -Book (Get-TestNoTextBook) | Should Be $true
+        Test-NoTextBook -Book (Get-TestExportBook) | Should Be $false
+        Test-NoTextBook -Book ([pscustomobject]@{ ContentStatus = 'Failed' }) | Should Be $false
+    }
+}
+
+Describe 'Test-WebProfileRequired' {
+    It 'returns $true for a book without text and without profile' {
+        Test-WebProfileRequired -Book (Get-TestNoTextBook) | Should Be $true
+    }
+
+    It 'returns $false for a book without text with a current web profile or WebNotFound marker' {
+        Test-WebProfileRequired -Book (Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web') | Should Be $false
+        Test-WebProfileRequired -Book (Get-TestNoTextBook -ContentProfile '' -ContentProfileSource 'WebNotFound') | Should Be $false
+    }
+
+    It 'returns $true when the profile or marker has an outdated version' {
+        Test-WebProfileRequired -Book (Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web' -ContentProfileVersion 0) | Should Be $true
+        Test-WebProfileRequired -Book (Get-TestNoTextBook -ContentProfile '' -ContentProfileSource 'WebNotFound' -ContentProfileVersion $null) | Should Be $true
+    }
+
+    It 'returns $true with -FullContent even when a profile or marker exists' {
+        Test-WebProfileRequired -Book (Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web') -FullContent | Should Be $true
+        Test-WebProfileRequired -Book (Get-TestNoTextBook -ContentProfile '' -ContentProfileSource 'WebNotFound') -FullContent | Should Be $true
+    }
+
+    It 'returns $false for a book with text' {
+        Test-WebProfileRequired -Book (Get-TestExportBook) -FullContent | Should Be $false
+    }
+
+    It 'returns $false without UUID or ContentHash, because the profile could not be stored' {
+        $noUuid = Get-TestNoTextBook
+        $noUuid.Uuid = $null
+        $noHash = Get-TestNoTextBook
+        $noHash.ContentHash = ''
+        Test-WebProfileRequired -Book $noUuid | Should Be $false
+        Test-WebProfileRequired -Book $noHash | Should Be $false
+    }
+}
+
+Describe 'ConvertTo-WebProfileRecord' {
+    It 'holds the identity metadata and the description, but no tags, hash, or UUID' {
+        $record = ConvertTo-WebProfileRecord -Book (Get-TestNoTextBook)
+        $record.Title | Should Be 'Manga 3'
+        $record.IDs | Should Be 'isbn:9781234567897'
+        $record.Description | Should Be 'Publisher description'
+        $record.Year | Should Be 2020
+        foreach ($key in @('Tags', 'ContentHash', 'Uuid', 'ContentProfile')) {
+            $record.Contains($key) | Should Be $false
+        }
+    }
+}
+
+Describe 'ConvertFrom-WebProfileResponse' {
+    It 'returns the trimmed profile' {
+        (ConvertFrom-WebProfileResponse -RawText '{"ContentProfile": " Manga profile "}').ContentProfile | Should BeExactly 'Manga profile'
+    }
+
+    It 'accepts a response in a markdown code block' {
+        (ConvertFrom-WebProfileResponse -RawText ('```json' + "`n" + '{"ContentProfile":"P"}' + "`n" + '```')).ContentProfile | Should Be 'P'
+    }
+
+    It 'returns an empty profile for an empty string or null (work not identified)' {
+        (ConvertFrom-WebProfileResponse -RawText '{"ContentProfile": ""}').ContentProfile | Should BeExactly ''
+        (ConvertFrom-WebProfileResponse -RawText '{"ContentProfile": null}').ContentProfile | Should BeExactly ''
+    }
+
+    It 'returns $null for text without JSON, an array, or an object without ContentProfile' {
+        ConvertFrom-WebProfileResponse -RawText 'no json' | Should Be $null
+        ConvertFrom-WebProfileResponse -RawText '[{"ContentProfile":"P"}]' | Should Be $null
+        ConvertFrom-WebProfileResponse -RawText '{"Profile":"P"}' | Should Be $null
+    }
+}
+
+Describe 'Add-TokenUsage' {
+    It 'adds the token counts and marks the counter as available' {
+        $counter = [pscustomobject]@{ Available = $false; PromptTokens = [int64]1; CompletionTokens = [int64]2; TotalTokens = [int64]3 }
+        Add-TokenUsage -Counter $counter -TokenUsage ([pscustomobject]@{ PromptTokens = 10; CompletionTokens = 20; TotalTokens = 30 })
+        $counter.Available | Should Be $true
+        $counter.PromptTokens | Should Be 11
+        $counter.CompletionTokens | Should Be 22
+        $counter.TotalTokens | Should Be 33
+    }
+
+    It 'leaves the counter unchanged for $null' {
+        $counter = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        Add-TokenUsage -Counter $counter -TokenUsage $null
+        $counter.Available | Should Be $false
+    }
+}
+
+Describe 'Request-WebContentProfile' {
+    Mock Start-Sleep { }
+    Mock Write-ScriptLog { }
+
+    # Returns a fresh token usage counter.
+    function Get-TestUsageCounter {
+        return [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+    }
+
+    It 'sends the tag definitions and metadata with the web profile prompt and the google_search tool' {
+        Mock Invoke-GeminiRequest { [pscustomobject]@{ Text = '{"ContentProfile":"Web profile"}'; TokenUsage = [pscustomobject]@{ PromptTokens = 10; CompletionTokens = 5; TotalTokens = 15 }; SearchQueryCount = 2; Sources = @([pscustomobject]@{ Title = 'a'; Url = 'https://a.example/1' }) } }
+        $counter = Get-TestUsageCounter
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[{"Tag":"Manga"}]' -UsageCounter $counter
+        $result.ContentProfile | Should Be 'Web profile'
+        $result.SearchQueryCount | Should Be 2
+        @($result.Sources).Count | Should Be 1
+        $counter.TotalTokens | Should Be 15
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 1 -Exactly -ParameterFilter {
+            $UseGoogleSearch -and $SystemInstruction -eq 'Web profile prompt' -and $PayloadText -match '\[\{"Tag":"Manga"\}\]' -and $PayloadText -match 'isbn:9781234567897' -and $PayloadText -match 'Publisher description'
+        }
+    }
+
+    It 'retries an invalid response and adds the searches of all attempts' {
+        $script:webAttempt = 0
+        Mock Invoke-GeminiRequest {
+            $script:webAttempt++
+            $text = if ($script:webAttempt -eq 1) { 'not json' } else { '{"ContentProfile":""}' }
+            [pscustomobject]@{ Text = $text; TokenUsage = $null; SearchQueryCount = 1; Sources = @() }
+        }
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[]' -UsageCounter (Get-TestUsageCounter)
+        $result.ContentProfile | Should BeExactly ''
+        $result.SearchQueryCount | Should Be 2
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 2 -Exactly
+    }
+
+    It 'returns a $null profile when the API request fails' {
+        Mock Invoke-GeminiRequest { $null }
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[]' -UsageCounter (Get-TestUsageCounter)
+        $result.ContentProfile | Should Be $null
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 1 -Exactly
+    }
+
+    It 'returns a $null profile after the last invalid response' {
+        Mock Invoke-GeminiRequest { [pscustomobject]@{ Text = 'not json'; TokenUsage = $null; SearchQueryCount = 1; Sources = @() } }
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[]' -UsageCounter (Get-TestUsageCounter)
+        $result.ContentProfile | Should Be $null
+        $result.SearchQueryCount | Should Be 3
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 3 -Exactly
+    }
+}
+
+Describe 'Add-BookContentProfile' {
+    It 'adds the profile fields with the current version to the export record' {
+        $book = Get-TestNoTextBook -ContentProfileVersion $null
+        Add-BookContentProfile -Book $book -ProfileData ([pscustomobject]@{ ContentProfile = 'Web profile'; Source = 'Web'; Sources = @() })
+        $book.ContentProfile | Should Be 'Web profile'
+        $book.ContentProfileSource | Should Be 'Web'
+        $book.ContentProfileVersion | Should Be 1
+        Test-ContentProfile -Book $book | Should Be $true
+    }
+}
+
+Describe 'Web profile workflow' {
+    $commands = @($scriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $geminiCalls = @($commands | Where-Object { $_.GetCommandName() -eq 'Invoke-GeminiRequest' })
+
+    It 'uses the google_search tool only in the web profile request' {
+        $searchCalls = @($geminiCalls | Where-Object { $_.Extent.Text -match '-UseGoogleSearch' })
+        $searchCalls.Count | Should Be 1
+        $function = $searchCalls[0].Parent
+        while ($null -ne $function -and $function -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+            $function = $function.Parent
+        }
+        $function.Name | Should Be 'Request-WebContentProfile'
+    }
+
+    It 'requires the web profile prompt file' {
+        $scriptAst.Extent.Text | Should Match '-ChildPath "02-CalibreWebProfile-Prompt\.txt"'
+        (Test-Path -LiteralPath (Join-Path -Path $projectRoot -ChildPath '02-CalibreWebProfile-Prompt.txt') -PathType Leaf) | Should Be $true
+    }
+
+    It 'stores the search query count in the token usage of the result file' {
+        $scriptAst.Extent.Text | Should Match 'web_search_queries = \$fileSearchQueryCount'
     }
 }
 

@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash and Get-CachedContentProfile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that only books with content are cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The Export record tests check in the source that the export record holds the Uuid, ContentHash, and content profile fields and that the cache record adds Uuid only once. The Export scope file tests check in the source that 01-Export-Scope.json marks only an export of all books as full library. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The Export scope file tests check in the source that 01-Export-Scope.json marks only an export of all books as full library. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '01-Export-CalibreBooks.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-CachedContentProfile')
+$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-MetadataHash', 'Get-CachedContentProfile', 'Get-WordCount', 'ConvertTo-PlainText')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -320,6 +320,21 @@ Describe 'Write-BookCacheFile and Get-CachedBookExport' {
         Get-CachedBookExport -Path $emptyPath -LastModified 'x' -CacheVersion 1 | Should Be $null
     }
 
+    It 'returns a cached book without text (ContentStatus NoText) although BookContent is null' {
+        $noTextPath = Add-TestCacheFile -Name 'no-text.json' -Json '{ "CacheVersion": 1, "LastModified": "x", "ContentStatus": "NoText", "BookContent": null }'
+        (Get-CachedBookExport -Path $noTextPath -LastModified 'x' -CacheVersion 1).ContentStatus | Should Be 'NoText'
+    }
+
+    It 'returns $null for a cached book without text when last_modified differs' {
+        $noTextPath = Add-TestCacheFile -Name 'no-text-old.json' -Json '{ "CacheVersion": 1, "LastModified": "x", "ContentStatus": "NoText", "BookContent": null }'
+        Get-CachedBookExport -Path $noTextPath -LastModified 'y' -CacheVersion 1 | Should Be $null
+    }
+
+    It 'returns $null for a null BookContent with another ContentStatus' {
+        $failedPath = Add-TestCacheFile -Name 'failed.json' -Json '{ "CacheVersion": 1, "LastModified": "x", "ContentStatus": "Failed", "BookContent": null }'
+        Get-CachedBookExport -Path $failedPath -LastModified 'x' -CacheVersion 1 | Should Be $null
+    }
+
     It 'rejects a cache version of 0' {
         { Get-CachedBookExport -Path $path -LastModified 'x' -CacheVersion 0 } | Should Throw
     }
@@ -394,14 +409,22 @@ Describe 'Book cache workflow' {
         $scriptAst.Extent.Text | Should Match '-ChildPath "01-Cache"'
     }
 
-    It 'writes a cache file only for books with content' {
+    It 'writes a cache file for every book except failed extractions' {
         $cacheWrite = @($commands | Where-Object { $_.GetCommandName() -eq 'Write-BookCacheFile' })
         $cacheWrite.Count | Should Be 1
         $condition = $cacheWrite[0].Parent
         while ($null -ne $condition -and $condition -isnot [System.Management.Automation.Language.IfStatementAst]) {
             $condition = $condition.Parent
         }
-        $condition.Clauses[0].Item1.Extent.Text | Should Match '-not \[string\]::IsNullOrEmpty\(\$BookContent\)'
+        $condition.Clauses[0].Item1.Extent.Text | Should Match '\$ContentStatus -ne ''Failed'''
+    }
+
+    It 'deletes an outdated cache file only for failed extractions' {
+        $scriptAst.Extent.Text | Should Match '\$null -eq \$CachedBook -and \$null -ne \$CachePath -and \$ContentStatus -eq ''Failed'''
+    }
+
+    It 'rewrites a cache file whose ContentHash changed' {
+        $scriptAst.Extent.Text | Should Match '\[string\]\$CachedBook\.ContentHash -cne \[string\]\$ContentHash'
     }
 
     It 'writes the cache version into every cache file and checks it when reading' {
@@ -479,10 +502,107 @@ Describe 'Get-CachedContentProfile' {
         Get-CachedContentProfile -Path $emptyProfile -ContentHash 'abc123' | Should Be $null
     }
 
+    It 'reports a profile without source as Text' {
+        (Get-CachedContentProfile -Path $profilePath -ContentHash 'abc123').ContentProfileSource | Should Be 'Text'
+    }
+
+    It 'returns a web profile with its source and cited sources' {
+        $webPath = Add-TestProfileFile -Name 'web-profile.json' -Json '{ "ContentHash": "meta1", "ContentProfileVersion": 1, "ContentProfile": "Manga profile", "ContentProfileSource": "Web", "ContentProfileSources": [ { "Title": "example.com", "Url": "https://example.com/a" } ] }'
+        $result = Get-CachedContentProfile -Path $webPath -ContentHash 'meta1'
+        $result.ContentProfileSource | Should Be 'Web'
+        @($result.ContentProfileSources).Count | Should Be 1
+        $result.ContentProfileSources[0].Url | Should Be 'https://example.com/a'
+    }
+
+    It 'returns a WebNotFound marker with an empty profile' {
+        $notFoundPath = Add-TestProfileFile -Name 'not-found.json' -Json '{ "ContentHash": "meta2", "ContentProfileVersion": 1, "ContentProfile": "", "ContentProfileSource": "WebNotFound", "ContentProfileSources": null }'
+        $result = Get-CachedContentProfile -Path $notFoundPath -ContentHash 'meta2'
+        $result.ContentProfileSource | Should Be 'WebNotFound'
+        $result.ContentProfile | Should Be ''
+        $result.ContentProfileSources | Should Be $null
+    }
+
     It 'returns $null for a missing or corrupt cache file' {
         $corrupt = Add-TestProfileFile -Name 'corrupt-profile.json' -Json '{ not json'
         Get-CachedContentProfile -Path (Join-Path -Path $cacheDirectory -ChildPath 'missing.json') -ContentHash 'abc123' | Should Be $null
         Get-CachedContentProfile -Path $corrupt -ContentHash 'abc123' | Should Be $null
+    }
+}
+
+Describe 'Get-MetadataHash' {
+    $record = [pscustomobject]@{ Title = 'Vol. 1'; Author = 'A'; Series = 'S'; SeriesIndex = 1.0; IDs = 'isbn:123'; Description = 'Desc'; BookContent = $null }
+
+    It 'returns a SHA256 hex string that differs from the hash of the plain title' {
+        $hash = Get-MetadataHash -Record $record
+        $hash | Should Match '^[0-9a-f]{64}$'
+        $hash | Should Not Be (Get-ContentHash -Text 'Vol. 1')
+    }
+
+    It 'returns the same hash for the same metadata' {
+        $copy = [pscustomobject]@{ Title = 'Vol. 1'; Author = 'A'; Series = 'S'; SeriesIndex = 1.0; IDs = 'isbn:123'; Description = 'Desc'; Tags = 'Other tags' }
+        Get-MetadataHash -Record $copy | Should Be (Get-MetadataHash -Record $record)
+    }
+
+    It 'changes when the identifiers or the description change' {
+        $otherIds = [pscustomobject]@{ Title = 'Vol. 1'; Author = 'A'; Series = 'S'; SeriesIndex = 1.0; IDs = 'isbn:456'; Description = 'Desc' }
+        $otherDescription = [pscustomobject]@{ Title = 'Vol. 1'; Author = 'A'; Series = 'S'; SeriesIndex = 1.0; IDs = 'isbn:123'; Description = 'New' }
+        Get-MetadataHash -Record $otherIds | Should Not Be (Get-MetadataHash -Record $record)
+        Get-MetadataHash -Record $otherDescription | Should Not Be (Get-MetadataHash -Record $record)
+    }
+
+    It 'handles missing and null fields' {
+        Get-MetadataHash -Record ([pscustomobject]@{ Title = 'Only title'; Series = $null }) | Should Match '^[0-9a-f]{64}$'
+    }
+}
+
+Describe 'Get-WordCount' {
+    It 'counts whitespace-separated words across lines' {
+        Get-WordCount -Text "one two`n`nthree  four" | Should Be 4
+    }
+
+    It 'returns 0 for null, empty, and whitespace text' {
+        Get-WordCount -Text $null | Should Be 0
+        Get-WordCount -Text '' | Should Be 0
+        Get-WordCount -Text "  `n " | Should Be 0
+    }
+}
+
+Describe 'ConvertTo-PlainText' {
+    It 'removes tags, keeps paragraphs as lines, and decodes entities' {
+        ConvertTo-PlainText -Html '<div><p>First &amp; <b>bold</b>.</p><p>Second&nbsp;line</p></div>' | Should BeExactly "First & bold .`nSecond line"
+    }
+
+    It 'turns line break tags into line breaks' {
+        ConvertTo-PlainText -Html 'A<br>B<br/>C' | Should BeExactly "A`nB`nC"
+    }
+
+    It 'keeps non-ASCII characters' {
+        ConvertTo-PlainText -Html "<p>Begr$([char]0xFC)ndung</p>" | Should BeExactly "Begr$([char]0xFC)ndung"
+    }
+
+    It 'returns $null for null, empty, and tag-only input' {
+        ConvertTo-PlainText -Html $null | Should Be $null
+        ConvertTo-PlainText -Html '' | Should Be $null
+        ConvertTo-PlainText -Html '<p> </p>' | Should Be $null
+    }
+}
+
+Describe 'Books without text' {
+    It 'asks calibredb for the description field comments' {
+        $scriptAst.Extent.Text | Should Match '--fields=\S*\bcomments\b'
+    }
+
+    It 'defines the minimum word count and handles shorter texts as books without text' {
+        $scriptAst.Extent.Text | Should Match '\$MinimumContentWords = \d+'
+        $scriptAst.Extent.Text | Should Match '\$WordCount -lt \$MinimumContentWords'
+    }
+
+    It 'handles a book without supported book file as a book without text' {
+        $scriptAst.Extent.Text | Should Match 'handled as a book without text\." -f `\s+\$Book\.title[^\r\n]*\r?\n\s+\$ContentStatus = ''NoText'''
+    }
+
+    It 'uses the metadata hash as ContentHash of a book without text' {
+        $scriptAst.Extent.Text | Should Match '\$ContentHash = Get-MetadataHash -Record \$BookRecord'
     }
 }
 
@@ -496,8 +616,8 @@ Describe 'Export record' {
             $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$CacheRecord'
         }, $true)
 
-    It 'holds the Uuid, the content hash, and the content profile fields' {
-        foreach ($fieldName in @('Uuid', 'ContentHash', 'ContentProfile', 'ContentProfileVersion', 'BookContent')) {
+    It 'holds the Uuid, the description, the content status, the content hash, and the content profile fields' {
+        foreach ($fieldName in @('Uuid', 'Description', 'ContentStatus', 'ContentHash', 'ContentProfile', 'ContentProfileVersion', 'ContentProfileSource', 'ContentProfileSources', 'BookContent')) {
             $bookRecord.Right.Extent.Text | Should Match ("(?m)^\s*{0}\s*=" -f $fieldName)
         }
     }
