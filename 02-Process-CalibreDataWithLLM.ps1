@@ -7,6 +7,8 @@
     It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
+    API requests are retried on HTTP 429, 500, 502, 503, and 504 and on connection failures without HTTP response (DNS lookup, connect, send/receive, timeout).
+    When Gemini blocks the request of a file with several books for prohibited content (HTTP 400), the books of that file are sent again one at a time, so only the book that triggers the block stays without audit. The file is then saved with a validation warning that names the books without result.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
@@ -27,10 +29,10 @@
     Validates the latest book export with the full book text of every book.
 
 .NOTES
-    Version: 6.3
+    Version: 6.4
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt and 02-CalibreWebProfile-Prompt.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, content profiles, token usage, the raw response text, parse errors, and validation details for unique-book counts.
-    All retry counts and wait intervals (429/503/504 API retries, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
+    All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
 [CmdletBinding()]
@@ -94,17 +96,20 @@ try {
     $ApiTimeoutSec = 300
 
     # Retry/backoff configuration for all retry activities in this script.
-    $script:MaxRequestRetries = 3                       # Max retries per API request on 429/503/504 errors.
+    $script:MaxRequestRetries = 3                       # Max retries per API request on 429/500/502/503/504 errors and connection failures.
     $script:RateLimitRetryBaseSeconds = 30               # 429: base seconds for exponential backoff (wait = base * 2^attempt).
-    $script:ServiceUnavailableRetryBaseSeconds = 5        # 503: base seconds for exponential backoff.
-    $script:ServiceUnavailableRetryMaxSeconds = 60        # 503: cap (seconds) for exponential backoff.
+    $script:ServiceUnavailableRetryBaseSeconds = 5        # 500/502/503: base seconds for exponential backoff.
+    $script:ServiceUnavailableRetryMaxSeconds = 60        # 500/502/503: cap (seconds) for exponential backoff.
     $script:GatewayTimeoutRetryIntervalSeconds = 300      # 504: fixed wait interval (seconds) between retries.
+    $script:ConnectionRetryBaseSeconds = 15               # Connection failures without HTTP response (DNS, connect, timeout): base seconds for exponential backoff.
+    $script:ConnectionRetryMaxSeconds = 120               # Connection failures: cap (seconds) for exponential backoff.
     $script:MaxContentRetries = 3                         # Max retries per file for invalid/incomplete LLM responses.
     $script:ContentRetryDelaySeconds = 15                 # Wait (seconds) between content-validation retries.
     $script:InterFileDelaySeconds = 15                    # Wait (seconds) between processing each book file.
 
     $script:LastApiErrorMessage = $null
     $script:LastApiErrorBody = $null
+    $script:LastApiStatusCode = $null
 
     # Ensure the output folder exists before writing results and remove stale JSON files from a previous run.
     if (-not (Test-Path -Path $OutputDir)) {
@@ -214,6 +219,52 @@ try {
         catch {
             return $null
         }
+    }
+
+    # Returns the WebExceptionStatus name (e.g. NameResolutionFailure, ConnectFailure, Timeout) when the error is a transient connection failure without HTTP response, which is worth a retry; returns $null for every other error.
+    function Get-ConnectionFailureStatus {
+        param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+        if ($null -eq $ErrorRecord) {
+            return $null
+        }
+
+        $transientStatuses = @('NameResolutionFailure', 'ProxyNameResolutionFailure', 'ConnectFailure', 'SendFailure', 'ReceiveFailure', 'ConnectionClosed', 'KeepAliveFailure', 'PipelineFailure', 'Timeout')
+        $exception = $ErrorRecord.Exception
+        while ($null -ne $exception) {
+            if ($exception -is [System.Net.WebException]) {
+                if ($null -ne $exception.Response) {
+                    return $null
+                }
+
+                $status = [string]$exception.Status
+                if ($transientStatuses -contains $status) {
+                    return $status
+                }
+
+                return $null
+            }
+
+            $exception = $exception.InnerException
+        }
+
+        return $null
+    }
+
+    # Returns $true when the API rejected the request with HTTP 400 because its content violates Google's prohibited use policy (the response body mentions prohibited content).
+    function Test-ProhibitedContentError {
+        param(
+            [AllowNull()]
+            [object]$StatusCode,
+            [AllowNull()]
+            [string]$ErrorBody
+        )
+
+        if ($null -eq $StatusCode -or [int]$StatusCode -ne 400 -or [string]::IsNullOrWhiteSpace($ErrorBody)) {
+            return $false
+        }
+
+        return ($ErrorBody -match '(?i)prohibited (content|use)')
     }
 
     # Extracts prompt, completion (output plus thinking), and total token usage from a Gemini interaction response.
@@ -1007,7 +1058,7 @@ $bookInput
         return $savedCount
     }
 
-    # Sends the payload with a system instruction (by default the tag audit prompt) to the Gemini Interactions API with automatic retry on rate limits and HTTP server errors, and returns the response text, token usage, search query count, and cited sources. -UseGoogleSearch enables the google_search tool. The request body is sent as UTF-8 bytes and the response is decoded as UTF-8, so umlauts and typographic characters do not depend on PowerShell's encoding defaults.
+    # Sends the payload with a system instruction (by default the tag audit prompt) to the Gemini Interactions API with automatic retry on rate limits, HTTP server errors (500/502/503/504), and connection failures without HTTP response, and returns the response text, token usage, search query count, and cited sources. -UseGoogleSearch enables the google_search tool. The request body is sent as UTF-8 bytes and the response is decoded as UTF-8, so umlauts and typographic characters do not depend on PowerShell's encoding defaults.
     function Invoke-GeminiRequest {
         param(
             [string]$PayloadText,
@@ -1017,6 +1068,7 @@ $bookInput
 
         $script:LastApiErrorMessage = $null
         $script:LastApiErrorBody = $null
+        $script:LastApiStatusCode = $null
 
         $headers = @{ 'x-goog-api-key' = $script:ApiKey }
         $requestBody = @{
@@ -1054,7 +1106,24 @@ $bookInput
                     $statusCode = $_.Exception.Response.StatusCode.value__
                 }
 
-                if ($statusCode -eq 429) {
+                $connectionFailure = $null
+                if ($null -eq $statusCode) {
+                    $connectionFailure = Get-ConnectionFailureStatus -ErrorRecord $_
+                }
+
+                if ($null -ne $connectionFailure) {
+                    $retryCount++
+                    $waitTime = [math]::Min($script:ConnectionRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ConnectionRetryBaseSeconds)
+                    Write-ScriptLog -Level WARN -Message "Connection failure ($connectionFailure). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
+                    Start-Sleep -Seconds $waitTime
+                }
+                elseif ($statusCode -eq 500 -or $statusCode -eq 502) {
+                    $retryCount++
+                    $waitTime = [math]::Min($script:ServiceUnavailableRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ServiceUnavailableRetryBaseSeconds)
+                    Write-ScriptLog -Level WARN -Message "Server error ($statusCode). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
+                    Start-Sleep -Seconds $waitTime
+                }
+                elseif ($statusCode -eq 429) {
                     $retryCount++
                     $waitTime = [math]::Pow(2, $retryCount) * $script:RateLimitRetryBaseSeconds
                     Write-ScriptLog -Level WARN -Message "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
@@ -1081,9 +1150,6 @@ $bookInput
                     elseif ($statusCode -eq 401 -or $statusCode -eq 403) {
                         Write-ScriptLog -Level WARN -Message "Possible cause: API key is invalid or expired."
                     }
-                    elseif ($statusCode -eq 500 -or $statusCode -eq 502) {
-                        Write-ScriptLog -Level WARN -Message "Server error at Google - retry later."
-                    }
 
                     $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
                     $originalError = Get-ErrorMessageFromException -ErrorRecord $_
@@ -1093,6 +1159,7 @@ $bookInput
 
                     $script:LastApiErrorMessage = ("HTTP {0}: {1}" -f $statusCode, $originalError)
                     $script:LastApiErrorBody = $errorBody
+                    $script:LastApiStatusCode = $statusCode
 
                     if (-not [string]::IsNullOrEmpty($errorBody)) {
                         Write-ScriptLog -Level WARN -Message "API response body: $errorBody"
@@ -1109,6 +1176,165 @@ $bookInput
         return $null
     }
 
+    # Builds the tag audit input from the prepared tag definition section and the given book analysis records as compact JSON array, labeled with the name of the book export file.
+    function ConvertTo-BookAuditPayload {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$TagSection,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$BookFileName,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [object[]]$BookRecords
+        )
+
+        $bookAnalysisInput = ConvertTo-CompactJson -InputObject $BookRecords -Depth 10
+        return @"
+$TagSection
+
+===================================
+BOOK CONTENT AND CURRENT CALIBRE TAGS (from $BookFileName):
+===================================
+$bookAnalysisInput
+"@
+    }
+
+    # Sends one tag audit payload and retries invalid or incomplete responses (e.g. a wrong unique-book count or text that is not JSON) up to $MaxContentRetries times. Returns the parsed ResultObject and the RawText of the last response (both $null when no response arrived), the number of Attempts, and the token Usage counter of all attempts.
+    function Invoke-BookAuditRequest {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$PayloadText,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$SourceFile,
+            [int]$ExpectedUniqueBookCount = -1
+        )
+
+        $usage = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        $rawText = $null
+        $resultObject = $null
+        $attempt = 0
+
+        while ($attempt -lt $script:MaxContentRetries) {
+            $attempt++
+            $requestResult = Invoke-GeminiRequest -PayloadText $PayloadText
+
+            if ($null -eq $requestResult) {
+                break
+            }
+
+            $rawText = $requestResult.Text
+            Add-TokenUsage -Counter $usage -TokenUsage $requestResult.TokenUsage
+
+            $resultObject = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile $SourceFile -Model $script:Model -ExpectedUniqueBookCount $ExpectedUniqueBookCount
+
+            if ($resultObject.status -eq 'success') {
+                break
+            }
+
+            $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
+            if ($attempt -lt $script:MaxContentRetries) {
+                Write-ScriptLog -Level WARN -Message "Invalid/incomplete response for '$SourceFile' (attempt $attempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
+                Start-Sleep -Seconds $script:ContentRetryDelaySeconds
+            }
+            else {
+                Write-ScriptLog -Level WARN -Message "All $($script:MaxContentRetries) attempt(s) for '$SourceFile' failed validation. Last reason: $retryReason"
+            }
+        }
+
+        return [pscustomobject]@{
+            ResultObject = $resultObject
+            RawText      = $rawText
+            Attempts     = $attempt
+            Usage        = $usage
+        }
+    }
+
+    # Audits the books of a file one at a time after Gemini blocked the request of the whole file for prohibited content: sends each book analysis record in its own request (with its original BookId, so content profiles still match) and merges the parsed responses into one result object for the file. A book that is blocked again, whose request fails, or whose response stays unparsable gets no record and is named in validation_error, and the status becomes warning. Returns the merged ResultObject ($null when no book got a response) and the token Usage of all requests.
+    function Invoke-SingleBookAudit {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object[]]$BookRecords,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$TagSection,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$BookFileName
+        )
+
+        $usage = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        $records = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $contentProfiles = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $rawResponses = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $missingBooks = New-Object -TypeName 'System.Collections.Generic.List[string]'
+
+        foreach ($bookRecord in $BookRecords) {
+            $payload = ConvertTo-BookAuditPayload -TagSection $TagSection -BookFileName $BookFileName -BookRecords @($bookRecord)
+            $auditResult = Invoke-BookAuditRequest -PayloadText $payload -SourceFile "$BookFileName, book $($bookRecord.BookId)" -ExpectedUniqueBookCount 1
+            if ($auditResult.Usage.Available) {
+                Add-TokenUsage -Counter $usage -TokenUsage $auditResult.Usage
+            }
+
+            $resultObject = $auditResult.ResultObject
+            if ($null -ne $auditResult.RawText -and $resultObject.status -ne 'error') {
+                foreach ($record in @($resultObject.records)) {
+                    $records.Add($record)
+                }
+                foreach ($contentProfile in @($resultObject.content_profiles)) {
+                    $contentProfiles.Add($contentProfile)
+                }
+                $rawResponses.Add($auditResult.RawText)
+                continue
+            }
+
+            $reason = 'invalid response'
+            if ($null -eq $auditResult.RawText) {
+                $reason = 'request failed'
+                if (Test-ProhibitedContentError -StatusCode $script:LastApiStatusCode -ErrorBody $script:LastApiErrorBody) {
+                    $reason = 'blocked for prohibited content'
+                }
+            }
+
+            $missingBooks.Add("'$($bookRecord.Title)' ($reason)")
+            Write-ScriptLog -Level WARN -Message "No audit result for '$($bookRecord.Title)' in '$BookFileName': $reason."
+        }
+
+        if ($rawResponses.Count -eq 0) {
+            return [pscustomobject]@{ ResultObject = $null; Usage = $usage }
+        }
+
+        $expectedCount = Get-UniqueBookCount -Items @($BookRecords | ForEach-Object { [pscustomobject]$_ }) -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
+        $outputCount = Get-UniqueBookCount -Items $records.ToArray() -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+        $validationMessages = @()
+        if ($missingBooks.Count -gt 0) {
+            $validationMessages += "No audit result for $($missingBooks.Count) of $(@($BookRecords).Count) book(s) after the file was blocked for prohibited content and sent book by book: $($missingBooks -join ', ')."
+        }
+        if ($outputCount -ne $expectedCount) {
+            $validationMessages += "Unique book count mismatch: input=$expectedCount, output=$outputCount."
+        }
+
+        $mergedResult = [pscustomobject][ordered]@{
+            source_file              = $BookFileName
+            model                    = $script:Model
+            status                   = if ($validationMessages.Count -gt 0) { 'warning' } else { 'success' }
+            input_unique_book_count  = $expectedCount
+            output_unique_book_count = $outputCount
+            unique_book_count_match  = ($outputCount -eq $expectedCount)
+            validation_error         = if ($validationMessages.Count -gt 0) { $validationMessages -join ' ' } else { $null }
+            records                  = $records.ToArray()
+            content_profiles         = $contentProfiles.ToArray()
+            token_usage              = $null
+            raw_response             = $rawResponses.ToArray()
+            parse_error              = $null
+        }
+
+        return [pscustomobject]@{ ResultObject = $mergedResult; Usage = $usage }
+    }
+
     # Send the tag definitions as compact JSON; the indentation of the export file only costs tokens.
     try {
         $tagContent = ConvertTo-CompactJson -InputObject @(ConvertFrom-Json -InputObject $tagContent -ErrorAction Stop) -Depth 5
@@ -1116,6 +1342,13 @@ $bookInput
     catch {
         throw "The tag export file '$($tagFile.Name)' is not valid JSON: $($_.Exception.Message)"
     }
+
+    $tagPayloadSection = @"
+===================================
+TAG DEFINITIONS (from $($tagFile.Name)):
+===================================
+$tagContent
+"@
 
     Write-ScriptLog "Model:    $Model (thinking level: $ThinkingLevel)"
     Write-Information -MessageData '' -InformationAction Continue
@@ -1238,54 +1471,33 @@ $bookInput
                 $fileNoContentBookCount++
             }
         }
-        $bookAnalysisInput = ConvertTo-CompactJson -InputObject $bookAnalysisRecords.ToArray() -Depth 10
         $totalProfileBookCount += $fileProfileBookCount
         $totalFullTextBookCount += $fullTextBooksById.Count
         $totalNoContentBookCount += $fileNoContentBookCount
         Write-ScriptLog "  -> Input: $($fullTextBooksById.Count) book(s) with full text, $fileProfileBookCount with content profile, $fileNoContentBookCount without content"
 
         # The prompt itself is sent as system instruction, so the input holds only the data.
-        $bookPayload = @"
-===================================
-TAG DEFINITIONS (from $($tagFile.Name)):
-===================================
-$tagContent
-
-===================================
-BOOK CONTENT AND CURRENT CALIBRE TAGS (from $($bookFile.Name)):
-===================================
-$bookAnalysisInput
-"@
+        $bookPayload = ConvertTo-BookAuditPayload -TagSection $tagPayloadSection -BookFileName $bookFile.Name -BookRecords $bookAnalysisRecords.ToArray()
 
         # Send the book data to the Gemini Interactions API, retrying on incomplete or invalid responses (e.g. a wrong unique-book count or text that is not JSON).
-        $apiResult = $null
-        $resultObject = $null
-        $contentAttempt = 0
+        $auditResult = Invoke-BookAuditRequest -PayloadText $bookPayload -SourceFile $bookFile.Name -ExpectedUniqueBookCount $inputUniqueBookCount
+        if ($auditResult.Usage.Available) {
+            Add-TokenUsage -Counter $fileUsage -TokenUsage $auditResult.Usage
+        }
+        $apiResult = $auditResult.RawText
+        $resultObject = $auditResult.ResultObject
+        $contentAttempt = $auditResult.Attempts
 
-        while ($contentAttempt -lt $script:MaxContentRetries) {
-            $contentAttempt++
-            $requestResult = Invoke-GeminiRequest -PayloadText $bookPayload
-
-            if ($null -eq $requestResult) {
-                break
+        # A block for prohibited content rejects the whole file, so the books are sent again one at a time and only the book that triggers the block stays without result.
+        if ($null -eq $apiResult -and $bookAnalysisRecords.Count -gt 1 -and (Test-ProhibitedContentError -StatusCode $script:LastApiStatusCode -ErrorBody $script:LastApiErrorBody)) {
+            Write-ScriptLog -Level WARN -Message "  -> Request blocked for prohibited content. Sending the $($bookAnalysisRecords.Count) books of '$($bookFile.Name)' one at a time..."
+            $singleBookResult = Invoke-SingleBookAudit -BookRecords $bookAnalysisRecords.ToArray() -TagSection $tagPayloadSection -BookFileName $bookFile.Name
+            if ($singleBookResult.Usage.Available) {
+                Add-TokenUsage -Counter $fileUsage -TokenUsage $singleBookResult.Usage
             }
-
-            $apiResult = $requestResult.Text
-            Add-TokenUsage -Counter $fileUsage -TokenUsage $requestResult.TokenUsage
-
-            $resultObject = Convert-ResponseTextToResultObject -RawText $apiResult -SourceFile $bookFile.Name -Model $Model -ExpectedUniqueBookCount $inputUniqueBookCount
-
-            if ($resultObject.status -eq 'success') {
-                break
-            }
-
-            $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
-            if ($contentAttempt -lt $script:MaxContentRetries) {
-                Write-ScriptLog -Level WARN -Message "Invalid/incomplete response for '$($bookFile.Name)' (attempt $contentAttempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
-                Start-Sleep -Seconds $script:ContentRetryDelaySeconds
-            }
-            else {
-                Write-ScriptLog -Level WARN -Message "All $($script:MaxContentRetries) attempt(s) for '$($bookFile.Name)' failed validation. Last reason: $retryReason"
+            if ($null -ne $singleBookResult.ResultObject) {
+                $resultObject = $singleBookResult.ResultObject
+                $apiResult = $resultObject.raw_response
             }
         }
 
