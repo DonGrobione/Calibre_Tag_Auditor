@@ -1,6 +1,19 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-10-04
+
+### Modules
+- `Calibre.TagDefinitions` removed, with its tests. The tag definition baseline was only used for one warning, and that warning needed its own module, a baseline file, an export scope file, and extra pipeline logic. The guidance on re-checking the library after a tag definition change stays in the README.
+
+### Scripts
+- Remove the warning about tag definitions that changed since the last full-library audit (added on 2026-10-03).
+  - `01-Export-CalibreBooks.ps1` 4.10: no longer writes `01-Export/01-Export-Scope.json`.
+  - `01-Export-CalibreTags.ps1` 3.7: no longer compares the definitions with the baseline `01-Cache/TagDefinitions.json`.
+  - `02-Process-CalibreDataWithLLM.ps1` 6.5: no longer saves the baseline after a full-library run. `Test-TagDefinitionBaselineUpdate` and the error file counter are removed.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.16: when no book export file was written, all remaining steps are skipped, including the tag export. `Test-PipelineStepSkipped`, `Get-TagDefinitionChangeWarning`, and `Write-TagDefinitionChangeSummary` are removed. With tests.
+- Files left over from earlier runs (`01-Export/01-Export-Scope.json`, `01-Cache/TagDefinitions.json`) are not used any more and can be deleted.
+
 ## 2026-10-03
 
 ### Modules

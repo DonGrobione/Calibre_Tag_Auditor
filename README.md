@@ -23,7 +23,6 @@ I started this project because I have several thousand books and lost track of t
 - `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
   - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
-  - `Calibre.TagDefinitions`: compares the tag definitions with the baseline of the last full-library audit (see [Changing Tag Definitions](#changing-tag-definitions)).
   - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet.
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).
@@ -117,14 +116,6 @@ The tag definitions are read fresh from Calibre on every run, so Gemini always u
 | Tag renamed in Calibre | The note stays attached to the tag; the affected books change and are re-checked | Nothing |
 | New tag without a note | The tag export only contains tags with a note, so the tag counts as undefined | Write the note first |
 
-The project reminds you automatically:
-
-- `01-Cache/TagDefinitions.json` holds the baseline: the definitions of the last completed full-library audit. On the first run after the update, the current definitions are saved as baseline.
-- After every tag export, `01-Export-CalibreTags.ps1` compares the definitions with the baseline. Added, changed, and removed tags are logged as warnings together with the command to re-check all books. `Invoke-CalibreToolsPipeline.ps1` repeats the warning at the end of its summary. Whitespace-only edits and different upper and lower case of a tag name are not reported.
-- The pipeline runs the tag export even when no book was changed, so the warning also appears on days without changed books.
-- The warning repeats on every run until a run with `-ChangedWithinDays 0` completes without errors. `01-Export-CalibreBooks.ps1` marks such an export as full library in `01-Export/01-Export-Scope.json`, and `02-Process-CalibreDataWithLLM.ps1` then saves the used definitions as the new baseline.
-- Deleting all files in `01-Cache/` also deletes the baseline; the next run then starts a new one.
-
 ## Google Gemini
 `02-Process-CalibreDataWithLLM.ps1` sends each book export file to the Gemini Interactions API (`gemini-3.8-flash`). The prompt used to validate the Calibre exports is set in `02-CalibreDataLLM-Prompt.txt` and sent as system instruction with every request. Model, thinking level (`low`, `medium`, or `high`), timeouts, and retry intervals are set near the top of the script. Requests are retried on HTTP 429, 500, 502, 503, and 504 and on connection failures (DNS lookup, connect, timeout). When Gemini blocks the request of a file for prohibited content (HTTP 400), the books of that file are sent again one at a time, so only the book that triggers the block stays without result; the file is saved with a validation warning that names it. Requests are sent as UTF-8 bytes and responses are decoded as UTF-8, so umlauts and typographic characters do not depend on PowerShell's encoding defaults. A mojibake repair stays in place as a safety net for text that was already garbled at its source.
 
@@ -176,7 +167,7 @@ To send the full book text for every book instead of stored content profiles, pa
 After a successful run, the generated files are located here:
 
 - `01-Export`: exported books and tag definitions
-- `01-Cache`: cached book exports and content profiles, one file per book (see [Book Export Cache](#book-export-cache) and [Content Profiles](#content-profiles)), and the tag definition baseline `TagDefinitions.json` (see [Changing Tag Definitions](#changing-tag-definitions))
+- `01-Cache`: cached book exports and content profiles, one file per book (see [Book Export Cache](#book-export-cache) and [Content Profiles](#content-profiles))
 - `02-LLM-Result`: Gemini validation results
 - `03-ODS`: formatted ODS file for LibreOffice
 
@@ -210,7 +201,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **The suggestions for a book seem to miss parts of its content:** The book was probably checked with its content profile. Run with `-FullContent` to check it against the full text and rebuild its profile, or delete its file `01-Cache/<uuid>.json`.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 2.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
-- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, still runs the tag export to check the tag definitions, skips the Gemini and ODS steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
+- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the remaining steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
 
 ## Tests
 The Pester tests in `Tests/` cover the modules and the helper functions of the step scripts. They mock all external calls and need neither Calibre nor Gemini nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:

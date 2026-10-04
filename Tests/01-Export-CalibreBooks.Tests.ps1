@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as DEBUG, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The Export scope file tests check in the source that 01-Export-Scope.json marks only an export of all books as full library. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as DEBUG, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -679,43 +679,15 @@ Describe 'Export record' {
     }
 }
 
-Describe 'Export scope file' {
-    $scope = $scriptAst.Find({
-            param($node)
-            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$Scope'
-        }, $true)
-    $bookLoop = $scriptAst.Find({
-            param($node)
-            $node -is [System.Management.Automation.Language.ForEachStatementAst] -and $node.Condition.Extent.Text -eq '$Books'
-        }, $true)
-
-    It 'writes 01-Export-Scope.json, whose name does not match the book export files' {
-        $scriptAst.Extent.Text | Should Match '-ChildPath "01-Export-Scope\.json"'
-        '01-Export-Scope.json' -like '01-Export-CalibreBooks_*.json' | Should Be $false
-    }
-
-    It 'marks only an export of all books without debug export as full library' {
-        $scope.Right.Extent.Text | Should Match 'FullLibrary\s*=\s*\(-not \$DebugBookExport -and \$ChangedWithinDays -eq 0\)'
-    }
-
-    It 'writes the scope file after all books were exported' {
-        $scope.Extent.StartOffset -gt $bookLoop.Extent.EndOffset | Should Be $true
-    }
-
-    It 'removes the scope file of an older export before the new export' {
-        $scriptAst.Extent.Text | Should Match 'Remove-Item -LiteralPath \$ScopePath -Force'
-    }
-}
-
 Describe 'Incremental file writing' {
     $bookLoop = $scriptAst.Find({
             param($node)
             $node -is [System.Management.Automation.Language.ForEachStatementAst] -and $node.Condition.Extent.Text -eq '$Books'
         }, $true)
-    # Write-BookCacheFile calls Write-JsonFile too, so only calls outside function definitions are counted; the scope file write (-Path $ScopePath) is not an export file.
+    # Write-BookCacheFile calls Write-JsonFile too, so only calls outside function definitions are counted.
     $writeCalls = @($scriptAst.FindAll({
                 param($node)
-                $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-JsonFile' -and $node.Extent.Text -notmatch '-Path \$ScopePath'
+                $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-JsonFile'
             }, $true) | Where-Object {
             $parent = $_.Parent
             while ($null -ne $parent -and $parent -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
