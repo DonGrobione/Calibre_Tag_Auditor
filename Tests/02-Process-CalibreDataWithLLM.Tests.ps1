@@ -848,12 +848,12 @@ Describe 'Update-BookCacheProfile' {
         Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook -Uuid '..\evil') -ProfileData (Get-TestTextProfile -Text 'Profile') | Should Be $false
     }
 
-    It 'logs the stored cache file as DEBUG' {
+    It 'logs the stored cache file as INFO' {
         Mock Write-ScriptLog { }
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-log'
         $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
         $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Profile')
-        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'DEBUG' -and $Message -match '\(Text\).*0f8fad5b-d9cb-469f-a165-70867728950e\.json$' }
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $null -eq $Level -and $Message -match '^Stored content profile \(Text\).*0f8fad5b-d9cb-469f-a165-70867728950e\.json$' }
     }
 
     It 'logs nothing when the cache file is not written' {
