@@ -24,7 +24,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 5.0
+    Version: 5.1
 #>
 
 [CmdletBinding()]
@@ -394,7 +394,7 @@ try {
     } else {
         $RemovedCacheFiles = @(Remove-StaleBookCacheFile -CacheDirectory $CacheDir -LibraryUuids @($Books | ForEach-Object { [string]$_.uuid }))
         foreach ($RemovedCacheFile in $RemovedCacheFiles) {
-            Write-ScriptLog -Level DEBUG -Message ("Removed cache file of deleted book: {0}" -f $RemovedCacheFile.Name)
+            Write-ScriptLog -Message ("Removed cache file of deleted book: {0}" -f $RemovedCacheFile.Name)
         }
         $RemovedCacheFileCount = $RemovedCacheFiles.Count
         Write-ScriptLog ("Cache cleanup: {0} file(s) of deleted books removed" -f $RemovedCacheFileCount)
@@ -758,8 +758,7 @@ try {
             $BookContent = $CachedBook.BookContent
             $ContentStatus = if ($null -ne $CachedBook.PSObject.Properties['ContentStatus'] -and [string]$CachedBook.ContentStatus -eq 'NoText') { 'NoText' } else { 'Text' }
             $CachedBookCount++
-            Write-ScriptLog ("Book {0}/{1}: {2} (cached)" -f $BookNumber, $TotalBooks, $Book.title)
-            Write-ScriptLog -Level DEBUG -Message ("Read cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
+            Write-ScriptLog ("Book {0}/{1}: {2} (cached: {3})" -f $BookNumber, $TotalBooks, $Book.title, (Split-Path -Path $CachePath -Leaf))
         } else {
             $BookFiles = @(Get-BookFile -Book $Book -LibraryPath $LibraryPath)
             $PrimaryBookFile = Get-PrimaryBookFile -Files $BookFiles -SupportedExtensions $SupportedBookExtensions
@@ -850,7 +849,7 @@ try {
             if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
                 try {
                     Remove-Item -LiteralPath $CachePath -Force -ErrorAction Stop
-                    Write-ScriptLog -Level DEBUG -Message ("Removed outdated cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
+                    Write-ScriptLog -Message ("Removed outdated cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
                 } catch {
                     Write-ScriptLog -Level WARN -Message ("Could not delete outdated cache file '{0}': {1}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot), $_.Exception.Message)
                 }
@@ -869,7 +868,7 @@ try {
             }
             try {
                 Write-BookCacheFile -Path $CachePath -Record $CacheRecord
-                Write-ScriptLog -Level DEBUG -Message ("Wrote cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
+                Write-ScriptLog -Message ("Wrote cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
             } catch {
                 Write-ScriptLog -Level WARN -Message ("Could not write cache file '{0}': {1}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot), $_.Exception.Message)
             }

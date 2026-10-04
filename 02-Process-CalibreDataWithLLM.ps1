@@ -29,7 +29,7 @@
     Validates the latest book export with the full book text of every book.
 
 .NOTES
-    Version: 7.0
+    Version: 7.1
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -1141,7 +1141,7 @@ $FocusTagDefinitions
         return $record
     }
 
-    # Stores a content profile (ProfileData with ContentProfile, Source Text/Web/WebNotFound, and optional Sources and TagHashes) in the book's cache file 01-Cache/<uuid>.json, logs the cache file path as DEBUG, and returns $true. Returns $false without writing when the profile is empty without being a WebNotFound marker, the UUID is invalid, the cache file is missing or unreadable, or the file holds a different ContentHash, so a profile never belongs to another text or other metadata.
+    # Stores a content profile (ProfileData with ContentProfile, Source Text/Web/WebNotFound, and optional Sources and TagHashes) in the book's cache file 01-Cache/<uuid>.json, logs the cache file path, and returns $true. Returns $false without writing when the profile is empty without being a WebNotFound marker, the UUID is invalid, the cache file is missing or unreadable, or the file holds a different ContentHash, so a profile never belongs to another text or other metadata.
     function Update-BookCacheProfile {
         [CmdletBinding(SupportsShouldProcess = $true)]
         [OutputType([bool])]
@@ -1209,7 +1209,7 @@ $FocusTagDefinitions
 
         $utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
         [System.IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $cached -Depth 10), $utf8NoBom)
-        Write-ScriptLog -Level DEBUG -Message ("Stored content profile ({0}) of '{1}' in cache file: {2}" -f $source, $Book.Title, (ConvertTo-DisplayPath -Path $path -BasePath $PSScriptRoot))
+        Write-ScriptLog -Message ("Stored content profile ({0}) of '{1}' in cache file: {2}" -f $source, $Book.Title, (ConvertTo-DisplayPath -Path $path -BasePath $PSScriptRoot))
         return $true
     }
 

@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText, and the sampled excerpt of Select-ExcerptText. The Debug book export tests check in the source that DebugBookExport selects the 10 most recently changed books and keeps the configured BooksPerFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as DEBUG, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText, and the sampled excerpt of Select-ExcerptText. The Debug book export tests check in the source that DebugBookExport selects the 10 most recently changed books and keeps the configured BooksPerFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as INFO (no DEBUG entries), and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -437,13 +437,22 @@ Describe 'Book cache workflow' {
         $scriptAst.Extent.Text | Should Match '-ChildPath "01-Cache"'
     }
 
-    It 'logs every read, written, and removed cache file as DEBUG with its display path' {
-        $debugCacheLogs = @($commands | Where-Object {
-                $_.GetCommandName() -eq 'Write-ScriptLog' -and $_.Extent.Text -match '-Level DEBUG' -and $_.Extent.Text -match 'ConvertTo-DisplayPath -Path \$CachePath'
+    It 'logs every written and removed cache file as INFO with its display path' {
+        $cacheLogs = @($commands | Where-Object {
+                $_.GetCommandName() -eq 'Write-ScriptLog' -and $_.Extent.Text -match 'ConvertTo-DisplayPath -Path \$CachePath'
             } | ForEach-Object { $_.Extent.Text })
-        @($debugCacheLogs | Where-Object { $_ -match 'Read cache file' }).Count | Should Be 1
-        @($debugCacheLogs | Where-Object { $_ -match 'Wrote cache file' }).Count | Should Be 1
-        @($debugCacheLogs | Where-Object { $_ -match 'Removed outdated cache file' }).Count | Should Be 1
+        @($cacheLogs | Where-Object { $_ -match 'Wrote cache file' }).Count | Should Be 1
+        @($cacheLogs | Where-Object { $_ -match 'Removed outdated cache file' }).Count | Should Be 1
+        @($cacheLogs | Where-Object { $_ -match '(Wrote|Removed outdated) cache file' -and $_ -match '-Level' }).Count | Should Be 0
+    }
+
+    It 'names the cache file of a cached book in its book line, without path and without a separate line' {
+        $scriptAst.Extent.Text | Should Match '"Book \{0\}/\{1\}: \{2\} \(cached: \{3\}\)" -f \$BookNumber, \$TotalBooks, \$Book\.title, \(Split-Path -Path \$CachePath -Leaf\)'
+        $scriptAst.Extent.Text | Should Not Match 'Read cache file'
+    }
+
+    It 'logs no DEBUG entries' {
+        $scriptAst.Extent.Text | Should Not Match '-Level DEBUG'
     }
 
     It 'logs a written cache file only after Write-BookCacheFile succeeded' {
