@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content),Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile, and Add-BookContentProfile. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content),Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -21,7 +21,8 @@ $functionNames = @(
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
     'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
-    'Add-TokenUsage', 'Request-WebContentProfile', 'Add-BookContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile'
+    'Add-TokenUsage', 'Request-WebContentProfile', 'Add-BookContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
+    'Merge-ContentProfileChecklist', 'Get-TagDefinitionHashTable', 'ConvertTo-TagHashTable', 'Merge-TagHashTable', 'Select-TagDefinition', 'Get-ProfileRefreshCandidate', 'Merge-RefreshedAuditRecord'
 )
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
@@ -81,6 +82,8 @@ $script:ConnectionRetryMaxSeconds = 1
 $script:LastApiStatusCode = $null
 $script:LastApiErrorBody = $null
 $script:ContentProfileVersion = 1
+$script:MinimumProfileWords = 2
+$script:TagDefinitionHashes = [ordered]@{ Fantasy = '1111111111111111'; LitRPG = '2222222222222222' }
 
 Describe '02-Process-CalibreDataWithLLM.ps1 source' {
     It 'parses without errors' {
@@ -482,7 +485,7 @@ Describe 'Invoke-SingleBookAudit' {
             return $null
         }
         $match = [regex]::Match($PayloadText, '"BookId":(\d+),"Title":"([^"]+)","Author":"([^"]+)"')
-        $text = '{"Results":[{"Title":"' + $match.Groups[2].Value + '","Author":"' + $match.Groups[3].Value + '"}],"ContentProfiles":[{"BookId":' + $match.Groups[1].Value + ',"ContentProfile":"P"}]}'
+        $text = '{"Results":[{"Title":"' + $match.Groups[2].Value + '","Author":"' + $match.Groups[3].Value + '"}],"ContentProfiles":[{"BookId":' + $match.Groups[1].Value + ',"ContentProfile":"P"}],"ProfileGaps":[{"BookId":' + $match.Groups[1].Value + ',"Tags":["T"]}]}'
         Get-TestRequestResult -Text $text
     }
 
@@ -499,6 +502,7 @@ Describe 'Invoke-SingleBookAudit' {
         $merged.status | Should Be 'warning'
         @($merged.records).Count | Should Be 2
         @($merged.content_profiles | ForEach-Object { $_.BookId }) -join ',' | Should Be '1,3'
+        @($merged.profile_gaps | ForEach-Object { $_.BookId }) -join ',' | Should Be '1,3'
         $merged.input_unique_book_count | Should Be 3
         $merged.output_unique_book_count | Should Be 2
         $merged.validation_error | Should Match "'Bad B' \(blocked for prohibited content\)"
@@ -552,6 +556,16 @@ Describe 'Convert-ResponseTextToResultObject' {
         $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}]}' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 1
         $result.status | Should Be 'success'
         @($result.content_profiles).Count | Should Be 0
+        @($result.profile_gaps).Count | Should Be 0
+    }
+
+    It 'reads the profile gaps from ProfileGaps' {
+        $rawText = '{"Results":[{"Title":"A","Author":"X","ProposedAction":"NO_CHANGES","Tag":null,"Reason":null}],"ContentProfiles":[],"ProfileGaps":[{"BookId":1,"Tags":["Found Family","Harem"]},null]}'
+        $result = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 1
+        $result.status | Should Be 'success'
+        @($result.profile_gaps).Count | Should Be 1
+        $result.profile_gaps[0].BookId | Should Be 1
+        @($result.profile_gaps[0].Tags) -join '|' | Should Be 'Found Family|Harem'
     }
 
     It 'reports a count mismatch in the object form' {
@@ -793,6 +807,21 @@ Describe 'Update-BookCacheProfile' {
         $cached.ContentHash | Should Be 'hash-1'
     }
 
+    It 'stores the tag definition fingerprints, or $null without them' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-taghashes'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $profileData = [pscustomobject]@{ ContentProfile = 'Profile'; Source = 'Text'; Sources = $null; TagHashes = [ordered]@{ Fantasy = '1111111111111111'; Magic = '3333333333333333' } }
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData $profileData
+        $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))
+        $cached.ContentProfileTagHashes.Fantasy | Should Be '1111111111111111'
+        $cached.ContentProfileTagHashes.Magic | Should Be '3333333333333333'
+
+        $null = Update-BookCacheProfile -CacheDirectory $cacheDirectory -Book (Get-TestExportBook) -ProfileData (Get-TestTextProfile -Text 'Second')
+        $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))
+        $null -eq $cached.PSObject.Properties['ContentProfileTagHashes'] | Should Be $false
+        $cached.ContentProfileTagHashes | Should Be $null
+    }
+
     It 'replaces an older profile' {
         $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'update-replace'
         $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
@@ -879,6 +908,31 @@ Describe 'Save-ContentProfile' {
 
     It 'returns 0 for an empty profile list' {
         Save-ContentProfile -ContentProfiles @() -FullTextBooksById @{} -CacheDirectory $TestDrive | Should Be 0
+    }
+
+    It 'stores the fingerprints of all current tag definitions with the profile' {
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-taghashes'
+        $path = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $null = Save-ContentProfile -ContentProfiles @([pscustomobject]@{ BookId = 1; ContentProfile = 'Form: Novel.' }) -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory
+        $cached = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))
+        $cached.ContentProfileTagHashes.Fantasy | Should Be '1111111111111111'
+        $cached.ContentProfileTagHashes.LitRPG | Should Be '2222222222222222'
+    }
+
+    It 'warns about a stored profile with fewer than the minimum words, but stores it' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-short'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        Save-ContentProfile -ContentProfiles @([pscustomobject]@{ BookId = 1; ContentProfile = 'Short' }) -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory | Should Be 1
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' -and $Message -match "'Book' has only 1 words \(expected at least 2\)" }
+    }
+
+    It 'does not warn about a profile with enough words' {
+        Mock Write-ScriptLog { }
+        $cacheDirectory = Join-Path -Path $TestDrive -ChildPath 'save-long'
+        $null = Add-TestBookCacheFile -CacheDirectory $cacheDirectory -ContentHash 'hash-1'
+        $null = Save-ContentProfile -ContentProfiles @([pscustomobject]@{ BookId = 1; ContentProfile = 'Form: Novel.' }) -FullTextBooksById @{ 1 = (Get-TestExportBook) } -CacheDirectory $cacheDirectory
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 0 -Exactly -ParameterFilter { $Level -eq 'WARN' }
     }
 }
 
@@ -979,16 +1033,24 @@ Describe 'Request-WebContentProfile' {
     Mock Start-Sleep { }
     Mock Write-ScriptLog { }
 
-    It 'sends the tag definitions and metadata with the web profile prompt and the google_search tool' {
+    It 'sends only the metadata with the web profile prompt and the google_search tool' {
         Mock Invoke-GeminiRequest { [pscustomobject]@{ Text = '{"ContentProfile":"Web profile"}'; TokenUsage = [pscustomobject]@{ PromptTokens = 10; CompletionTokens = 5; TotalTokens = 15 }; SearchQueryCount = 2; Sources = @([pscustomobject]@{ Title = 'a'; Url = 'https://a.example/1' }) } }
         $counter = Get-TestUsageCounter
-        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[{"Tag":"Manga"}]' -UsageCounter $counter
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -UsageCounter $counter
         $result.ContentProfile | Should Be 'Web profile'
         $result.SearchQueryCount | Should Be 2
         @($result.Sources).Count | Should Be 1
         $counter.TotalTokens | Should Be 15
         Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 1 -Exactly -ParameterFilter {
-            $UseGoogleSearch -and $SystemInstruction -eq 'Web profile prompt' -and $PayloadText -match '\[\{"Tag":"Manga"\}\]' -and $PayloadText -match 'isbn:9781234567897' -and $PayloadText -match 'Publisher description'
+            $UseGoogleSearch -and $SystemInstruction -eq 'Web profile prompt' -and $PayloadText -match 'isbn:9781234567897' -and $PayloadText -match 'Publisher description' -and $PayloadText -notmatch 'TAG DEFINITIONS' -and $PayloadText -notmatch 'FOCUS QUESTIONS'
+        }
+    }
+
+    It 'adds the focus tag definitions as focus questions for a targeted search' {
+        Mock Invoke-GeminiRequest { [pscustomobject]@{ Text = '{"ContentProfile":"Web profile"}'; TokenUsage = $null; SearchQueryCount = 1; Sources = @() } }
+        $null = Request-WebContentProfile -Book (Get-TestNoTextBook) -FocusTagDefinitions '[{"Tag":"Harem","NoteText":"Several love interests"}]' -UsageCounter (Get-TestUsageCounter)
+        Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 1 -Exactly -ParameterFilter {
+            $PayloadText -match '(?s)BOOK METADATA:.*isbn:9781234567897.*FOCUS QUESTIONS:\r?\n=+\r?\n\[\{"Tag":"Harem","NoteText":"Several love interests"\}\]'
         }
     }
 
@@ -999,7 +1061,7 @@ Describe 'Request-WebContentProfile' {
             $text = if ($script:webAttempt -eq 1) { 'not json' } else { '{"ContentProfile":""}' }
             [pscustomobject]@{ Text = $text; TokenUsage = $null; SearchQueryCount = 1; Sources = @() }
         }
-        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[]' -UsageCounter (Get-TestUsageCounter)
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -UsageCounter (Get-TestUsageCounter)
         $result.ContentProfile | Should BeExactly ''
         $result.SearchQueryCount | Should Be 2
         Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 2 -Exactly
@@ -1007,14 +1069,14 @@ Describe 'Request-WebContentProfile' {
 
     It 'returns a $null profile when the API request fails' {
         Mock Invoke-GeminiRequest { $null }
-        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[]' -UsageCounter (Get-TestUsageCounter)
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -UsageCounter (Get-TestUsageCounter)
         $result.ContentProfile | Should Be $null
         Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 1 -Exactly
     }
 
     It 'returns a $null profile after the last invalid response' {
         Mock Invoke-GeminiRequest { [pscustomobject]@{ Text = 'not json'; TokenUsage = $null; SearchQueryCount = 1; Sources = @() } }
-        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -TagDefinitions '[]' -UsageCounter (Get-TestUsageCounter)
+        $result = Request-WebContentProfile -Book (Get-TestNoTextBook) -UsageCounter (Get-TestUsageCounter)
         $result.ContentProfile | Should Be $null
         $result.SearchQueryCount | Should Be 3
         Assert-MockCalled Invoke-GeminiRequest -Scope It -Times 3 -Exactly
@@ -1029,6 +1091,270 @@ Describe 'Add-BookContentProfile' {
         $book.ContentProfileSource | Should Be 'Web'
         $book.ContentProfileVersion | Should Be 1
         Test-ContentProfile -Book $book | Should Be $true
+        $book.ContentProfileTagHashes | Should Be $null
+    }
+
+    It 'adds the tag definition fingerprints of the profile data' {
+        $book = Get-TestNoTextBook
+        Add-BookContentProfile -Book $book -ProfileData ([pscustomobject]@{ ContentProfile = 'Web profile'; Source = 'Web'; Sources = @(); TagHashes = @{ Harem = 'abc' } })
+        $book.ContentProfileTagHashes.Harem | Should Be 'abc'
+    }
+}
+
+Describe 'Merge-ContentProfileChecklist' {
+    It 'replaces the placeholder with the checklist text' {
+        Merge-ContentProfileChecklist -PromptText "Start`n{{CONTENT_PROFILE_CHECKLIST}}`nEnd" -ChecklistText 'FACETS' -PromptName 'p.txt' | Should BeExactly "Start`nFACETS`nEnd"
+    }
+
+    It 'throws when the prompt has no placeholder' {
+        { Merge-ContentProfileChecklist -PromptText 'No placeholder' -ChecklistText 'FACETS' -PromptName 'p.txt' } | Should Throw "'p.txt' has no placeholder"
+    }
+
+    It 'finds the placeholder in both prompt files and the checklist file in the project' {
+        $checklistPath = Join-Path -Path $projectRoot -ChildPath '02-CalibreContentProfile-Checklist.txt'
+        (Test-Path -LiteralPath $checklistPath -PathType Leaf) | Should Be $true
+        $checklist = [System.IO.File]::ReadAllText($checklistPath, [System.Text.Encoding]::UTF8)
+        foreach ($promptName in @('02-CalibreDataLLM-Prompt.txt', '02-CalibreWebProfile-Prompt.txt')) {
+            $prompt = [System.IO.File]::ReadAllText((Join-Path -Path $projectRoot -ChildPath $promptName), [System.Text.Encoding]::UTF8)
+            $merged = Merge-ContentProfileChecklist -PromptText $prompt -ChecklistText $checklist -PromptName $promptName
+            $merged | Should Match 'Narrative perspective and structure'
+            $merged | Should Not Match '\{\{CONTENT_PROFILE_CHECKLIST\}\}'
+        }
+    }
+
+    It 'loads both prompts through the checklist merge in the script' {
+        $scriptAst.Extent.Text | Should Match '\$PromptSystem = Merge-ContentProfileChecklist '
+        $scriptAst.Extent.Text | Should Match '\$WebProfilePromptSystem = Merge-ContentProfileChecklist '
+    }
+
+    It 'does not tie the profile to the tag definitions in the prompts' {
+        foreach ($fileName in @('02-CalibreDataLLM-Prompt.txt', '02-CalibreWebProfile-Prompt.txt', '02-CalibreContentProfile-Checklist.txt')) {
+            [System.IO.File]::ReadAllText((Join-Path -Path $projectRoot -ChildPath $fileName), [System.Text.Encoding]::UTF8) | Should Not Match 'concept that the supplied tag definitions distinguish'
+        }
+    }
+}
+
+Describe 'Get-TagDefinitionHashTable' {
+    $definitions = @(
+        [pscustomobject]@{ Tag = 'Magic'; NoteText = 'Magic is central.' },
+        [pscustomobject]@{ Tag = ' Fantasy '; NoteText = 'Secondary world.' },
+        [pscustomobject]@{ Tag = ''; NoteText = 'No name' },
+        [pscustomobject]@{ Tag = 'Empty'; NoteText = $null }
+    )
+
+    It 'maps every named tag to 16 hex characters, sorted by name' {
+        $hashes = Get-TagDefinitionHashTable -TagDefinitions $definitions
+        @($hashes.Keys) -join '|' | Should Be 'Empty|Fantasy|Magic'
+        foreach ($value in $hashes.Values) {
+            $value | Should Match '^[0-9a-f]{16}$'
+        }
+    }
+
+    It 'returns the same fingerprint for the same definition and a different one for a changed definition' {
+        $first = Get-TagDefinitionHashTable -TagDefinitions $definitions
+        $changed = Get-TagDefinitionHashTable -TagDefinitions @([pscustomobject]@{ Tag = 'Magic'; NoteText = 'Magic is central and systematic.' })
+        (Get-TagDefinitionHashTable -TagDefinitions $definitions)['Magic'] | Should Be $first['Magic']
+        $changed['Magic'] | Should Not Be $first['Magic']
+    }
+
+    It 'uses the SHA256 hash of the UTF-8 NoteText' {
+        $hashes = Get-TagDefinitionHashTable -TagDefinitions @([pscustomobject]@{ Tag = 'Empty'; NoteText = '' })
+        $hashes['Empty'] | Should Be 'e3b0c44298fc1c14'
+    }
+
+    It 'returns an empty dictionary for no definitions' {
+        @((Get-TagDefinitionHashTable -TagDefinitions @()).Keys).Count | Should Be 0
+    }
+}
+
+Describe 'ConvertTo-TagHashTable' {
+    It 'converts a JSON object read from a cache file' {
+        $result = ConvertTo-TagHashTable -InputObject (ConvertFrom-Json -InputObject '{ "Fantasy": "1111111111111111", "Magic": "3333333333333333" }')
+        $result -is [hashtable] | Should Be $true
+        $result['Magic'] | Should Be '3333333333333333'
+        $result.Count | Should Be 2
+    }
+
+    It 'copies a dictionary' {
+        (ConvertTo-TagHashTable -InputObject ([ordered]@{ A = 'x' }))['A'] | Should Be 'x'
+    }
+
+    It 'returns an empty hashtable for $null or other values' {
+        (ConvertTo-TagHashTable -InputObject $null).Count | Should Be 0
+        (ConvertTo-TagHashTable -InputObject 'text').Count | Should Be 0
+    }
+}
+
+Describe 'Merge-TagHashTable' {
+    It 'keeps the stored fingerprints and sets the current fingerprint of the given tags' {
+        $result = Merge-TagHashTable -StoredTagHashes @{ Magic = 'old'; Harem = 'kept' } -CurrentTagHashes $script:TagDefinitionHashes -TagNames @('Fantasy', 'Unknown')
+        $result['Fantasy'] | Should Be '1111111111111111'
+        $result['Harem'] | Should Be 'kept'
+        $result['Magic'] | Should Be 'old'
+        $result.ContainsKey('Unknown') | Should Be $false
+    }
+
+    It 'does not change the stored dictionary' {
+        $stored = @{ Magic = 'old' }
+        $null = Merge-TagHashTable -StoredTagHashes $stored -CurrentTagHashes $script:TagDefinitionHashes -TagNames @('Fantasy')
+        $stored.ContainsKey('Fantasy') | Should Be $false
+    }
+}
+
+Describe 'Select-TagDefinition' {
+    It 'returns the definitions of the given tag names, ignoring case' {
+        $definitions = @([pscustomobject]@{ Tag = 'Fantasy'; NoteText = 'F' }, [pscustomobject]@{ Tag = 'Harem'; NoteText = 'H' }, [pscustomobject]@{ Tag = 'Magic'; NoteText = 'M' })
+        $result = @(Select-TagDefinition -TagDefinitions $definitions -TagNames @('magic', 'Fantasy', 'Unknown'))
+        @($result | ForEach-Object { $_.Tag }) -join '|' | Should Be 'Fantasy|Magic'
+    }
+}
+
+Describe 'Get-ProfileRefreshCandidate' {
+    # Builds a text book export record sent with its profile, with the given stored fingerprints.
+    function Get-TestProfileBook {
+        param([AllowNull()][object]$TagHashes)
+
+        $book = Get-TestExportBook -ContentProfile 'Profile'
+        $book | Add-Member -NotePropertyName ContentProfileSource -NotePropertyValue 'Text'
+        $book | Add-Member -NotePropertyName ContentProfileTagHashes -NotePropertyValue $TagHashes
+        return $book
+    }
+
+    $current = $script:TagDefinitionHashes
+
+    It 'returns a text book with a gap tag whose definition is new since the profile was written' {
+        $book = Get-TestProfileBook -TagHashes ([pscustomobject]@{ Fantasy = '1111111111111111' })
+        $result = @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = 2; Tags = @('Fantasy', 'LitRPG') }) -ProfileBooksById @{ 2 = $book } -TagHashes $current)
+        $result.Count | Should Be 1
+        $result[0].BookId | Should Be 2
+        $result[0].Kind | Should Be 'Text'
+        @($result[0].Tags) -join '|' | Should Be 'LitRPG'
+    }
+
+    It 'returns a gap tag whose definition changed' {
+        $book = Get-TestProfileBook -TagHashes ([pscustomobject]@{ Fantasy = 'aaaaaaaaaaaaaaaa'; LitRPG = '2222222222222222' })
+        $result = @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = '2'; Tags = @('Fantasy') }) -ProfileBooksById @{ 2 = $book } -TagHashes $current)
+        @($result[0].Tags) -join '|' | Should Be 'Fantasy'
+    }
+
+    It 'treats every gap tag as new for a profile without fingerprints' {
+        $result = @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = 2; Tags = @('Fantasy', 'Fantasy') }) -ProfileBooksById @{ 2 = (Get-TestProfileBook -TagHashes $null) } -TagHashes $current)
+        @($result[0].Tags) -join '|' | Should Be 'Fantasy'
+    }
+
+    It 'skips gaps whose tags are unchanged or unknown' {
+        $book = Get-TestProfileBook -TagHashes ([pscustomobject]@{ Fantasy = '1111111111111111' })
+        @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = 2; Tags = @('Fantasy', 'Not a tag', ' ') }) -ProfileBooksById @{ 2 = $book } -TagHashes $current).Count | Should Be 0
+    }
+
+    It 'skips unknown BookIds, gaps without Tags, repeated gap objects, and books sent with their full text' {
+        $book = Get-TestProfileBook -TagHashes $null
+        $gaps = @(
+            [pscustomobject]@{ BookId = 9; Tags = @('Fantasy') },
+            [pscustomobject]@{ BookId = 2 },
+            [pscustomobject]@{ BookId = 2; Tags = @('Fantasy') },
+            [pscustomobject]@{ BookId = 2; Tags = @('LitRPG') },
+            $null
+        )
+        $result = @(Get-ProfileRefreshCandidate -ProfileGaps $gaps -ProfileBooksById @{ 2 = $book } -TagHashes $current)
+        $result.Count | Should Be 1
+        @($result[0].Tags) -join '|' | Should Be 'Fantasy'
+    }
+
+    It 'skips a text profile without BookContent' {
+        $book = Get-TestProfileBook -TagHashes $null
+        $book.BookContent = $null
+        @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = 2; Tags = @('Fantasy') }) -ProfileBooksById @{ 2 = $book } -TagHashes $current).Count | Should Be 0
+    }
+
+    It 'returns a web profile as Kind Web and skips one without ContentHash' {
+        $webBook = Get-TestNoTextBook -ContentProfile 'Web profile' -ContentProfileSource 'Web'
+        $result = @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = 1; Tags = @('Fantasy') }) -ProfileBooksById @{ 1 = $webBook } -TagHashes $current)
+        $result[0].Kind | Should Be 'Web'
+
+        $webBook.ContentHash = ''
+        @(Get-ProfileRefreshCandidate -ProfileGaps @([pscustomobject]@{ BookId = 1; Tags = @('Fantasy') }) -ProfileBooksById @{ 1 = $webBook } -TagHashes $current).Count | Should Be 0
+    }
+
+    It 'returns nothing for no gaps' {
+        @(Get-ProfileRefreshCandidate -ProfileGaps @() -ProfileBooksById @{} -TagHashes $current).Count | Should Be 0
+    }
+}
+
+Describe 'Merge-RefreshedAuditRecord' {
+    # Builds a first audit result object with records for the books A, B, and C and one content profile.
+    function Get-TestFirstResult {
+        return [pscustomobject]@{
+            records          = @(
+                [pscustomobject]@{ Title = 'A'; Author = 'X'; ProposedAction = 'NO_CHANGES'; Tag = $null; Reason = $null },
+                [pscustomobject]@{ Title = 'B'; Author = 'Y'; ProposedAction = 'REMOVE'; Tag = 'Old'; Reason = 'R' },
+                [pscustomobject]@{ Title = 'B'; Author = 'Y'; ProposedAction = 'ADD'; Tag = 'New'; Reason = 'R' },
+                [pscustomobject]@{ Title = 'C'; Author = 'Z'; ProposedAction = 'NO_CHANGES'; Tag = $null; Reason = $null }
+            )
+            content_profiles = @([pscustomobject]@{ BookId = 1; ContentProfile = 'Profile A' })
+        }
+    }
+
+    $bookRecords = @([ordered]@{ BookId = 2; Title = 'B'; Author = 'Y'; BookContent = 'text' }, [ordered]@{ BookId = 3; Title = 'C'; Author = 'Z'; BookContent = 'text' })
+
+    It 'replaces all records of the refreshed books and appends the new profiles' {
+        $first = Get-TestFirstResult
+        $refresh = [pscustomobject]@{
+            records          = @([pscustomobject]@{ Title = 'B'; Author = 'Y'; ProposedAction = 'ADD'; Tag = 'Harem'; Reason = 'R2' })
+            content_profiles = @([pscustomobject]@{ BookId = 2; ContentProfile = 'Profile B' })
+        }
+        Merge-RefreshedAuditRecord -ResultObject $first -RefreshResultObject $refresh -BookRecords $bookRecords | Should Be 1
+        @($first.records | Where-Object { $_.Title -eq 'B' }).Count | Should Be 1
+        @($first.records | Where-Object { $_.Title -eq 'B' })[0].Tag | Should Be 'Harem'
+        @($first.records | Where-Object { $_.Title -eq 'C' }).Count | Should Be 1
+        @($first.records).Count | Should Be 3
+        @($first.content_profiles | ForEach-Object { $_.BookId }) -join ',' | Should Be '1,2'
+    }
+
+    It 'ignores refresh records of books that were not in the refresh request' {
+        $first = Get-TestFirstResult
+        $refresh = [pscustomobject]@{ records = @([pscustomobject]@{ Title = 'A'; Author = 'X'; ProposedAction = 'ADD'; Tag = 'T'; Reason = 'R' }); content_profiles = @() }
+        Merge-RefreshedAuditRecord -ResultObject $first -RefreshResultObject $refresh -BookRecords $bookRecords | Should Be 0
+        @($first.records).Count | Should Be 4
+        @($first.records | Where-Object { $_.Title -eq 'A' })[0].ProposedAction | Should Be 'NO_CHANGES'
+    }
+
+    It 'matches the books by title and author ignoring case and whitespace' {
+        $first = Get-TestFirstResult
+        $refresh = [pscustomobject]@{ records = @([pscustomobject]@{ Title = ' c '; Author = 'z'; ProposedAction = 'ADD'; Tag = 'T'; Reason = 'R' }); content_profiles = @() }
+        Merge-RefreshedAuditRecord -ResultObject $first -RefreshResultObject $refresh -BookRecords $bookRecords | Should Be 1
+        @($first.records | Where-Object { $_.Title -eq 'C' }).Count | Should Be 0
+    }
+}
+
+Describe 'Profile refresh workflow' {
+    $scriptText = $scriptAst.Extent.Text
+
+    It 'remembers the books sent with their profile by BookId' {
+        $scriptText | Should Match '\$profileBooksById\[\$bookId\] = \$inputBook'
+    }
+
+    It 'collects the refresh candidates from the profile gaps with the current fingerprints' {
+        $scriptText | Should Match 'Get-ProfileRefreshCandidate -ProfileGaps @\(\$resultObject\.profile_gaps\) -ProfileBooksById \$profileBooksById -TagHashes \$script:TagDefinitionHashes'
+        $scriptText | Should Match '\$script:TagDefinitionHashes = Get-TagDefinitionHashTable -TagDefinitions \$tagDefinitions'
+    }
+
+    It 'refreshes a text book with its full excerpt and a web book with a targeted search' {
+        $scriptText | Should Match 'ConvertTo-BookAnalysisRecord -Book \$candidate\.Book -BookId \$candidate\.BookId -FullContent'
+        $scriptText | Should Match 'Request-WebContentProfile -Book \$candidate\.Book -FocusTagDefinitions \$focusTagDefinitions -UsageCounter \$fileUsage'
+    }
+
+    It 'sends no tag definitions with the first web profile request' {
+        $scriptText | Should Match 'Request-WebContentProfile -Book \$webProfileBook -UsageCounter \$fileUsage'
+    }
+
+    It 'merges the refresh results and stores the refresh summary in the result file' {
+        $scriptText | Should Match 'Merge-RefreshedAuditRecord -ResultObject \$resultObject -RefreshResultObject \$refreshAudit\.ResultObject'
+        $scriptText | Should Match "Add-Member -MemberType NoteProperty -Name 'profile_refresh'"
+    }
+
+    It 'runs the refresh before the token usage of the file is summed up' {
+        $scriptText.IndexOf('Get-ProfileRefreshCandidate -ProfileGaps @(') | Should BeLessThan $scriptText.IndexOf('$totalSearchQueryCount += $fileSearchQueryCount')
     }
 }
 
@@ -1065,6 +1391,16 @@ Describe 'Content profile workflow' {
     It 'sends the book data and the tag definitions as compact JSON' {
         $scriptAst.Extent.Text | Should Match '\$bookAnalysisInput = ConvertTo-CompactJson'
         $scriptAst.Extent.Text | Should Match '\$tagContent = ConvertTo-CompactJson'
+    }
+
+    It 'parses the tag definitions into a flat array, not wrapped in a second array' {
+        $scriptAst.Extent.Text | Should Not Match '@\(ConvertFrom-Json'
+        $scriptAst.Extent.Text | Should Match '\$parsedTagDefinitions = ConvertFrom-Json -InputObject \$tagContent -ErrorAction Stop\r?\n\s+\$tagDefinitions = @\(\$parsedTagDefinitions\)'
+        $parsedTagDefinitions = ConvertFrom-Json -InputObject '[{"Tag":"A","NoteText":"a"},{"Tag":"B","NoteText":"b"}]'
+        $tagDefinitions = @($parsedTagDefinitions)
+        $tagDefinitions.Count | Should Be 2
+        ConvertTo-CompactJson -InputObject $tagDefinitions -Depth 5 | Should BeExactly '[{"Tag":"A","NoteText":"a"},{"Tag":"B","NoteText":"b"}]'
+        @((Get-TagDefinitionHashTable -TagDefinitions $tagDefinitions).Keys) -join '|' | Should Be 'A|B'
     }
 
     It 'stores the profiles in the 01-Cache folder' {

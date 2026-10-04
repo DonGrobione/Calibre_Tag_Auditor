@@ -20,6 +20,7 @@ I started this project because I have several thousand books and lost track of t
 - `01-CalibreExport.config.json`: Calibre export configuration (see [Calibre Configuration](#calibre-configuration)).
 - `02-CalibreDataLLM-Prompt.txt`: prompt for Gemini, sent as system instruction with every tag audit request.
 - `02-CalibreWebProfile-Prompt.txt`: prompt for the web profile requests of books without text (see [Books Without Text](#books-without-text)).
+- `02-CalibreContentProfile-Checklist.txt`: the fixed facets of a content profile, inserted into both prompts at the placeholder `{{CONTENT_PROFILE_CHECKLIST}}` (see [Content Profiles](#content-profiles)).
 - `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
   - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
@@ -37,7 +38,7 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 - `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
 - `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`. Keep this number low to prevent timeouts or other LLM processing issues. Each file is written as soon as it is full, so the files finished before an interrupted export are kept.
 - `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`. The parameter `-ChangedWithinDays` of `Invoke-CalibreToolsPipeline.ps1` and `01-Export-CalibreBooks.ps1` overrides this value for a single run without changing the file (see [Quick Start](#quick-start)).
-- `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export the 20 most recently changed books in four JSON files with five books per file. Books without a valid modification date are excluded. Default: `false`.
+- `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export only the 10 most recently changed books, split into files of `BooksPerFile` books. Use it for small test runs. Books without a valid modification date are excluded. Default: `false`.
 
 Depending on the size of your library and number of tags, changing the value of `ChangedWithinDays` may use a lot more tokens. Books without text (e.g. comics) also cause Google Search queries the first time they are checked (see [Books Without Text](#books-without-text)).
 
@@ -53,14 +54,14 @@ The book export contains the following fields from Calibre:
 - `Publisher`: Publisher name
 - `Year`: Publication year, extracted from the publication date
 - `Description`: The book description from the Calibre field `comments`, converted from HTML to plain text. It is sent to Gemini only in the web profile request of a book without text.
-- `BookContent`: The first 20,000 words from the preferred EPUB, AZW3, MOBI, or PDF file, with normalized whitespace. Empty for a book without text and when the extraction failed.
+- `BookContent`: An excerpt of the preferred EPUB, AZW3, MOBI, or PDF file, with normalized whitespace. A book with up to 30,000 words is included completely. A longer book is sampled: 18,000 words from the start, 6,000 words from the middle, and 6,000 words from the late part, ending at 92% of the text so that afterwords, ads, and previews of other books are left out. The sections are separated by a line `[...]`, so the profile also covers developments that only start later in the book. Empty for a book without text and when the extraction failed.
 
 The export also contains these technical fields, which are not sent to Gemini as they are:
 
 - `Uuid`: Calibre UUID of the book (lower case), used to find the book's cache file.
 - `ContentStatus`: `Text` (the book has `BookContent`), `NoText` (no or almost no extractable text, or no supported book file, see [Books Without Text](#books-without-text)), or `Failed` (the extraction failed).
 - `ContentHash`: SHA256 hash that identifies what a content profile was written from: the book text for books with text, or the identity metadata (title, author, series, series index, identifiers, description) for books without text.
-- `ContentProfile`, `ContentProfileVersion`, `ContentProfileSource`, `ContentProfileSources`: the stored content profile of the book, or empty when there is none (see [Content Profiles](#content-profiles)). The source is `Text`, `Web`, or `WebNotFound`; the sources list the cited web pages of a web profile.
+- `ContentProfile`, `ContentProfileVersion`, `ContentProfileSource`, `ContentProfileSources`, `ContentProfileTagHashes`: the stored content profile of the book, or empty when there is none (see [Content Profiles](#content-profiles)). The source is `Text`, `Web`, or `WebNotFound`; the sources list the cited web pages of a web profile; the tag hashes are fingerprints of the tag definitions that were already checked against the book's source (see [Profile Gaps](#profile-gaps)).
 
 The Calibre field `last_modified` is used only to sort the books, apply the `ChangedWithinDays` filter, and check whether a cached book is still current. The field `formats` is used only to find the book files: the export uses exactly the file paths that Calibre lists for the book and ignores paths outside the library folder. Neither field is included in the exported book JSON files.
 
@@ -77,19 +78,24 @@ Extracting `BookContent` with `ebook-convert.exe` is the slowest part of the boo
 The batch files in `01-Export/` are still written on every run, so `02-Process-CalibreDataWithLLM.ps1` works as before. The summary at the end of the export shows how many books came from the cache, how many were extracted, and how many cache files were removed. To force a new content extraction for all books, delete the files in `01-Cache/`. This also deletes the stored content profiles, including the web profiles of books without text, which then cost search queries again.
 
 ## Content Profiles
-The book text is about 95% of the input tokens that are sent to Gemini (about 28,000 tokens per book). To avoid sending the same text again on every re-check, Gemini writes a short content profile for each book it receives with the full text. The profile is a factual English summary of 150 to 300 words that covers the concepts the tag definitions distinguish (form, genre, setting, protagonists, audience, themes, and so on).
+The book text is about 95% of the input tokens that are sent to Gemini (about 40,000 tokens per book). To avoid sending the same text again on every re-check, Gemini writes a content profile for each book it receives with the full text. The profile is a factual English description of 400 to 700 words, structured in the fixed facets of `02-CalibreContentProfile-Checklist.txt`: form, fiction or non-fiction, franchise, genre, setting, magic and supernatural, science and technology, premise devices (e.g. isekai, reincarnation, time travel), progression and game mechanics, protagonists, relationships, romance and sexual content, conflict, violence, themes, tone, narrative perspective, target audience, and other notable elements. Each facet states the finding, `absent` (the source clearly shows the concept does not occur), or `unknown` (the source does not say).
+
+The facets do not depend on the tag definitions. A profile therefore stays useful when you add or change tags, and Gemini can tell a concept that was checked and found absent from one that the excerpt did not cover. The script logs a warning when a stored profile has fewer than 300 words (`$MinimumProfileWords`).
 
 - `02-Process-CalibreDataWithLLM.ps1` stores the profile in the book's cache file `01-Cache/<uuid>.json`, together with the `ContentHash` of the text it was written from. A profile is stored only when the cache file still holds the same text.
 - On the next export of the book, `01-Export-CalibreBooks.ps1` adds the profile to the export as long as the book text has the same `ContentHash`. This also applies when the book was changed in Calibre (e.g. after you applied tag corrections), because the text is extracted again and compared by hash.
-- `02-Process-CalibreDataWithLLM.ps1` then sends the profile instead of the full text, which costs a few hundred tokens instead of about 28,000. The log shows per file how many books were sent with full text or with a profile, and how many profiles were stored.
+- `02-Process-CalibreDataWithLLM.ps1` then sends the profile instead of the full text, which costs about a thousand tokens instead of about 40,000. The log shows per file how many books were sent with full text or with a profile, and how many profiles were stored.
 - When the book file changes (the text has a different hash), the full text is sent again and a new profile is written.
-- The profile can only contain what Gemini noted from the text. After you add tag definitions with new concepts, run once with `-FullContent`, so all books are checked against the full text and the profiles are rebuilt:
+- `$ContentProfileVersion` near the top of `02-Process-CalibreDataWithLLM.ps1` is increased whenever the checklist or the profile instructions in a prompt change. Profiles with an older version are ignored and rebuilt. To rebuild all profiles of the exported books at once, use `-FullContent`.
+- A change of the excerpt or of the profile version is a one-time cost: every book is extracted again and sent once with its full text (and every book without text is searched once more) the next time it is exported. Afterwards, the profiles are used again.
 
-```powershell
-.\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 0 -FullContent
-```
+### Profile Gaps
+A profile can still miss a detail that a new or changed tag definition depends on. For each book sent with its profile, Gemini therefore lists every tag whose decision the profile cannot settle: the profile hints that the tag may apply, or that an existing tag may be wrong, but does not say enough to decide. Gemini still decides such a tag as well as the profile allows, so a decision is never dropped only because the tag is a gap, and the script refreshes the book in the same run:
 
-- `$ContentProfileVersion` near the top of `02-Process-CalibreDataWithLLM.ps1` is increased whenever the profile instructions in the prompt change. Profiles with an older version are ignored and rebuilt.
+- A book with text is audited again with its full excerpt from the cache. Its results replace the first ones, and its new profile is stored.
+- A book without text gets a new web search with the definitions of the open tags as focus questions, and is then audited again with the new web profile. When the search finds nothing new, the existing profile and the first results are kept.
+
+Each profile stores fingerprints of the tag definitions that were already checked against the book's source in `ContentProfileTagHashes`. A profile written from the text records all tags. A web profile records only the tags its targeted searches covered. A gap leads to a refresh only for a tag that is new or whose definition changed since then, so the same gap never costs a second request. The log shows the profile gaps and refreshes per file and in the run summary, and each result file stores them in `profile_gaps` and `profile_refresh`.
 
 The book data and the tag definitions are also sent as compact JSON without indentation, which saves some more tokens.
 
@@ -97,11 +103,12 @@ The book data and the tag definitions are also sent as compact JSON without inde
 Comics, manga, graphic novels, and art books are often made of images, also in EPUB, PDF, AZW3, or MOBI files, so no text can be extracted. Without evidence, Gemini could only mark such books as uncertain. These books therefore get their content profile from a Google Search instead of the book text.
 
 - `01-Export-CalibreBooks.ps1` sets `ContentStatus` to `NoText` when the extracted text has fewer than 500 words (`$MinimumContentWords`; image files often still hold a copyright or navigation page), or when the book has no EPUB, AZW3, MOBI, or PDF file (e.g. only CBZ or CBR). The log shows a warning for each such book, and the export summary shows their number.
-- Before the tag audit of each export file, `02-Process-CalibreDataWithLLM.ps1` sends every book without a current web profile in its own request with the `google_search` tool and the prompt `02-CalibreWebProfile-Prompt.txt`. The request holds the tag definitions (only to know which facts matter) and the book's title, author, series, series index, identifiers, publisher, year, and Calibre description.
-- Gemini first identifies the exact work (by ISBN or ASIN first, then by title, author, series, and volume) and then writes a 150 to 300 word profile only from facts in the search results and the description. When the facts describe only the series, the profile says so. When the work cannot be identified with confidence, Gemini returns no profile instead of guessing.
+- Before the tag audit of each export file, `02-Process-CalibreDataWithLLM.ps1` sends every book without a current web profile in its own request with the `google_search` tool and the prompt `02-CalibreWebProfile-Prompt.txt`. The request holds the book's title, author, series, series index, identifiers, publisher, year, and Calibre description, but not the tag definitions.
+- Gemini first identifies the exact work (by ISBN or ASIN first, then by title, author, series, and volume) and then writes a profile with the same facets as a text profile, only from facts in the search results and the description. Facets the sources do not cover are marked `unknown`. When the facts describe only the series, the profile says so. When the work cannot be identified with confidence, Gemini returns no profile instead of guessing.
 - The profile is stored in `01-Cache/<uuid>.json` with `ContentProfileSource` `Web` and the cited web pages in `ContentProfileSources`. The tag audit then uses it like any other profile, marked as a web profile; the audit request itself never searches.
 - A book that could not be identified gets a `WebNotFound` marker and is checked without content. It is searched again only when its title, author, series, identifiers, or description change in Calibre, or with `-FullContent`. Adding an ISBN or a description in Calibre is the best way to help the search.
 - `-FullContent` writes new web profiles for all books without text in the run.
+- A profile gap of a web profile leads to one more, targeted search for that book (see [Profile Gaps](#profile-gaps)).
 
 Google bills grounded requests per executed search query (for Gemini 3 models, 5,000 queries per month are free, then about $14 per 1,000), and one request can run several queries. The log shows the search queries per file and in total, and each result file stores them in `token_usage.web_search_queries`. Because profiles and markers are cached, each book is normally searched only once.
 
@@ -111,7 +118,7 @@ The tag definitions are read fresh from Calibre on every run, so Gemini always u
 | Change | Effect | What to do |
 |---|---|---|
 | Wording clarified, same concept | The content profiles usually cover it | `-ChangedWithinDays 0` |
-| Meaning changed, or a new tag with a new concept | The content profiles may lack the needed detail, so suggestions to add the tag can be missed | `-ChangedWithinDays 0 -FullContent` |
+| Meaning changed, or a new tag with a new concept | The content profiles cover the fixed facets; when a profile lacks a needed detail, the profile gap refreshes the book with its full text or a targeted web search in the same run | `-ChangedWithinDays 0` |
 | Tag removed | Books that still carry the tag keep it as an undefined tag | Delete the tag in Calibre too (Tag browser). This changes the affected books, so they are re-checked on the next run |
 | Tag renamed in Calibre | The note stays attached to the tag; the affected books change and are re-checked | Nothing |
 | New tag without a note | The tag export only contains tags with a note, so the tag counts as undefined | Write the note first |
@@ -198,7 +205,8 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **A book has no `BookContent`:** The book export reads the content from the first EPUB, AZW3, MOBI, or PDF file of a book, in this order. The file paths come from Calibre. If a book has none of these formats, the log contains a warning with the supported formats and the formats that are available for the book. Convert the book to a supported format in Calibre to include its content. If the file contains no or almost no text, such as a comic with images only, the log contains the warning "Only N word(s) of text found", and the book gets a web content profile instead (see [Books Without Text](#books-without-text)).
 - **A comic or manga gets no web profile ("No reliable web information found"):** Gemini could not identify the work. Add an ISBN, the correct series and volume, or a description in Calibre; the changed metadata leads to a new search on the next run.
 - **A book keeps outdated `BookContent`:** The content is taken from `01-Cache/` as long as Calibre's `last_modified` value of the book is unchanged. Delete the book's file `01-Cache/<uuid>.json`, or all files in `01-Cache/`, to extract the content again.
-- **The suggestions for a book seem to miss parts of its content:** The book was probably checked with its content profile. Run with `-FullContent` to check it against the full text and rebuild its profile, or delete its file `01-Cache/<uuid>.json`.
+- **The suggestions for a book seem to miss parts of its content:** The book was probably checked with its content profile, and Gemini reported no profile gap for it. Check the profile in `01-Cache/<uuid>.json`. Run with `-FullContent` to check it against the full text and rebuild its profile, or delete its file `01-Cache/<uuid>.json`.
+- **"Content profile of ... has only N words":** Gemini wrote a profile that is shorter than `$MinimumProfileWords`. The profile is stored anyway. If this happens often, check the profile facets in `01-Cache/<uuid>.json`.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 2.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
 - **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the remaining steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.

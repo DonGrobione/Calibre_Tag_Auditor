@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as DEBUG, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText, and the sampled excerpt of Select-ExcerptText. The Debug book export tests check in the source that DebugBookExport selects the 10 most recently changed books and keeps the configured BooksPerFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as DEBUG, and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '01-Export-CalibreBooks.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-MetadataHash', 'Get-CachedContentProfile', 'Get-WordCount', 'ConvertTo-PlainText')
+$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-MetadataHash', 'Get-CachedContentProfile', 'Get-WordCount', 'ConvertTo-PlainText', 'Select-ExcerptText')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -566,6 +566,17 @@ Describe 'Get-CachedContentProfile' {
         $result.ContentProfileSources | Should Be $null
     }
 
+    It 'returns the tag definition fingerprints of the profile' {
+        $hashPath = Add-TestProfileFile -Name 'tag-hashes.json' -Json '{ "ContentHash": "abc123", "ContentProfileVersion": 2, "ContentProfile": "Profile", "ContentProfileSource": "Text", "ContentProfileTagHashes": { "Fantasy": "0123456789abcdef", "Magic": "fedcba9876543210" } }'
+        $result = Get-CachedContentProfile -Path $hashPath -ContentHash 'abc123'
+        $result.ContentProfileTagHashes.Fantasy | Should Be '0123456789abcdef'
+        $result.ContentProfileTagHashes.Magic | Should Be 'fedcba9876543210'
+    }
+
+    It 'returns $null fingerprints for a profile written before they existed' {
+        (Get-CachedContentProfile -Path $profilePath -ContentHash 'abc123').ContentProfileTagHashes | Should Be $null
+    }
+
     It 'returns $null for a missing or corrupt cache file' {
         $corrupt = Add-TestProfileFile -Name 'corrupt-profile.json' -Json '{ not json'
         Get-CachedContentProfile -Path (Join-Path -Path $cacheDirectory -ChildPath 'missing.json') -ContentHash 'abc123' | Should Be $null
@@ -631,6 +642,73 @@ Describe 'ConvertTo-PlainText' {
     }
 }
 
+Describe 'Select-ExcerptText' {
+    # Builds a text of numbered words w0 w1 ... with the given word count.
+    function Get-TestWordText {
+        param(
+            [Parameter(Mandatory = $true)]
+            [int]$Count
+        )
+
+        return ((0..($Count - 1) | ForEach-Object { "w$_" }) -join ' ')
+    }
+
+    It 'returns a text with at most the total section word count unchanged, including its line breaks' {
+        $text = "First line`n`nSecond line with words"
+        Select-ExcerptText -Text $text -SectionWordCounts @(5, 1, 1) | Should BeExactly $text
+        $exact = Get-TestWordText -Count 7
+        Select-ExcerptText -Text $exact -SectionWordCounts @(5, 1, 1) | Should BeExactly $exact
+    }
+
+    It 'returns the start, middle, and late sections joined with [...] markers' {
+        $result = Select-ExcerptText -Text (Get-TestWordText -Count 1000) -SectionWordCounts @(100, 50, 50)
+        $sections = $result -split "`n\[\.\.\.\]`n"
+        $sections.Count | Should Be 3
+        @($sections[0] -split ' ').Count | Should Be 100
+        @($sections[1] -split ' ').Count | Should Be 50
+        @($sections[2] -split ' ').Count | Should Be 50
+        ($sections[0] -split ' ')[0] | Should Be 'w0'
+        ($sections[0] -split ' ')[-1] | Should Be 'w99'
+    }
+
+    It 'centers the middle section at 50 % and ends the late section at 92 % of the words' {
+        $sections = (Select-ExcerptText -Text (Get-TestWordText -Count 1000) -SectionWordCounts @(100, 50, 50)) -split "`n\[\.\.\.\]`n"
+        ($sections[1] -split ' ')[0] | Should Be 'w475'
+        ($sections[1] -split ' ')[-1] | Should Be 'w524'
+        ($sections[2] -split ' ')[0] | Should Be 'w870'
+        ($sections[2] -split ' ')[-1] | Should Be 'w919'
+    }
+
+    It 'keeps the sections in order without overlap for a text just above the total word count' {
+        $sections = (Select-ExcerptText -Text (Get-TestWordText -Count 31) -SectionWordCounts @(18, 6, 6)) -split "`n\[\.\.\.\]`n"
+        ($sections[0] -split ' ')[-1] | Should Be 'w17'
+        ($sections[1] -split ' ')[0] | Should Be 'w18'
+        ($sections[1] -split ' ')[-1] | Should Be 'w23'
+        ($sections[2] -split ' ')[0] | Should Be 'w24'
+        ($sections[2] -split ' ')[-1] | Should Be 'w29'
+    }
+
+    It 'returns an empty text unchanged' {
+        Select-ExcerptText -Text '' -SectionWordCounts @(18, 6, 6) | Should BeExactly ''
+    }
+
+    It 'is used by Get-BookContent with the configured section word counts' {
+        $scriptAst.Extent.Text | Should Match '\$ExcerptSectionWordCounts = @\(18000, 6000, 6000\)'
+        $scriptAst.Extent.Text | Should Match 'Select-ExcerptText -Text \$NormalizedText -SectionWordCounts \$SectionWordCounts'
+        $scriptAst.Extent.Text | Should Match 'Get-BookContent -SourceFile \$PrimaryBookFile -EbookConvertExe \$EbookConvertExe -SectionWordCounts \$ExcerptSectionWordCounts'
+    }
+}
+
+Describe 'Debug book export' {
+    It 'selects the 10 most recently changed books' {
+        $scriptAst.Extent.Text | Should Match 'if \(\$DebugBookExport\) \{\s+\$Books = @\(\$BooksWithDates \|\s+Where-Object HasValidDate \|\s+Sort-Object LastModified -Descending \|\s+Select-Object -First 10 \|'
+    }
+
+    It 'keeps the configured BooksPerFile' {
+        $scriptAst.Extent.Text | Should Not Match '\$BooksPerFile = 5'
+    }
+}
+
 Describe 'Books without text' {
     It 'asks calibredb for the description field comments' {
         $scriptAst.Extent.Text | Should Match '--fields=\S*\bcomments\b'
@@ -661,7 +739,7 @@ Describe 'Export record' {
         }, $true)
 
     It 'holds the Uuid, the description, the content status, the content hash, and the content profile fields' {
-        foreach ($fieldName in @('Uuid', 'Description', 'ContentStatus', 'ContentHash', 'ContentProfile', 'ContentProfileVersion', 'ContentProfileSource', 'ContentProfileSources', 'BookContent')) {
+        foreach ($fieldName in @('Uuid', 'Description', 'ContentStatus', 'ContentHash', 'ContentProfile', 'ContentProfileVersion', 'ContentProfileSource', 'ContentProfileSources', 'ContentProfileTagHashes', 'BookContent')) {
             $bookRecord.Right.Extent.Text | Should Match ("(?m)^\s*{0}\s*=" -f $fieldName)
         }
     }
@@ -672,6 +750,10 @@ Describe 'Export record' {
 
     It 'looks up the content profile by content hash' {
         $scriptAst.Extent.Text | Should Match 'Get-CachedContentProfile -Path \$CachePath -ContentHash \$ContentHash'
+    }
+
+    It 'carries over the tag definition fingerprints of the cached profile' {
+        $scriptAst.Extent.Text | Should Match '\$BookRecord\.ContentProfileTagHashes = \$ContentProfile\.ContentProfileTagHashes'
     }
 
     It 'rewrites a reused cache file that has no ContentHash yet' {

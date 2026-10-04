@@ -1,0 +1,33 @@
+The content profile is a factual description of the book. It later replaces the source when the book's tags are checked again, possibly against new or changed tag definitions that do not exist yet. It must therefore describe the book completely and neutrally along the fixed facets below, independent of any tag list.
+
+PROFILE FORMAT:
+- One string in English, 400 to 700 words, plain text without line breaks, lists, or markdown.
+- Write every facet below, in the given order, as "<Facet>: <finding>." For example: "Form: Novel, first volume of a series."
+- For each facet, write exactly one of:
+  - the finding, with specific details from the source (names of worlds, factions, technologies, powers, roles, places);
+  - "absent" when the source clearly shows that the concept does not occur, for example "Magic and supernatural: absent, a realistic contemporary setting.";
+  - "unknown" when the source does not allow a statement. Never guess; "unknown" is better than a wrong finding.
+- Write "not applicable" for a facet that does not fit the form of the book, for example Protagonists for a technical handbook.
+- Describe how elements develop across the whole source, not only at its beginning, for example a romance that only starts in the late part.
+- Do not name tags, do not decide tags, and do not shape the profile around a list of tags.
+
+FACETS:
+1. Form: novel, novella, short story collection, anthology, omnibus, light novel, web novel, comic, manga, manhwa, graphic novel, art book, picture book, non-fiction book, handbook, or reference work; series and volume position; edition peculiarities such as a special or crowdfunding edition, a fan translation, or a translation and its original language.
+2. Fiction or non-fiction: for non-fiction, the subject area, the covered technologies, products, tools, or methods, the depth (introduction, practical guide, reference, certification preparation), and the intended readership; for a biography or memoir, the person.
+3. Franchise and universe: the shared universe, video game, film, TV, comic, or tabletop franchise the book belongs to or is based on, or "absent" for an original work.
+4. Genre and subgenres: the main genre and every recognizable subgenre and genre blend.
+5. Setting: the kind of world (real, alternate, secondary world, outer space, virtual world), era and technology level, important places, social order (nobility, empire, corporate rule, dystopian or utopian society), and the state of the world (post-apocalyptic, at war, in decline).
+6. Magic and supernatural: magic systems, psychic powers, gods and religion as a real force, undead, vampires, demons, monsters, spirits, and fantasy races.
+7. Science and technology: aliens, artificial intelligence, robots, cybernetics, mechs, genetic engineering, space travel, and other advanced or historical technology that shapes the story.
+8. Premise devices: transfer to another world or from another world to ours, reincarnation, transmigration into another body or story, regression or time travel, alternate history, being trapped in a game or virtual reality, a change of gender or body, first contact, and similar framing devices.
+9. Progression and game mechanics: system messages, levels, stats, skills, classes, cultivation stages, crafting, building a base, settlement, kingdom, or dungeon, taming or summoning, and how central these are.
+10. Protagonists: number (one, two, ensemble); for each main protagonist, age group, gender, species (human or not), occupation and social status, starting power and growth (weak to strong, overpowered from the start, non-combatant), moral alignment (heroic, anti-hero, villain, reformed villain), temperament (reluctant, comic, foolish, cunning, ruthless), and secret identities.
+11. Relationships and cast: important companions, family ties, found family, mentors, rivals, monster or creature companions, harem or reverse harem structures, and the dynamics between them.
+12. Romance and sexual content: whether a romance exists, how central it is, the pairing (including same-sex pairings), and the level of sexual content (none, implied, on-page, explicit), including non-consensual content.
+13. Conflict and action: the main conflict and its kind (war, military operations, crime and police investigation, espionage, assassination, piracy, rebellion or revolution, political intrigue and diplomacy, survival, heists, quests) and the combat styles and weapons (swords and melee, firearms, magic, vehicles, mechs, enhanced soldiers).
+14. Violence and dark content: the level of violence and gore, torture, slavery, abuse, death of major characters, and other content warnings.
+15. Themes: the main themes, such as betrayal, revenge, redemption, family, friendship, faith, power, freedom, identity, loss, or retold myths and legends.
+16. Tone and mood: the dominant tone and its shifts, for example grimdark, dark, serious, tragic, hopeful, light-hearted, humorous, satirical, parodic, cozy, wholesome, heartwarming, or horror.
+17. Narrative perspective and structure: first or third person, single or multiple points of view, and the structure (continuous plot, episodic, slice of life, quest, mystery puzzle).
+18. Target audience: children, middle grade, young adult, or adult; for Japanese, Korean, or Chinese works the demographic (shonen, shojo, seinen, josei) when the source shows it; an age rating when one is stated.
+19. Other notable elements: every further concept, trope, setting detail, or content element that a librarian could use to classify the book and that the facets above do not cover.
