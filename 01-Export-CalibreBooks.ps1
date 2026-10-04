@@ -5,11 +5,11 @@
 .DESCRIPTION
     The export is configured through 01-CalibreExport.config.json. See README.md for the configuration and behavior details.
     Uses calibredb.exe from the Calibre Portable installation.
-    The first 20,000 words of the primary EPUB, AZW3, MOBI, or PDF file are converted to normalized text and included in the BookContent JSON field. The paths of the book files are read from Calibre (calibredb field formats); only files inside the library folder are used.
+    The primary EPUB, AZW3, MOBI, or PDF file is converted to normalized text, and an excerpt is included in the BookContent JSON field: the whole text when it has at most 30,000 words, otherwise 18,000 words from the start, 6,000 words from the middle, and 6,000 words from the late part of the book (ending at 92 % of the text, so back matter is skipped), joined with [...] markers ($ExcerptSectionWordCounts). The paths of the book files are read from Calibre (calibredb field formats); only files inside the library folder are used.
     Each export file is written as soon as it holds BooksPerFile books (or the last book), so memory use stays small and the files finished before an interrupted run are kept.
     Books without text: a book whose extracted text has fewer than $MinimumContentWords words (e.g. a comic, manga, or graphic novel made of images) or that has no supported book file (e.g. only CBZ or CBR) gets ContentStatus NoText and no BookContent. 02-Process-CalibreDataWithLLM.ps1 writes a content profile for such a book from a Google Search. Books with text get ContentStatus Text; a failed extraction gets ContentStatus Failed.
     Every exported book is also stored in the 01-Cache folder as <uuid>.json, keyed by the Calibre UUID. When the cached last_modified value still matches Calibre and the cache file has the current cache format version, the cached BookContent (or the NoText status) is reused and ebook-convert.exe is skipped; otherwise the content is extracted again and the cache file is overwritten. Books whose extraction failed are not cached, so the next run tries again, and an outdated cache file of such a book is deleted. Metadata is always read fresh from calibredb. On every run, cache files of books that are no longer in the Calibre library are deleted.
-    Each export record also holds the book's Uuid, the plain-text Calibre description (Description), the ContentStatus, the SHA256 ContentHash, and the ContentProfile with its ContentProfileVersion, ContentProfileSource (Text, Web, or WebNotFound), and ContentProfileSources (web citations). The ContentHash is the hash of BookContent for books with text, and the hash of the identity metadata (title, author, series, series index, identifiers, description) for books without text, so a metadata correction leads to a new web search. 02-Process-CalibreDataWithLLM.ps1 stores a content profile (a short factual summary written by the LLM) in the cache file. The export carries it over as long as the ContentHash is the same, even after last_modified changed (e.g. after a tag edit), so the LLM step can send the short profile instead of the full text. A cache file written before ContentHash existed is rewritten with the hash when it is reused.
+    Each export record also holds the book's Uuid, the plain-text Calibre description (Description), the ContentStatus, the SHA256 ContentHash, and the ContentProfile with its ContentProfileVersion, ContentProfileSource (Text, Web, or WebNotFound), ContentProfileSources (web citations), and ContentProfileTagHashes (fingerprints of the tag definitions that were already checked against the book's source). The ContentHash is the hash of BookContent for books with text, and the hash of the identity metadata (title, author, series, series index, identifiers, description) for books without text, so a metadata correction leads to a new web search. 02-Process-CalibreDataWithLLM.ps1 stores a content profile (a short factual summary written by the LLM) in the cache file. The export carries it over as long as the ContentHash is the same, even after last_modified changed (e.g. after a tag edit), so the LLM step can send the short profile instead of the full text. A cache file written before ContentHash existed is rewritten with the hash when it is reused.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
@@ -24,7 +24,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 4.10
+    Version: 5.0
 #>
 
 [CmdletBinding()]
@@ -82,10 +82,6 @@ try {
         throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
     }
 
-    if ($DebugBookExport) {
-        $BooksPerFile = 5
-    }
-
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
     $ExportDir = Join-Path $ScriptDir "01-Export"
@@ -98,7 +94,7 @@ try {
 
     # Create the cache folder that holds one export file per book, keyed by the Calibre UUID.
     # Increase BookCacheVersion whenever the content extraction or the cache file format changes, so all older cache files are rebuilt.
-    $BookCacheVersion = 1
+    $BookCacheVersion = 2
     $CacheDir = Join-Path -Path $ScriptDir -ChildPath "01-Cache"
     if (-not (Test-Path -LiteralPath $CacheDir -PathType Container)) {
         New-Item -Path $CacheDir -ItemType Directory | Out-Null
@@ -119,7 +115,7 @@ try {
     Write-ScriptLog "Books/file: $BooksPerFile"
     Write-ScriptLog "Changed:    $ChangedWithinDays day(s) ($ChangedWithinDaysSource)"
     if ($DebugBookExport) {
-        Write-ScriptLog "Debug:      20 books, 5 books/file"
+        Write-ScriptLog "Debug:      10 books"
     }
 
     # Create a timestamp for the output files.
@@ -269,7 +265,7 @@ try {
         return (Get-ContentHash -Text ('metadata:' + ($Parts -join '|')))
     }
 
-    # Returns the content profile (ContentProfile, ContentProfileVersion, ContentProfileSource, ContentProfileSources) that 02-Process-CalibreDataWithLLM.ps1 stored in the cache file, when the file was written for the same ContentHash, regardless of last_modified; otherwise $null. A profile without source counts as Text; an empty profile is returned only as a WebNotFound marker (no reliable web information found).
+    # Returns the content profile (ContentProfile, ContentProfileVersion, ContentProfileSource, ContentProfileSources, ContentProfileTagHashes) that 02-Process-CalibreDataWithLLM.ps1 stored in the cache file, when the file was written for the same ContentHash, regardless of last_modified; otherwise $null. A profile without source counts as Text; an empty profile is returned only as a WebNotFound marker (no reliable web information found).
     function Get-CachedContentProfile {
         param(
             [Parameter(Mandatory = $true)]
@@ -313,11 +309,17 @@ try {
             $Sources = @($Cached.ContentProfileSources)
         }
 
+        $TagHashes = $null
+        if ($null -ne $Cached.PSObject.Properties['ContentProfileTagHashes']) {
+            $TagHashes = $Cached.ContentProfileTagHashes
+        }
+
         return [PSCustomObject]@{
-            ContentProfile        = [string]$Cached.ContentProfile
-            ContentProfileVersion = $Cached.ContentProfileVersion
-            ContentProfileSource  = $Source
-            ContentProfileSources = $Sources
+            ContentProfile          = [string]$Cached.ContentProfile
+            ContentProfileVersion   = $Cached.ContentProfileVersion
+            ContentProfileSource    = $Source
+            ContentProfileSources   = $Sources
+            ContentProfileTagHashes = $TagHashes
         }
     }
 
@@ -419,7 +421,7 @@ try {
         $Books = @($BooksWithDates |
             Where-Object HasValidDate |
             Sort-Object LastModified -Descending |
-            Select-Object -First 20 |
+            Select-Object -First 10 |
             ForEach-Object Book)
     } elseif ($ChangedWithinDays -eq 0) {
         $Books = @($BooksWithDates | Sort-Object LastModified -Descending | ForEach-Object Book)
@@ -459,6 +461,9 @@ try {
 
     # Books with fewer extracted words are handled as books without text (e.g. comics made of images, whose files often still hold a copyright or navigation page).
     $MinimumContentWords = 500
+
+    # Word counts of the start, middle, and late sections of the BookContent excerpt (see Select-ExcerptText). Increase $BookCacheVersion when they change.
+    $ExcerptSectionWordCounts = @(18000, 6000, 6000)
 
     # Returns the number of whitespace-separated words in the text, or 0 for null or empty text.
     function Get-WordCount {
@@ -639,13 +644,50 @@ try {
         return ("01-Export-CalibreBooks_{0}_{1}.json" -f $FileNumber.ToString("D$PadWidth"), $ExportDate)
     }
 
-    # Converts a book to text, normalizes whitespace, and keeps the first 20,000 words.
+    # Returns the excerpt of a normalized book text: the whole text when it has at most as many words as the three SectionWordCounts together, otherwise the start, middle, and late sections with these word counts, joined with [...] markers. The middle section is centered at 50 % of the words and the late section ends at 92 %, so back matter such as afterwords, ads, and previews of other books is skipped.
+    function Select-ExcerptText {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyString()]
+            [string]$Text,
+            [Parameter(Mandatory = $true)]
+            [ValidateCount(3, 3)]
+            [ValidateRange(1, 1000000)]
+            [int[]]$SectionWordCounts
+        )
+
+        $Words = @($Text -split '\s+' | Where-Object { $_ })
+        $StartCount = $SectionWordCounts[0]
+        $MiddleCount = $SectionWordCounts[1]
+        $LateCount = $SectionWordCounts[2]
+        if ($Words.Count -le ($StartCount + $MiddleCount + $LateCount)) {
+            return $Text
+        }
+
+        # The sections never overlap: a middle section that would start inside the start section moves behind it, and the late section then follows the middle section.
+        $MiddleStart = [int][Math]::Max($StartCount, [Math]::Floor($Words.Count / 2) - [Math]::Floor($MiddleCount / 2))
+        $MiddleEnd = $MiddleStart + $MiddleCount
+        $LateStart = [int][Math]::Max($MiddleEnd, [Math]::Floor($Words.Count * 0.92) - $LateCount)
+        $LateEnd = $LateStart + $LateCount
+
+        $Sections = @(
+            ($Words[0..($StartCount - 1)] -join ' '),
+            ($Words[$MiddleStart..($MiddleEnd - 1)] -join ' '),
+            ($Words[$LateStart..($LateEnd - 1)] -join ' ')
+        )
+        return ($Sections -join "`n[...]`n")
+    }
+
+    # Converts a book to text, normalizes whitespace, and returns the excerpt from Select-ExcerptText with the given section word counts.
     function Get-BookContent {
         param(
             [Parameter(Mandatory = $true)]
             [System.IO.FileInfo]$SourceFile,
             [Parameter(Mandatory = $true)]
-            [System.IO.FileInfo]$EbookConvertExe
+            [System.IO.FileInfo]$EbookConvertExe,
+            [Parameter(Mandatory = $true)]
+            [ValidateCount(3, 3)]
+            [int[]]$SectionWordCounts
         )
 
         $TempDirectory = Join-Path -Path $env:TEMP -ChildPath ("CalibreTagAuditor-" + [Guid]::NewGuid().ToString('N'))
@@ -671,12 +713,7 @@ try {
             }
 
             $NormalizedText = ($NormalizedLines -join "`n").Trim()
-            $Words = @($NormalizedText -split '\s+' | Where-Object { $_ })
-            if ($Words.Count -gt 20000) {
-                $NormalizedText = $Words[0..19999] -join ' '
-            }
-
-            return $NormalizedText
+            return (Select-ExcerptText -Text $NormalizedText -SectionWordCounts $SectionWordCounts)
         } finally {
             if (Test-Path -LiteralPath $TempDirectory -PathType Container) {
                 Remove-Item -LiteralPath $TempDirectory -Recurse -Force -ErrorAction SilentlyContinue
@@ -730,7 +767,7 @@ try {
                 Write-ScriptLog ("Book {0}/{1}: {2}" -f $BookNumber, $TotalBooks, $PrimaryBookFile.Name)
                 $ExtractedBookCount++
                 try {
-                    $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe
+                    $BookContent = Get-BookContent -SourceFile $PrimaryBookFile -EbookConvertExe $EbookConvertExe -SectionWordCounts $ExcerptSectionWordCounts
                     if ($null -eq $BookContent) {
                         Write-ScriptLog -Level WARN -Message ("Could not extract content from '{0}'." -f $PrimaryBookFile.Name)
                     } else {
@@ -762,23 +799,24 @@ try {
         }
 
         $BookRecord = [PSCustomObject]@{
-            Uuid                  = if ($null -ne $CachePath) { ([string]$Book.uuid).ToLowerInvariant() } else { $null }
-            Title                 = Clear-ExportText -Value $Book.title
-            Author                = Clear-ExportText -Value $Book.authors
-            Series                = Clear-ExportText -Value $Book.series
-            SeriesIndex           = Clear-ExportText -Value $Book.series_index
-            Tags                  = Clear-ExportText -Value ($Book.tags -join ", ")
-            IDs                   = Clear-ExportText -Value $IdentifierText
-            Publisher             = Clear-ExportText -Value $Book.publisher
-            Year                  = Get-ExportYear -PubDate $Book.pubdate
-            Description           = Clear-ExportText -Value (ConvertTo-PlainText -Html ([string]$Book.comments))
-            ContentStatus         = $ContentStatus
-            ContentHash           = $null
-            ContentProfile        = $null
-            ContentProfileVersion = $null
-            ContentProfileSource  = $null
-            ContentProfileSources = $null
-            BookContent           = $BookContent
+            Uuid                    = if ($null -ne $CachePath) { ([string]$Book.uuid).ToLowerInvariant() } else { $null }
+            Title                   = Clear-ExportText -Value $Book.title
+            Author                  = Clear-ExportText -Value $Book.authors
+            Series                  = Clear-ExportText -Value $Book.series
+            SeriesIndex             = Clear-ExportText -Value $Book.series_index
+            Tags                    = Clear-ExportText -Value ($Book.tags -join ", ")
+            IDs                     = Clear-ExportText -Value $IdentifierText
+            Publisher               = Clear-ExportText -Value $Book.publisher
+            Year                    = Get-ExportYear -PubDate $Book.pubdate
+            Description             = Clear-ExportText -Value (ConvertTo-PlainText -Html ([string]$Book.comments))
+            ContentStatus           = $ContentStatus
+            ContentHash             = $null
+            ContentProfile          = $null
+            ContentProfileVersion   = $null
+            ContentProfileSource    = $null
+            ContentProfileSources   = $null
+            ContentProfileTagHashes = $null
+            BookContent             = $BookContent
         }
 
         # The ContentHash identifies what a content profile was written from: the book text, or the identity metadata of a book without text.
@@ -800,6 +838,7 @@ try {
             $BookRecord.ContentProfileVersion = $ContentProfile.ContentProfileVersion
             $BookRecord.ContentProfileSource = $ContentProfile.ContentProfileSource
             $BookRecord.ContentProfileSources = $ContentProfile.ContentProfileSources
+            $BookRecord.ContentProfileTagHashes = $ContentProfile.ContentProfileTagHashes
             if (-not [string]::IsNullOrWhiteSpace($ContentProfile.ContentProfile)) {
                 $ProfileBookCount++
             }

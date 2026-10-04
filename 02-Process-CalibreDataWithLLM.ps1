@@ -12,12 +12,13 @@
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
-    Content profiles: for every book sent with its full text, the LLM also returns a short content profile (a factual summary of the excerpt). The script stores it in the book's cache file 01-Cache/<uuid>.json, but only when that file still holds the same book text (same ContentHash). On later runs, 01-Export-CalibreBooks.ps1 exports the profile with the book, and this script sends the profile instead of the full text while the profile has the current $ContentProfileVersion. This cuts the input tokens of a re-audited book from about 28,000 to a few hundred. Increase $ContentProfileVersion when the profile instructions in the prompt change, so all profiles are rebuilt.
-    Web content profiles: a book without text (ContentStatus NoText, e.g. a comic, manga, or graphic novel made of images) has no excerpt to write a profile from. Before the tag audit of each export file, the script sends each such book's metadata (title, author, series, identifiers, publisher, year, Calibre description) with the tag definitions in a separate request with the google_search tool and the prompt 02-CalibreWebProfile-Prompt.txt. The LLM identifies the exact work and writes a profile only from facts found in the search results and the description. The profile is stored in the cache file with ContentProfileSource Web and the cited web sources; when the work cannot be identified reliably, a WebNotFound marker is stored instead, so the book is not searched again until its identity metadata changes. The tag audit request itself never uses search. Google bills grounded requests per executed search query, so the number of search queries is logged per file and in the run summary.
+    Content profiles: for every book sent with its full text, the LLM also returns a content profile (a factual description of the excerpt in fixed facets, 400 to 700 words). The facets come from 02-CalibreContentProfile-Checklist.txt, which the script inserts into both prompt files at the placeholder {{CONTENT_PROFILE_CHECKLIST}}; they do not depend on the tag definitions, so a profile stays useful when tags are added or changed. A profile with fewer than $MinimumProfileWords words is stored with a warning. The script stores the profile in the book's cache file 01-Cache/<uuid>.json, but only when that file still holds the same book text (same ContentHash). On later runs, 01-Export-CalibreBooks.ps1 exports the profile with the book, and this script sends the profile instead of the full text while the profile has the current $ContentProfileVersion. This cuts the input tokens of a re-audited book from about 40,000 to about a thousand. Increase $ContentProfileVersion when the checklist or the profile instructions in a prompt change, so all profiles are rebuilt.
+    Profile gaps: for a book sent with its profile, the LLM lists every tag whose decision the profile cannot settle (ProfileGaps). Each profile stores the fingerprints of the tag definitions that were already checked against the book's source (ContentProfileTagHashes: all tags for a profile written from the text, the focus tags of targeted searches for a web profile). A gap tag that is new or whose definition changed since then leads to a refresh in the same run: a text book is audited again with its full excerpt and gets a new profile; a book without text gets a new web search that targets the open tag definitions, and is audited again with the new profile. The refresh replaces the first results of these books. Gaps for unchanged definitions are not refreshed again, so the refresh cost stays bounded.
+    Web content profiles: a book without text (ContentStatus NoText, e.g. a comic, manga, or graphic novel made of images) has no excerpt to write a profile from. Before the tag audit of each export file, the script sends each such book's metadata (title, author, series, identifiers, publisher, year, Calibre description) in a separate request with the google_search tool and the prompt 02-CalibreWebProfile-Prompt.txt; the tag definitions are not sent. The LLM identifies the exact work and writes a profile only from facts found in the search results and the description. The profile is stored in the cache file with ContentProfileSource Web and the cited web sources; when the work cannot be identified reliably, a WebNotFound marker is stored instead, so the book is not searched again until its identity metadata changes. The tag audit request itself never uses search. Google bills grounded requests per executed search query, so the number of search queries is logged per file and in the run summary.
     The book data and tag definitions are sent as compact JSON without indentation.
 
 .PARAMETER FullContent
-    Sends the full book text for every book, even when a content profile exists, and stores new profiles from the responses. Books without text get a new web content profile from a new Google Search (this costs search queries). Use it after tag definitions with new concepts were added, so the decisions and profiles are based on the full text again.
+    Sends the full book text for every book, even when a content profile exists, and stores new profiles from the responses. Books without text get a new web content profile from a new Google Search (this costs search queries). Profile gaps already refresh the affected books automatically, so this is only needed to rebuild all profiles of the exported books at once.
 
 .EXAMPLE
     .\02-Process-CalibreDataWithLLM.ps1
@@ -28,9 +29,9 @@
     Validates the latest book export with the full book text of every book.
 
 .NOTES
-    Version: 6.5
-    Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt and 02-CalibreWebProfile-Prompt.txt in the script folder.
-    Each output file is written as a valid JSON object with metadata, records, content profiles, token usage, the raw response text, parse errors, and validation details for unique-book counts.
+    Version: 7.0
+    Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
+    Each output file is written as a valid JSON object with metadata, records, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
@@ -75,10 +76,12 @@ try {
     $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Gemini_API.json.key"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
     $WebProfilePromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreWebProfile-Prompt.txt"
+    $ChecklistFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreContentProfile-Checklist.txt"
     $CacheDir = Join-Path -Path $ScriptDir -ChildPath "01-Cache"
 
-    # Increase ContentProfileVersion whenever the profile instructions in the prompt change, so all stored content profiles are rebuilt from the full text.
-    $script:ContentProfileVersion = 1
+    # Increase ContentProfileVersion whenever the content profile checklist or the profile instructions in a prompt change, so all stored content profiles are rebuilt.
+    $script:ContentProfileVersion = 2
+    $script:MinimumProfileWords = 300                     # Text profiles with fewer words are stored with a warning.
 
     $Model = "gemini-3.8-flash"
     $ThinkingLevel = "medium"                             # Gemini thinking level: low, medium, or high.
@@ -115,8 +118,8 @@ try {
         }
     }
 
-    if (-not (Test-Path -Path $ApiKeyFile -PathType Leaf) -or -not (Test-Path -Path $PromptFile -PathType Leaf) -or -not (Test-Path -Path $WebProfilePromptFile -PathType Leaf)) {
-        throw "API key or prompt file is missing in the script folder (Secrets\Gemini_API.json.key, 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt)."
+    if (-not (Test-Path -Path $ApiKeyFile -PathType Leaf) -or -not (Test-Path -Path $PromptFile -PathType Leaf) -or -not (Test-Path -Path $WebProfilePromptFile -PathType Leaf) -or -not (Test-Path -Path $ChecklistFile -PathType Leaf)) {
+        throw "API key or prompt file is missing in the script folder (Secrets\Gemini_API.json.key, 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, 02-CalibreContentProfile-Checklist.txt)."
     }
 
     # Read the Gemini API key from the APIKey property of the JSON secrets file.
@@ -142,10 +145,33 @@ try {
         return ([string]$secret.APIKey).Trim()
     }
 
-    # Load the API key and the prompt system from external files.
+    # Returns the prompt text with the placeholder {{CONTENT_PROFILE_CHECKLIST}} replaced by the checklist text; throws when the prompt has no placeholder, so a prompt is never sent without the checklist.
+    function Merge-ContentProfileChecklist {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$PromptText,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$ChecklistText,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$PromptName
+        )
+
+        $placeholder = '{{CONTENT_PROFILE_CHECKLIST}}'
+        if (-not $PromptText.Contains($placeholder)) {
+            throw "The prompt file '$PromptName' has no placeholder $placeholder for the content profile checklist."
+        }
+
+        return $PromptText.Replace($placeholder, $ChecklistText)
+    }
+
+    # Load the API key and the prompt system from external files; both prompts get the shared content profile checklist.
     $ApiKey = Get-GeminiApiKey -Path $ApiKeyFile
-    $PromptSystem = (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim()
-    $WebProfilePromptSystem = (Get-Content -Path $WebProfilePromptFile -Raw -Encoding UTF8).Trim()
+    $ChecklistText = (Get-Content -Path $ChecklistFile -Raw -Encoding UTF8).Trim()
+    $PromptSystem = Merge-ContentProfileChecklist -PromptText (Get-Content -Path $PromptFile -Raw -Encoding UTF8).Trim() -ChecklistText $ChecklistText -PromptName (Split-Path -Path $PromptFile -Leaf)
+    $WebProfilePromptSystem = Merge-ContentProfileChecklist -PromptText (Get-Content -Path $WebProfilePromptFile -Raw -Encoding UTF8).Trim() -ChecklistText $ChecklistText -PromptName (Split-Path -Path $WebProfilePromptFile -Leaf)
 
     # Require the export folder and both export types before contacting the API.
     if (-not (Test-Path -Path $ExportDir -PathType Container)) {
@@ -563,6 +589,7 @@ try {
             validation_error        = $null
             records                 = @()
             content_profiles        = @()
+            profile_gaps            = @()
             token_usage             = $null
             raw_response            = $RawText
             parse_error             = $null
@@ -607,11 +634,14 @@ try {
             return [pscustomobject]$result
         }
 
-        # The prompt asks for an object with Results and ContentProfiles; a plain array of result objects is still accepted.
+        # The prompt asks for an object with Results, ContentProfiles, and ProfileGaps; a plain array of result objects is still accepted.
         if ($parsed -isnot [System.Array] -and $null -ne $parsed.PSObject.Properties['Results']) {
             $result.records = @($parsed.Results | Where-Object { $null -ne $_ })
             if ($null -ne $parsed.PSObject.Properties['ContentProfiles']) {
                 $result.content_profiles = @($parsed.ContentProfiles | Where-Object { $null -ne $_ })
+            }
+            if ($null -ne $parsed.PSObject.Properties['ProfileGaps']) {
+                $result.profile_gaps = @($parsed.ProfileGaps | Where-Object { $null -ne $_ })
             }
         }
         else {
@@ -799,14 +829,13 @@ try {
         }
     }
 
-    # Requests a web content profile for one book without text: sends the tag definitions and the book metadata with the web profile prompt and the google_search tool, retries invalid responses up to $MaxContentRetries times, and adds the token usage to the counter. Returns ContentProfile ($null when the request failed, empty when the work was not identified), the cited Sources, and the SearchQueryCount of all attempts.
+    # Requests a web content profile for one book without text: sends the book metadata (and, for a targeted search, the focus tag definitions as JSON) with the web profile prompt and the google_search tool, retries invalid responses up to $MaxContentRetries times, and adds the token usage to the counter. Returns ContentProfile ($null when the request failed, empty when the work was not identified), the cited Sources, and the SearchQueryCount of all attempts.
     function Request-WebContentProfile {
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
-            [Parameter(Mandatory = $true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$TagDefinitions,
+            [AllowEmptyString()]
+            [string]$FocusTagDefinitions = '',
             [Parameter(Mandatory = $true)]
             [object]$UsageCounter
         )
@@ -814,15 +843,20 @@ try {
         $bookInput = ConvertTo-CompactJson -InputObject (ConvertTo-WebProfileRecord -Book $Book) -Depth 5
         $payload = @"
 ===================================
-TAG DEFINITIONS:
-===================================
-$TagDefinitions
-
-===================================
 BOOK METADATA:
 ===================================
 $bookInput
 "@
+        if (-not [string]::IsNullOrWhiteSpace($FocusTagDefinitions)) {
+            $payload += @"
+
+
+===================================
+FOCUS QUESTIONS:
+===================================
+$FocusTagDefinitions
+"@
+        }
 
         $searchQueryCount = 0
         for ($attempt = 1; $attempt -le $script:MaxContentRetries; $attempt++) {
@@ -856,7 +890,7 @@ $bookInput
         }
     }
 
-    # Adds the content profile fields (ContentProfile, current ContentProfileVersion, ContentProfileSource, ContentProfileSources) to the export record in memory, so the tag audit of this run uses the new profile.
+    # Adds the content profile fields (ContentProfile, current ContentProfileVersion, ContentProfileSource, ContentProfileSources, ContentProfileTagHashes) to the export record in memory, so the tag audit of this run uses the new profile.
     function Add-BookContentProfile {
         param(
             [Parameter(Mandatory = $true)]
@@ -865,10 +899,213 @@ $bookInput
             [object]$ProfileData
         )
 
+        $tagHashes = $null
+        if ($null -ne $ProfileData.PSObject.Properties['TagHashes']) {
+            $tagHashes = $ProfileData.TagHashes
+        }
+
         $Book | Add-Member -MemberType NoteProperty -Name 'ContentProfile' -Value ([string]$ProfileData.ContentProfile) -Force
         $Book | Add-Member -MemberType NoteProperty -Name 'ContentProfileVersion' -Value $script:ContentProfileVersion -Force
         $Book | Add-Member -MemberType NoteProperty -Name 'ContentProfileSource' -Value ([string]$ProfileData.Source) -Force
         $Book | Add-Member -MemberType NoteProperty -Name 'ContentProfileSources' -Value $ProfileData.Sources -Force
+        $Book | Add-Member -MemberType NoteProperty -Name 'ContentProfileTagHashes' -Value $tagHashes -Force
+    }
+
+    # Returns an ordered dictionary from tag name to the fingerprint of its definition (the first 16 hex characters of the SHA256 hash of NoteText), sorted by tag name. Content profiles store these fingerprints, so a later run can tell which tag definitions are new or changed since the profile was written. Entries without a tag name are skipped.
+    function Get-TagDefinitionHashTable {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [object[]]$TagDefinitions
+        )
+
+        $result = [ordered]@{}
+        $namedDefinitions = @($TagDefinitions | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Tag'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Tag) })
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            foreach ($definition in ($namedDefinitions | Sort-Object -Property { ([string]$_.Tag).Trim() })) {
+                $noteText = ''
+                if ($null -ne $definition.PSObject.Properties['NoteText'] -and $null -ne $definition.NoteText) {
+                    $noteText = [string]$definition.NoteText
+                }
+
+                $hashBytes = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($noteText))
+                $result[([string]$definition.Tag).Trim()] = (($hashBytes[0..7] | ForEach-Object { $_.ToString('x2') }) -join '')
+            }
+        }
+        finally {
+            $sha256.Dispose()
+        }
+
+        return $result
+    }
+
+    # Converts stored tag definition fingerprints (a JSON object read from an export or cache file, or a dictionary) into a hashtable from tag name to fingerprint; $null or any other value gives an empty hashtable.
+    function ConvertTo-TagHashTable {
+        param(
+            [AllowNull()]
+            [object]$InputObject
+        )
+
+        $result = @{}
+        if ($null -eq $InputObject) {
+            return $result
+        }
+
+        if ($InputObject -is [System.Collections.IDictionary]) {
+            foreach ($key in $InputObject.Keys) {
+                $result[[string]$key] = [string]$InputObject[$key]
+            }
+            return $result
+        }
+
+        if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($property in $InputObject.PSObject.Properties) {
+                $result[$property.Name] = [string]$property.Value
+            }
+        }
+
+        return $result
+    }
+
+    # Returns a copy of the stored fingerprints in which the given tags get their current fingerprint; names that are not in the current fingerprints are ignored. Used for a web profile, which records only the tags of its targeted searches.
+    function Merge-TagHashTable {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Collections.IDictionary]$StoredTagHashes,
+            [Parameter(Mandatory = $true)]
+            [System.Collections.IDictionary]$CurrentTagHashes,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [string[]]$TagNames
+        )
+
+        $result = @{}
+        foreach ($key in $StoredTagHashes.Keys) {
+            $result[[string]$key] = [string]$StoredTagHashes[$key]
+        }
+
+        foreach ($tagName in $TagNames) {
+            if ($CurrentTagHashes.Contains($tagName)) {
+                $result[$tagName] = [string]$CurrentTagHashes[$tagName]
+            }
+        }
+
+        return $result
+    }
+
+    # Returns the tag definitions whose Tag name is in TagNames (case-insensitive), in the order of the definitions.
+    function Select-TagDefinition {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [object[]]$TagDefinitions,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyCollection()]
+            [string[]]$TagNames
+        )
+
+        $names = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($tagName in $TagNames) {
+            [void]$names.Add($tagName.Trim())
+        }
+
+        return @($TagDefinitions | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['Tag'] -and $names.Contains(([string]$_.Tag).Trim()) })
+    }
+
+    # Returns the books of a tag audit response whose profile gaps justify a refresh. Each candidate holds the BookId, the export record (Book), the Kind (Text: audit again with the full excerpt; Web: new targeted web search), and the gap Tags that exist in the current tag definitions and whose fingerprint differs from the one stored with the book's profile (new or changed definitions). Gaps of unknown BookIds, repeated gap objects of a book, gaps of books whose profile cannot be refreshed (a text profile without BookContent, a web profile without UUID or ContentHash), and gaps without such tags are skipped.
+    function Get-ProfileRefreshCandidate {
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowNull()]
+            [AllowEmptyCollection()]
+            [object[]]$ProfileGaps,
+            [Parameter(Mandatory = $true)]
+            [hashtable]$ProfileBooksById,
+            [Parameter(Mandatory = $true)]
+            [System.Collections.IDictionary]$TagHashes
+        )
+
+        $candidates = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $seenBookIds = New-Object -TypeName 'System.Collections.Generic.HashSet[int]'
+        foreach ($profileGap in $ProfileGaps) {
+            if ($null -eq $profileGap -or $null -eq $profileGap.PSObject.Properties['BookId'] -or $null -eq $profileGap.PSObject.Properties['Tags']) {
+                continue
+            }
+
+            $bookId = 0
+            if (-not [int]::TryParse([string]$profileGap.BookId, [ref]$bookId) -or -not $ProfileBooksById.ContainsKey($bookId) -or -not $seenBookIds.Add($bookId)) {
+                continue
+            }
+
+            $book = $ProfileBooksById[$bookId]
+            $kind = 'Text'
+            if ($null -ne $book.PSObject.Properties['ContentProfileSource'] -and [string]$book.ContentProfileSource -eq 'Web') {
+                $kind = 'Web'
+            }
+
+            if ($kind -eq 'Text' -and ($null -eq $book.PSObject.Properties['BookContent'] -or [string]::IsNullOrEmpty([string]$book.BookContent))) {
+                continue
+            }
+            if ($kind -eq 'Web' -and ($null -eq $book.PSObject.Properties['Uuid'] -or [string]::IsNullOrWhiteSpace([string]$book.Uuid) -or $null -eq $book.PSObject.Properties['ContentHash'] -or [string]::IsNullOrWhiteSpace([string]$book.ContentHash))) {
+                continue
+            }
+
+            $storedTagHashes = @{}
+            if ($null -ne $book.PSObject.Properties['ContentProfileTagHashes']) {
+                $storedTagHashes = ConvertTo-TagHashTable -InputObject $book.ContentProfileTagHashes
+            }
+
+            $tags = New-Object -TypeName 'System.Collections.Generic.List[string]'
+            foreach ($tag in @($profileGap.Tags)) {
+                $tagName = ([string]$tag).Trim()
+                if ([string]::IsNullOrEmpty($tagName) -or -not $TagHashes.Contains($tagName) -or $tags.Contains($tagName)) {
+                    continue
+                }
+                if ($storedTagHashes.ContainsKey($tagName) -and [string]$storedTagHashes[$tagName] -ceq [string]$TagHashes[$tagName]) {
+                    continue
+                }
+                $tags.Add($tagName)
+            }
+
+            if ($tags.Count -gt 0) {
+                $candidates.Add([pscustomobject]@{ BookId = $bookId; Book = $book; Kind = $kind; Tags = $tags.ToArray() })
+            }
+        }
+
+        return $candidates.ToArray()
+    }
+
+    # Replaces the results of the books that were audited again in a profile refresh: for every refresh input book with at least one record in the refresh response (matched by Title and Author), the records of the first audit are removed and the refresh records are added; the refresh content profiles are appended. Refresh records of books that were not in the refresh request are ignored, and a book without refresh record keeps its first result. Returns the number of replaced books.
+    function Merge-RefreshedAuditRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$ResultObject,
+            [Parameter(Mandatory = $true)]
+            [object]$RefreshResultObject,
+            [Parameter(Mandatory = $true)]
+            [object[]]$BookRecords
+        )
+
+        $requestedKeys = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($bookRecord in $BookRecords) {
+            [void]$requestedKeys.Add((Get-BookIdentityKey -Book ([pscustomobject]$bookRecord) -TitlePropertyName 'Title' -AuthorPropertyName 'Author'))
+        }
+
+        $refreshRecords = @($RefreshResultObject.records | Where-Object { $null -ne $_ -and $requestedKeys.Contains((Get-BookIdentityKey -Book $_ -TitlePropertyName 'Title' -AuthorPropertyName 'Author')) })
+        $replacedKeys = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($refreshRecord in $refreshRecords) {
+            [void]$replacedKeys.Add((Get-BookIdentityKey -Book $refreshRecord -TitlePropertyName 'Title' -AuthorPropertyName 'Author'))
+        }
+
+        if ($replacedKeys.Count -eq 0) {
+            return 0
+        }
+
+        $keptRecords = @($ResultObject.records | Where-Object { $null -ne $_ -and -not $replacedKeys.Contains((Get-BookIdentityKey -Book $_ -TitlePropertyName 'Title' -AuthorPropertyName 'Author')) })
+        $ResultObject.records = @($keptRecords) + @($refreshRecords)
+        $ResultObject.content_profiles = @($ResultObject.content_profiles) + @($RefreshResultObject.content_profiles | Where-Object { $null -ne $_ })
+        return $replacedKeys.Count
     }
 
     # Builds the LLM input record of one book with a request-local BookId: the identity fields, the current tags, and either the stored content profile (when it is valid and FullContent is not set, or always for a book without text) or the extracted BookContent. A web profile is marked with ContentProfileSource Web.
@@ -904,7 +1141,7 @@ $bookInput
         return $record
     }
 
-    # Stores a content profile (ProfileData with ContentProfile, Source Text/Web/WebNotFound, and optional Sources) in the book's cache file 01-Cache/<uuid>.json, logs the cache file path as DEBUG, and returns $true. Returns $false without writing when the profile is empty without being a WebNotFound marker, the UUID is invalid, the cache file is missing or unreadable, or the file holds a different ContentHash, so a profile never belongs to another text or other metadata.
+    # Stores a content profile (ProfileData with ContentProfile, Source Text/Web/WebNotFound, and optional Sources and TagHashes) in the book's cache file 01-Cache/<uuid>.json, logs the cache file path as DEBUG, and returns $true. Returns $false without writing when the profile is empty without being a WebNotFound marker, the UUID is invalid, the cache file is missing or unreadable, or the file holds a different ContentHash, so a profile never belongs to another text or other metadata.
     function Update-BookCacheProfile {
         [CmdletBinding(SupportsShouldProcess = $true)]
         [OutputType([bool])]
@@ -927,6 +1164,11 @@ $bookInput
         $sources = $null
         if ($null -ne $ProfileData.PSObject.Properties['Sources'] -and @($ProfileData.Sources).Count -gt 0) {
             $sources = @($ProfileData.Sources)
+        }
+
+        $tagHashes = $null
+        if ($null -ne $ProfileData.PSObject.Properties['TagHashes'] -and $null -ne $ProfileData.TagHashes) {
+            $tagHashes = $ProfileData.TagHashes
         }
 
         $uuid = $null
@@ -959,6 +1201,7 @@ $bookInput
         $cached | Add-Member -MemberType NoteProperty -Name 'ContentProfileVersion' -Value $script:ContentProfileVersion -Force
         $cached | Add-Member -MemberType NoteProperty -Name 'ContentProfileSource' -Value $source -Force
         $cached | Add-Member -MemberType NoteProperty -Name 'ContentProfileSources' -Value $sources -Force
+        $cached | Add-Member -MemberType NoteProperty -Name 'ContentProfileTagHashes' -Value $tagHashes -Force
 
         if (-not $PSCmdlet.ShouldProcess($path, 'Store content profile')) {
             return $false
@@ -970,7 +1213,7 @@ $bookInput
         return $true
     }
 
-    # Stores the content profiles of an LLM response in the cache files and returns the number of stored profiles. Only profiles whose BookId belongs to a book of this request that was sent with its full text are stored; unknown IDs, books sent as a profile, and empty profiles are skipped.
+    # Stores the content profiles of an LLM response in the cache files, together with the fingerprints of all current tag definitions ($script:TagDefinitionHashes), and returns the number of stored profiles. Only profiles whose BookId belongs to a book of this request that was sent with its full text are stored; unknown IDs, books sent as a profile, and empty profiles are skipped. A stored profile with fewer than $script:MinimumProfileWords words is logged as a warning.
     function Save-ContentProfile {
         [CmdletBinding(SupportsShouldProcess = $true)]
         [OutputType([int])]
@@ -1007,9 +1250,13 @@ $bookInput
             }
 
             try {
-                $profileData = [pscustomobject]@{ ContentProfile = $profileText; Source = 'Text'; Sources = $null }
+                $profileData = [pscustomobject]@{ ContentProfile = $profileText; Source = 'Text'; Sources = $null; TagHashes = $script:TagDefinitionHashes }
                 if (Update-BookCacheProfile -CacheDirectory $CacheDirectory -Book $book -ProfileData $profileData) {
                     $savedCount++
+                    $wordCount = @($profileText -split '\s+' | Where-Object { $_ }).Count
+                    if ($wordCount -lt $script:MinimumProfileWords) {
+                        Write-ScriptLog -Level WARN -Message ("Content profile of '{0}' has only {1} words (expected at least {2})." -f $book.Title, $wordCount, $script:MinimumProfileWords)
+                    }
                 }
                 else {
                     Write-ScriptLog -Level WARN -Message ("Content profile of '{0}' was not stored: no matching cache file for this book text." -f $book.Title)
@@ -1234,6 +1481,7 @@ $bookAnalysisInput
         $usage = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
         $records = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $contentProfiles = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        $profileGaps = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $rawResponses = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $missingBooks = New-Object -TypeName 'System.Collections.Generic.List[string]'
 
@@ -1251,6 +1499,9 @@ $bookAnalysisInput
                 }
                 foreach ($contentProfile in @($resultObject.content_profiles)) {
                     $contentProfiles.Add($contentProfile)
+                }
+                foreach ($profileGap in @($resultObject.profile_gaps)) {
+                    $profileGaps.Add($profileGap)
                 }
                 $rawResponses.Add($auditResult.RawText)
                 continue
@@ -1292,6 +1543,7 @@ $bookAnalysisInput
             validation_error         = if ($validationMessages.Count -gt 0) { $validationMessages -join ' ' } else { $null }
             records                  = $records.ToArray()
             content_profiles         = $contentProfiles.ToArray()
+            profile_gaps             = $profileGaps.ToArray()
             token_usage              = $null
             raw_response             = $rawResponses.ToArray()
             parse_error              = $null
@@ -1300,13 +1552,18 @@ $bookAnalysisInput
         return [pscustomobject]@{ ResultObject = $mergedResult; Usage = $usage }
     }
 
-    # Send the tag definitions as compact JSON; the indentation of the export file only costs tokens.
+    # Send the tag definitions as compact JSON; the indentation of the export file only costs tokens. The result of ConvertFrom-Json is assigned before it is wrapped in @(), because Windows PowerShell 5.1 writes a JSON array as one object, and wrapping the command itself in @() would nest it in a second array (sent as {"value":[...],"Count":n}).
     try {
-        $tagContent = ConvertTo-CompactJson -InputObject @(ConvertFrom-Json -InputObject $tagContent -ErrorAction Stop) -Depth 5
+        $parsedTagDefinitions = ConvertFrom-Json -InputObject $tagContent -ErrorAction Stop
+        $tagDefinitions = @($parsedTagDefinitions)
+        $tagContent = ConvertTo-CompactJson -InputObject $tagDefinitions -Depth 5
     }
     catch {
         throw "The tag export file '$($tagFile.Name)' is not valid JSON: $($_.Exception.Message)"
     }
+
+    # Fingerprints of the current tag definitions, stored with every new content profile and compared with the stored ones to decide which profile gaps need a refresh.
+    $script:TagDefinitionHashes = Get-TagDefinitionHashTable -TagDefinitions $tagDefinitions
 
     $tagPayloadSection = @"
 ===================================
@@ -1334,6 +1591,9 @@ $tagContent
     $totalWebProfileCount = 0
     $totalWebNotFoundCount = 0
     $totalSearchQueryCount = 0
+    $totalProfileGapBookCount = 0
+    $totalRefreshedTextCount = 0
+    $totalRefreshedWebCount = 0
 
     if ($FullContent) {
         Write-ScriptLog "FullContent: the full book text is sent for every book; stored content profiles are not used."
@@ -1376,7 +1636,7 @@ $tagContent
         $fileWebProfileCount = 0
         $fileWebNotFoundCount = 0
         foreach ($webProfileBook in $webProfileBooks) {
-            $webProfileResult = Request-WebContentProfile -Book $webProfileBook -TagDefinitions $tagContent -UsageCounter $fileUsage
+            $webProfileResult = Request-WebContentProfile -Book $webProfileBook -UsageCounter $fileUsage
             $fileSearchQueryCount += $webProfileResult.SearchQueryCount
             if ($null -eq $webProfileResult.ContentProfile) {
                 Write-ScriptLog -Level WARN -Message "No web content profile for '$($webProfileBook.Title)': the request failed. The book is checked without content."
@@ -1387,6 +1647,7 @@ $tagContent
                 ContentProfile = $webProfileResult.ContentProfile
                 Source         = if ([string]::IsNullOrWhiteSpace($webProfileResult.ContentProfile)) { 'WebNotFound' } else { 'Web' }
                 Sources        = @($webProfileResult.Sources)
+                TagHashes      = $null
             }
 
             try {
@@ -1415,9 +1676,10 @@ $tagContent
             Write-ScriptLog "  -> Web profiles: $fileWebProfileCount written, $fileWebNotFoundCount not identified, $($webProfileBooks.Count - $fileWebProfileCount - $fileWebNotFoundCount) failed; $fileSearchQueryCount search queries"
         }
 
-        # Send the current tags with either the stored content profile or the extracted content of each book. Books sent with their full text are remembered by BookId, so their new content profiles can be stored after the response.
+        # Send the current tags with either the stored content profile or the extracted content of each book. Books are remembered by BookId: those sent with their full text, so their new content profiles can be stored after the response, and those sent with their profile, so their profile gaps can be refreshed.
         $bookAnalysisRecords = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $fullTextBooksById = @{}
+        $profileBooksById = @{}
         $fileProfileBookCount = 0
         $fileNoContentBookCount = 0
         $bookId = 0
@@ -1427,6 +1689,7 @@ $tagContent
             $bookAnalysisRecords.Add($bookAnalysisRecord)
             if ($bookAnalysisRecord.Contains('ContentProfile')) {
                 $fileProfileBookCount++
+                $profileBooksById[$bookId] = $inputBook
             }
             elseif (-not [string]::IsNullOrEmpty([string]$inputBook.BookContent)) {
                 $fullTextBooksById[$bookId] = $inputBook
@@ -1471,6 +1734,105 @@ $tagContent
                 $retriedFileSuccessCount++
                 Write-ScriptLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)."
             }
+        }
+
+        # Books whose content profile left tag decisions open (profile gaps) are audited again in the same run, because a book is exported again only after it changes: a text book with its full excerpt, a book without text with a new web profile from a search that targets the open tag definitions. Only gap tags that are new or changed since the profile was written lead to a refresh. Gaps in the refresh response are ignored, so there is one refresh round per file.
+        $profileRefreshSummary = $null
+        if ($null -ne $apiResult -and $null -ne $resultObject -and $resultObject.status -ne 'error' -and @($resultObject.profile_gaps).Count -gt 0) {
+            $refreshCandidates = @(Get-ProfileRefreshCandidate -ProfileGaps @($resultObject.profile_gaps) -ProfileBooksById $profileBooksById -TagHashes $script:TagDefinitionHashes)
+            $fileProfileGapBookCount = @($resultObject.profile_gaps | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['BookId'] } | ForEach-Object { [string]$_.BookId } | Select-Object -Unique).Count
+            $totalProfileGapBookCount += $fileProfileGapBookCount
+            Write-ScriptLog "  -> Profile gaps: $fileProfileGapBookCount book(s), $($refreshCandidates.Count) with new or changed tag definitions to refresh"
+
+            $refreshRecords = New-Object -TypeName 'System.Collections.Generic.List[object]'
+            $refreshTextBooksById = @{}
+            $fileRenewedWebCount = 0
+            foreach ($candidate in $refreshCandidates) {
+                $openTagText = $candidate.Tags -join ', '
+                if ($candidate.Kind -eq 'Text') {
+                    $refreshRecords.Add((ConvertTo-BookAnalysisRecord -Book $candidate.Book -BookId $candidate.BookId -FullContent))
+                    $refreshTextBooksById[$candidate.BookId] = $candidate.Book
+                    Write-ScriptLog "     Refresh with full text: $($candidate.Book.Title) (open tags: $openTagText)"
+                    continue
+                }
+
+                $focusTagDefinitions = ConvertTo-CompactJson -InputObject @(Select-TagDefinition -TagDefinitions $tagDefinitions -TagNames $candidate.Tags) -Depth 5
+                $webRefreshResult = Request-WebContentProfile -Book $candidate.Book -FocusTagDefinitions $focusTagDefinitions -UsageCounter $fileUsage
+                $fileSearchQueryCount += $webRefreshResult.SearchQueryCount
+                if ($null -eq $webRefreshResult.ContentProfile) {
+                    Write-ScriptLog -Level WARN -Message "Targeted web search for '$($candidate.Book.Title)' failed. The first audit result is kept."
+                    continue
+                }
+
+                # The focus tags are recorded even when the search found nothing new, so the same definitions do not trigger another search; the existing profile is then kept.
+                $storedTagHashes = @{}
+                if ($null -ne $candidate.Book.PSObject.Properties['ContentProfileTagHashes']) {
+                    $storedTagHashes = ConvertTo-TagHashTable -InputObject $candidate.Book.ContentProfileTagHashes
+                }
+                $mergedTagHashes = Merge-TagHashTable -StoredTagHashes $storedTagHashes -CurrentTagHashes $script:TagDefinitionHashes -TagNames $candidate.Tags
+                $isRenewed = -not [string]::IsNullOrWhiteSpace($webRefreshResult.ContentProfile)
+                if ($isRenewed) {
+                    $refreshProfileData = [pscustomobject]@{ ContentProfile = $webRefreshResult.ContentProfile; Source = 'Web'; Sources = @($webRefreshResult.Sources); TagHashes = $mergedTagHashes }
+                }
+                else {
+                    $refreshProfileData = [pscustomobject]@{ ContentProfile = [string]$candidate.Book.ContentProfile; Source = 'Web'; Sources = $candidate.Book.ContentProfileSources; TagHashes = $mergedTagHashes }
+                }
+
+                try {
+                    if (-not (Update-BookCacheProfile -CacheDirectory $CacheDir -Book $candidate.Book -ProfileData $refreshProfileData)) {
+                        Write-ScriptLog -Level WARN -Message "Refreshed web content profile of '$($candidate.Book.Title)' was not stored: no matching cache file for this book."
+                    }
+                }
+                catch {
+                    Write-ScriptLog -Level WARN -Message "Refreshed web content profile of '$($candidate.Book.Title)' was not stored: $($_.Exception.Message)"
+                }
+
+                Add-BookContentProfile -Book $candidate.Book -ProfileData $refreshProfileData
+                if (-not $isRenewed) {
+                    Write-ScriptLog -Level WARN -Message "Targeted web search found no reliable information for '$($candidate.Book.Title)' (open tags: $openTagText). The existing web profile and the first audit result are kept."
+                    continue
+                }
+
+                $fileRenewedWebCount++
+                $refreshRecords.Add((ConvertTo-BookAnalysisRecord -Book $candidate.Book -BookId $candidate.BookId))
+                Write-ScriptLog "     Refresh with targeted web profile: $($candidate.Book.Title) (open tags: $openTagText; $($webRefreshResult.SearchQueryCount) search queries)"
+            }
+
+            $replacedBookCount = 0
+            $savedRefreshProfileCount = 0
+            if ($refreshRecords.Count -gt 0) {
+                $refreshPayload = ConvertTo-BookAuditPayload -TagSection $tagPayloadSection -BookFileName $bookFile.Name -BookRecords $refreshRecords.ToArray()
+                $refreshExpectedCount = Get-UniqueBookCount -Items @($refreshRecords | ForEach-Object { [pscustomobject]$_ }) -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
+                $refreshAudit = Invoke-BookAuditRequest -PayloadText $refreshPayload -SourceFile "$($bookFile.Name) (profile refresh)" -ExpectedUniqueBookCount $refreshExpectedCount
+                if ($refreshAudit.Usage.Available) {
+                    Add-TokenUsage -Counter $fileUsage -TokenUsage $refreshAudit.Usage
+                }
+
+                if ($null -ne $refreshAudit.RawText -and $null -ne $refreshAudit.ResultObject -and $refreshAudit.ResultObject.status -ne 'error') {
+                    $replacedBookCount = Merge-RefreshedAuditRecord -ResultObject $resultObject -RefreshResultObject $refreshAudit.ResultObject -BookRecords $refreshRecords.ToArray()
+                    if ($refreshTextBooksById.Count -gt 0) {
+                        $savedRefreshProfileCount = Save-ContentProfile -ContentProfiles @($refreshAudit.ResultObject.content_profiles) -FullTextBooksById $refreshTextBooksById -CacheDirectory $CacheDir
+                    }
+                    Write-ScriptLog "  -> Profile refresh: results of $replacedBookCount of $($refreshRecords.Count) book(s) replaced, $savedRefreshProfileCount content profile(s) stored"
+                }
+                else {
+                    Write-ScriptLog -Level WARN -Message "Profile refresh for '$($bookFile.Name)' failed. The first audit results are kept."
+                }
+            }
+
+            $totalRefreshedTextCount += $savedRefreshProfileCount
+            $totalRefreshedWebCount += $fileRenewedWebCount
+            $profileRefreshSummary = [ordered]@{
+                gap_book_count       = $fileProfileGapBookCount
+                refreshed_books      = @($refreshRecords | ForEach-Object { [string]$_.Title })
+                replaced_book_count  = $replacedBookCount
+                text_profiles_stored = $savedRefreshProfileCount
+                web_profiles_renewed = $fileRenewedWebCount
+            }
+        }
+
+        if ($null -ne $resultObject) {
+            $resultObject | Add-Member -MemberType NoteProperty -Name 'profile_refresh' -Value $profileRefreshSummary -Force
         }
 
         $totalSearchQueryCount += $fileSearchQueryCount
@@ -1550,6 +1912,8 @@ $tagContent
                 validation_error         = $null
                 records                  = @()
                 content_profiles         = @()
+                profile_gaps             = @()
+                profile_refresh          = $null
                 token_usage              = $tokenUsage
                 raw_response             = if (-not [string]::IsNullOrWhiteSpace($script:LastApiErrorBody)) { $script:LastApiErrorBody } else { $apiDetail }
                 parse_error              = $apiDetail
@@ -1576,6 +1940,7 @@ $tagContent
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
     Write-ScriptLog "Books sent: $totalFullTextBookCount with full text, $totalProfileBookCount with content profile, $totalNoContentBookCount without content; $totalSavedProfileCount content profile(s) stored."
     Write-ScriptLog "Web search: $totalWebProfileCount web profile(s) written, $totalWebNotFoundCount book(s) not identified, $totalSearchQueryCount search queries (billed per query)."
+    Write-ScriptLog "Profile gaps: $totalProfileGapBookCount book(s) with open tag decisions; refreshed $totalRefreshedTextCount with the full text and $totalRefreshedWebCount with a targeted web search."
     Write-ScriptLog "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))"
 }
 catch {
