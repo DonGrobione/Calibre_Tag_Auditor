@@ -437,13 +437,26 @@ Describe 'Book cache workflow' {
         $scriptAst.Extent.Text | Should Match '-ChildPath "01-Cache"'
     }
 
-    It 'logs every written and removed cache file as INFO with its display path' {
+    It 'logs every created, updated, and removed cache file as INFO with its file name only' {
         $cacheLogs = @($commands | Where-Object {
-                $_.GetCommandName() -eq 'Write-ScriptLog' -and $_.Extent.Text -match 'ConvertTo-DisplayPath -Path \$CachePath'
+                $_.GetCommandName() -eq 'Write-ScriptLog' -and $_.Extent.Text -match '(Split-Path -Path \$CachePath -Leaf|\$RemovedCacheFile\.Name)'
             } | ForEach-Object { $_.Extent.Text })
-        @($cacheLogs | Where-Object { $_ -match 'Wrote cache file' }).Count | Should Be 1
-        @($cacheLogs | Where-Object { $_ -match 'Removed outdated cache file' }).Count | Should Be 1
-        @($cacheLogs | Where-Object { $_ -match '(Wrote|Removed outdated) cache file' -and $_ -match '-Level' }).Count | Should Be 0
+        @($cacheLogs | Where-Object { $_ -match '"\{0\} file: \{1\}" -f \$CacheFileAction' }).Count | Should Be 1
+        @($cacheLogs | Where-Object { $_ -match 'Removed file: \{0\} \(content extraction failed\)' }).Count | Should Be 1
+        @($cacheLogs | Where-Object { $_ -match 'Removed file: \{0\} \(book no longer in the library\)' }).Count | Should Be 1
+        @($cacheLogs | Where-Object { $_ -match '-Level' -and $_ -notmatch 'Could not' }).Count | Should Be 0
+        $scriptAst.Extent.Text | Should Not Match 'Wrote cache file'
+    }
+
+    It 'names an existing cache file as updated and a new one as created' {
+        $actionAssignment = $scriptAst.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$CacheFileAction'
+            }, $true)
+        $actionAssignment | Should Not BeNullOrEmpty
+        $actionAssignment.Right.Extent.Text | Should Match "if \(Test-Path -LiteralPath \`$CachePath -PathType Leaf\) \{ 'Updated' \} else \{ 'Created' \}"
+        $writeCall = @($commands | Where-Object { $_.GetCommandName() -eq 'Write-BookCacheFile' })[0]
+        $actionAssignment.Extent.StartOffset -lt $writeCall.Extent.StartOffset | Should Be $true
     }
 
     It 'names the cache file of a cached book in its book line, without path and without a separate line' {
@@ -458,7 +471,7 @@ Describe 'Book cache workflow' {
     It 'logs a written cache file only after Write-BookCacheFile succeeded' {
         $writeCall = @($commands | Where-Object { $_.GetCommandName() -eq 'Write-BookCacheFile' })[0]
         $tryBody = $writeCall.Parent.Parent
-        $tryBody.Extent.Text | Should Match '(?s)Write-BookCacheFile.*Wrote cache file'
+        $tryBody.Extent.Text | Should Match '(?s)Write-BookCacheFile.*\{0\} file: \{1\}'
         $tryBody.Parent -is [System.Management.Automation.Language.TryStatementAst] | Should Be $true
     }
 

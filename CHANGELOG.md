@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-10-05
+
+### Scripts
+- `01-Export-CalibreBooks.ps1` 5.2: the cache file log lines say what happened to the file: `Created file: <uuid>.json` for a new cache file, `Updated file: <uuid>.json` for an overwritten one (e.g. after a title change in Calibre), and `Removed file: <uuid>.json` with the reason `(book no longer in the library)` or `(content extraction failed)`. Before, every write was logged as "Wrote cache file", so a rename looked like new files. With tests.
+
 ## 2026-10-04
 
 ### Modules

@@ -24,7 +24,7 @@
     Exports the books changed within the last 7 days.
 
 .NOTES
-    Version: 5.1
+    Version: 5.2
 #>
 
 [CmdletBinding()]
@@ -394,7 +394,7 @@ try {
     } else {
         $RemovedCacheFiles = @(Remove-StaleBookCacheFile -CacheDirectory $CacheDir -LibraryUuids @($Books | ForEach-Object { [string]$_.uuid }))
         foreach ($RemovedCacheFile in $RemovedCacheFiles) {
-            Write-ScriptLog -Message ("Removed cache file of deleted book: {0}" -f $RemovedCacheFile.Name)
+            Write-ScriptLog -Message ("Removed file: {0} (book no longer in the library)" -f $RemovedCacheFile.Name)
         }
         $RemovedCacheFileCount = $RemovedCacheFiles.Count
         Write-ScriptLog ("Cache cleanup: {0} file(s) of deleted books removed" -f $RemovedCacheFileCount)
@@ -849,7 +849,7 @@ try {
             if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
                 try {
                     Remove-Item -LiteralPath $CachePath -Force -ErrorAction Stop
-                    Write-ScriptLog -Message ("Removed outdated cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
+                    Write-ScriptLog -Message ("Removed file: {0} (content extraction failed)" -f (Split-Path -Path $CachePath -Leaf))
                 } catch {
                     Write-ScriptLog -Level WARN -Message ("Could not delete outdated cache file '{0}': {1}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot), $_.Exception.Message)
                 }
@@ -866,9 +866,11 @@ try {
             foreach ($Property in $BookRecord.PSObject.Properties) {
                 $CacheRecord | Add-Member -MemberType NoteProperty -Name $Property.Name -Value $Property.Value
             }
+            # The log names an overwritten cache file as updated and a new one as created.
+            $CacheFileAction = if (Test-Path -LiteralPath $CachePath -PathType Leaf) { 'Updated' } else { 'Created' }
             try {
                 Write-BookCacheFile -Path $CachePath -Record $CacheRecord
-                Write-ScriptLog -Message ("Wrote cache file: {0}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot))
+                Write-ScriptLog -Message ("{0} file: {1}" -f $CacheFileAction, (Split-Path -Path $CachePath -Leaf))
             } catch {
                 Write-ScriptLog -Level WARN -Message ("Could not write cache file '{0}': {1}" -f (ConvertTo-DisplayPath -Path $CachePath -BasePath $PSScriptRoot), $_.Exception.Message)
             }
