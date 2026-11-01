@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-11-01
+
+### Scripts
+- `Invoke-CalibreToolsPipeline.ps1` 1.17: fixed: the pipeline aborted after a successful step with "Script '01-Export-CalibreBooks.ps1' exited with code -1". It checked `$LASTEXITCODE` after each step, but that variable holds the exit code of the last external program the step ran. When `ebook-convert.exe` failed on a book (handled: the book is `Failed`) and every later book came from the cache, the stale -1 stopped the pipeline. A step now fails only by throwing its error, as the step scripts already do. With tests.
+
 ## 2026-10-05
 
 ### Scripts

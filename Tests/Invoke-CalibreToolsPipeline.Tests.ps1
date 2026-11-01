@@ -127,6 +127,11 @@ Describe 'Step loop without a book export' {
     It 'no longer uses the removed tag definition baseline' {
         $scriptAst.Extent.Text | Should Not Match 'TagDefinition'
     }
+
+    It 'does not treat a stale $LASTEXITCODE from a handled external program failure as a step failure' {
+        $exitCodeReads = @($scriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -eq 'LASTEXITCODE' }, $true))
+        $exitCodeReads.Count | Should Be 0
+    }
 }
 
 Describe 'Logging setup' {
