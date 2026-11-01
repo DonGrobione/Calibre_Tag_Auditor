@@ -3,7 +3,7 @@
     Run all Calibre Tag Auditor scripts in sequence.
 
 .DESCRIPTION
-    Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts.
+    Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts. A step fails only by throwing an error; exit codes of external programs that a step ran are not checked.
     On failure, the error is shown and the script waits for Enter before exit.
     The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
     On successful completion, the pipeline prints the total prompt, completion, and combined token usage and the number of Google Search queries (billed per query, used for web content profiles of books without text) across all LLM result files.
@@ -28,7 +28,7 @@
     Validates all books with their full text, e.g. after the tag definitions were changed.
 
 .NOTES
-    Version: 1.16
+    Version: 1.17
 #>
 
 [CmdletBinding()]
@@ -126,12 +126,8 @@ try {
         $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath $script
         $stepParameters = Get-StepScriptParameter -ScriptName $script -PipelineParameters $pipelineParameters
         Write-ScriptLog "=== Starting: $script ==="
+        # A failed step rethrows its error, which ends the loop. $LASTEXITCODE is not checked, because it only holds the exit code of the last external program a step ran, including failures the step already handled.
         & $scriptPath @stepParameters
-
-        # Check whether the script completed successfully.
-        if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-            throw "Script '$script' exited with code $LASTEXITCODE. Pipeline aborted."
-        }
 
         Write-ScriptLog "=== Completed: $script ==="
         Write-Information -MessageData '' -InformationAction Continue
