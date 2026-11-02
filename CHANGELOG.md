@@ -8,6 +8,9 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Scripts
 - `Invoke-CalibreToolsPipeline.ps1` 1.18 and `02-Process-CalibreDataWithLLM.ps1` 7.2: fixed: runs of 24 hours or longer showed a duration shortened by whole days (a 31:23:48 run was logged as `07:23:48`), because the TimeSpan format `hh` is the hours component (0-23), not the total hours. Both now use `Format-Duration`. The pipeline summary also shows Start and End with the date, so runs over midnight are recognisable.
+- `02-Process-CalibreDataWithLLM.ps1` 7.3: books without audit result no longer disappear silently. Every input book without a record (blocked by Gemini for prohibited content, failed request, unparsable response, or left out by the LLM, as in a file that ended with `input=5, output=4` after all retries) is written to the result file as `missing_books` (Title, Author, Reason), logged by title, and listed in the run summary under "Books without audit result". A prohibited content block now logs "Gemini blocked the request for prohibited content (policy filter). The block is not retried." instead of the misleading hint about an invalid API key, model name, or payload. With tests.
+- `03-Convert-LLMResults2ODS.ps1` 1.7: every entry in `missing_books` becomes a row with `ProposedAction = NOT_AUDITED` and the reason, so the book can be checked manually; the number of these rows is logged. With tests.
+- `Invoke-CalibreToolsPipeline.ps1` 1.19: the summary shows the number of books without audit result. With tests.
 
 ## 2026-11-01
 

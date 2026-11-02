@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content),Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -17,7 +17,7 @@ $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
 $functionNames = @(
     'Get-GeminiApiKey', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException', 'Get-ConnectionFailureStatus', 'Test-ProhibitedContentError',
-    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit',
+    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit', 'Get-MissingBookRecord',
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
     'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
@@ -510,21 +510,93 @@ Describe 'Invoke-SingleBookAudit' {
         $result.Usage.TotalTokens | Should Be 30
     }
 
+    It 'returns the blocked book with title, author, and reason as MissingBooks' {
+        $result = Invoke-SingleBookAudit -BookRecords $bookRecords -TagSection 'TAGS' -BookFileName 'books_001.json'
+        @($result.MissingBooks).Count | Should Be 1
+        $result.MissingBooks[0].Title | Should Be 'Bad B'
+        $result.MissingBooks[0].Author | Should Be 'Y'
+        $result.MissingBooks[0].Reason | Should Be 'blocked for prohibited content'
+    }
+
     It 'returns success when no book is blocked' {
         $result = Invoke-SingleBookAudit -BookRecords @($bookRecords[0], $bookRecords[2]) -TagSection 'TAGS' -BookFileName 'books_001.json'
         $result.ResultObject.status | Should Be 'success'
         $result.ResultObject.validation_error | Should Be $null
+        @($result.MissingBooks).Count | Should Be 0
     }
 
-    It 'returns no result object when every book is blocked' {
+    It 'returns no result object but the missing book when every book is blocked' {
         $result = Invoke-SingleBookAudit -BookRecords @($bookRecords[1]) -TagSection 'TAGS' -BookFileName 'books_001.json'
         $result.ResultObject | Should Be $null
+        @($result.MissingBooks).Count | Should Be 1
+        $result.MissingBooks[0].Title | Should Be 'Bad B'
+    }
+}
+
+Describe 'Get-MissingBookRecord' {
+    $books = @(
+        [pscustomobject]@{ Title = 'Book A'; Author = 'Author A'; Series = 'S'; SeriesIndex = 1 },
+        [pscustomobject]@{ Title = 'Book B'; Author = 'Author B'; Series = $null; SeriesIndex = $null },
+        [pscustomobject]@{ Title = 'Book C'; Author = 'Author C'; Series = $null; SeriesIndex = $null }
+    )
+
+    It 'returns nothing when every book has a record' {
+        $records = @(
+            [pscustomobject]@{ Title = 'Book A'; Author = 'Author A'; ProposedAction = 'NO_CHANGES' },
+            [pscustomobject]@{ Title = 'Book B'; Author = 'Author B'; ProposedAction = 'ADD'; Tag = 'Fantasy' },
+            [pscustomobject]@{ Title = 'Book C'; Author = 'Author C'; ProposedAction = 'NO_CHANGES' }
+        )
+        @(Get-MissingBookRecord -Books $books -Records $records -Reason 'no result').Count | Should Be 0
+    }
+
+    It 'returns the book without record with title, author, and the given reason' {
+        $records = @(
+            [pscustomobject]@{ Title = 'Book A'; Author = 'Author A'; ProposedAction = 'NO_CHANGES' },
+            [pscustomobject]@{ Title = 'Book C'; Author = 'Author C'; ProposedAction = 'NO_CHANGES' }
+        )
+        $missing = @(Get-MissingBookRecord -Books $books -Records $records -Reason 'no result in the LLM response')
+        $missing.Count | Should Be 1
+        $missing[0].Title | Should Be 'Book B'
+        $missing[0].Author | Should Be 'Author B'
+        $missing[0].Reason | Should Be 'no result in the LLM response'
+    }
+
+    It 'ignores case and extra whitespace in title and author' {
+        $records = @(
+            [pscustomobject]@{ Title = 'book  a'; Author = 'AUTHOR A '; ProposedAction = 'NO_CHANGES' },
+            [pscustomobject]@{ Title = 'Book B'; Author = 'Author B'; ProposedAction = 'NO_CHANGES' },
+            [pscustomobject]@{ Title = 'Book C'; Author = 'Author C'; ProposedAction = 'NO_CHANGES' }
+        )
+        @(Get-MissingBookRecord -Books $books -Records $records -Reason 'no result').Count | Should Be 0
+    }
+
+    It 'returns every book when there are no records' {
+        $missing = @(Get-MissingBookRecord -Books $books -Records @() -Reason 'blocked for prohibited content')
+        $missing.Count | Should Be 3
+        @($missing | ForEach-Object { $_.Reason } | Select-Object -Unique) -join ',' | Should Be 'blocked for prohibited content'
+    }
+
+    It 'returns nothing when the input books could not be parsed' {
+        @(Get-MissingBookRecord -Books $null -Records @() -Reason 'no result').Count | Should Be 0
     }
 }
 
 Describe 'Prohibited content fallback workflow' {
     It 'sends the books one at a time only after a prohibited content block of a file with several books' {
         $scriptAst.Extent.Text | Should Match '(?s)if \(\$null -eq \$apiResult -and \$bookAnalysisRecords\.Count -gt 1 -and \(Test-ProhibitedContentError [^\r\n]+\r?\n.*?Invoke-SingleBookAudit '
+    }
+
+    It 'writes missing_books into both the result file and the error result file' {
+        $scriptAst.Extent.Text | Should Match "Add-Member -MemberType NoteProperty -Name 'missing_books' -Value \`$fileMissingBooks"
+        $scriptAst.Extent.Text | Should Match 'missing_books\s+= \$fileMissingBooks'
+    }
+
+    It 'lists the books without audit result in the run summary' {
+        $scriptAst.Extent.Text | Should Match 'Books without audit result: \$\(\$allMissingBooks\.Count\)'
+    }
+
+    It 'logs a prohibited content block without the API key hint' {
+        $scriptAst.Extent.Text | Should Match '(?s)if \(Test-ProhibitedContentError -StatusCode \$statusCode -ErrorBody \$errorBody\) \{\s+Write-ScriptLog -Level WARN -Message "Gemini blocked the request for prohibited content[^"]*"\s+\}\s+elseif \(\$statusCode -eq 400\)'
     }
 }
 

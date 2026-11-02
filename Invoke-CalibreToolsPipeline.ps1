@@ -6,7 +6,7 @@
     Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts. A step fails only by throwing an error; exit codes of external programs that a step ran are not checked.
     On failure, the error is shown and the script waits for Enter before exit.
     The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
-    On successful completion, the pipeline prints the total prompt, completion, and combined token usage and the number of Google Search queries (billed per query, used for web content profiles of books without text) across all LLM result files.
+    On successful completion, the pipeline prints the total prompt, completion, and combined token usage and the number of Google Search queries (billed per query, used for web content profiles of books without text) across all LLM result files, and the number of books without audit result (missing_books, e.g. blocked by Gemini for prohibited content), which the ODS lists as NOT_AUDITED.
     When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline skips the remaining steps, prints a short summary without token usage, and exits with code 0.
 
 .PARAMETER ChangedWithinDays
@@ -28,7 +28,7 @@
     Validates all books with their full text, e.g. after the tag definitions were changed.
 
 .NOTES
-    Version: 1.18
+    Version: 1.19
 #>
 
 [CmdletBinding()]
@@ -153,6 +153,7 @@ try {
     $totalPromptTokens = [int64]0
     $totalCompletionTokens = [int64]0
     $totalSearchQueries = [int64]0
+    $totalMissingBooks = 0
     $llmResultFiles = Get-ChildItem -Path (Join-Path $PSScriptRoot "02-LLM-Result") -Filter "LLM-Result_*.json" -File -ErrorAction SilentlyContinue
     foreach ($resultFile in $llmResultFiles) {
         $result = Get-Content -Path $resultFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -166,6 +167,9 @@ try {
             if ($null -ne $result.token_usage.PSObject.Properties['web_search_queries'] -and $null -ne $result.token_usage.web_search_queries) {
                 $totalSearchQueries += [int64]$result.token_usage.web_search_queries
             }
+        }
+        if ($null -ne $result.PSObject.Properties['missing_books']) {
+            $totalMissingBooks += @($result.missing_books | Where-Object { $null -ne $_ }).Count
         }
     }
     $totalTokens = $totalPromptTokens + $totalCompletionTokens
@@ -182,6 +186,12 @@ try {
     Write-ScriptLog "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))"
     Write-ScriptLog "Tokens total (Prompt + Completion):     $($totalTokens.ToString('N0'))"
     Write-ScriptLog "Web search queries (billed per query):  $($totalSearchQueries.ToString('N0'))"
+    if ($totalMissingBooks -gt 0) {
+        Write-ScriptLog -Level WARN -Message "Books without audit result:             $totalMissingBooks (rows with ProposedAction NOT_AUDITED in the ODS; the LLM step summary lists them)"
+    }
+    else {
+        Write-ScriptLog "Books without audit result:             0"
+    }
 }
 catch {
     # Report the error and stop execution. Every child script already logs and rethrows its own errors, so this catch block only prints to terminal and never writes a second logfile entry for the same failure.

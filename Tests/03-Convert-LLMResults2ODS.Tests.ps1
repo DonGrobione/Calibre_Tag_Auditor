@@ -3,7 +3,7 @@
     Pester tests for the JSON, CSV, and LibreOffice functions in 03-Convert-LLMResults2ODS.ps1.
 
 .DESCRIPTION
-    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile, ConvertTo-CsvRow, Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
+    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile (with NOT_AUDITED records from missing_books via ConvertTo-NotAuditedRecord), ConvertTo-CsvRow, Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '03-Convert-LLMResults2ODS.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-JsonText', 'Get-ParsedJsonObjectFromFile', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-ConfigItemValue')
+$functionNames = @('Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-JsonText', 'Get-ParsedJsonObjectFromFile', 'ConvertTo-NotAuditedRecord', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-ConfigItemValue')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -138,6 +138,40 @@ Describe 'Get-BookRecordFromJsonFile' {
         $records = Get-BookRecordFromJsonFile -Files @((Get-Item -LiteralPath $brokenFile), (Get-Item -LiteralPath $arrayFile))
         @($records).Count | Should Be 1
         Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' }
+    }
+
+    It 'adds a NOT_AUDITED record for every book in missing_books' {
+        $missingFile = Join-Path -Path $TestDrive -ChildPath 'missing.json'
+        Set-Content -LiteralPath $missingFile -Encoding UTF8 -Value '{ "status": "warning", "records": [ { "Title": "A", "Author": "X", "ProposedAction": "NO_CHANGES" } ], "missing_books": [ { "Title": "Blocked", "Author": "Y", "Reason": "blocked for prohibited content" } ] }'
+        $records = @(Get-BookRecordFromJsonFile -Files @(Get-Item -LiteralPath $missingFile))
+        $records.Count | Should Be 2
+        $notAudited = @($records | Where-Object { $_.ProposedAction -eq 'NOT_AUDITED' })
+        $notAudited.Count | Should Be 1
+        $notAudited[0].Title | Should Be 'Blocked'
+        $notAudited[0].Author | Should Be 'Y'
+        $notAudited[0].Tag | Should Be $null
+        $notAudited[0].Reason | Should Be 'No audit result: blocked for prohibited content. Check the tags manually.'
+    }
+
+    It 'adds NOT_AUDITED records for an error result without records' {
+        $errorFile = Join-Path -Path $TestDrive -ChildPath 'error.json'
+        Set-Content -LiteralPath $errorFile -Encoding UTF8 -Value '{ "status": "error", "records": [], "missing_books": [ { "Title": "Only", "Author": "Z", "Reason": "API request failed" } ] }'
+        $records = @(Get-BookRecordFromJsonFile -Files @(Get-Item -LiteralPath $errorFile))
+        $records.Count | Should Be 1
+        $records[0].ProposedAction | Should Be 'NOT_AUDITED'
+    }
+
+    It 'adds no NOT_AUDITED record for files without missing_books' {
+        $records = @(Get-BookRecordFromJsonFile -Files @(Get-Item -LiteralPath $wrappedFile))
+        @($records | Where-Object { $_.ProposedAction -eq 'NOT_AUDITED' }).Count | Should Be 0
+    }
+
+    It 'keeps the NOT_AUDITED row with its reason in the CSV rows' {
+        $missingFile = Join-Path -Path $TestDrive -ChildPath 'missing.json'
+        $rows = @(ConvertTo-CsvRow -Objects @(Get-BookRecordFromJsonFile -Files @(Get-Item -LiteralPath $missingFile)))
+        $row = @($rows | Where-Object { $_.ProposedAction -eq 'NOT_AUDITED' })[0]
+        $row.Title | Should Be 'Blocked'
+        $row.Reason | Should Match 'blocked for prohibited content'
     }
 }
 
