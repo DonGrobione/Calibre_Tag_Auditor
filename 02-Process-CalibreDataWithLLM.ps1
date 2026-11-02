@@ -8,7 +8,8 @@
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
     If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
     API requests are retried on HTTP 429, 500, 502, 503, and 504 and on connection failures without HTTP response (DNS lookup, connect, send/receive, timeout).
-    When Gemini blocks the request of a file with several books for prohibited content (HTTP 400), the books of that file are sent again one at a time, so only the book that triggers the block stays without audit. The file is then saved with a validation warning that names the books without result.
+    When Gemini blocks the request of a file with several books for prohibited content (HTTP 400), the books of that file are sent again one at a time, so only the book that triggers the block stays without audit. The file is then saved with a validation warning that names the books without result. A block is not retried, because Gemini blocks the same input again.
+    Every input book without a record in the result (blocked, failed request, unparsable response, or simply left out by the LLM) is written to the result file as missing_books with Title, Author, and Reason, logged by title, and listed in the run summary under "Books without audit result". 03-Convert-LLMResults2ODS.ps1 turns these entries into rows with ProposedAction NOT_AUDITED, so their tags can be checked manually.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
@@ -29,9 +30,9 @@
     Validates the latest book export with the full book text of every book.
 
 .NOTES
-    Version: 7.2
+    Version: 7.3
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
-    Each output file is written as a valid JSON object with metadata, records, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
+    Each output file is written as a valid JSON object with metadata, records, missing books, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
@@ -1356,14 +1357,17 @@ $FocusTagDefinitions
                 else {
                     Write-ScriptLog -Level WARN -Message "API request failed: HTTP $statusCode"
 
-                    if ($statusCode -eq 400) {
+                    $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
+                    if (Test-ProhibitedContentError -StatusCode $statusCode -ErrorBody $errorBody) {
+                        Write-ScriptLog -Level WARN -Message "Gemini blocked the request for prohibited content (policy filter). The block is not retried."
+                    }
+                    elseif ($statusCode -eq 400) {
                         Write-ScriptLog -Level WARN -Message "Possible causes: invalid API key (Gemini reports it as HTTP 400), invalid model name, malformed payload. See the API response body below."
                     }
                     elseif ($statusCode -eq 401 -or $statusCode -eq 403) {
                         Write-ScriptLog -Level WARN -Message "Possible cause: API key is invalid or expired."
                     }
 
-                    $errorBody = Get-ErrorBodyTextFromException -ErrorRecord $_
                     $originalError = Get-ErrorMessageFromException -ErrorRecord $_
                     if ([string]::IsNullOrWhiteSpace($originalError)) {
                         $originalError = $_.ToString()
@@ -1465,7 +1469,7 @@ $bookAnalysisInput
         }
     }
 
-    # Audits the books of a file one at a time after Gemini blocked the request of the whole file for prohibited content: sends each book analysis record in its own request (with its original BookId, so content profiles still match) and merges the parsed responses into one result object for the file. A book that is blocked again, whose request fails, or whose response stays unparsable gets no record and is named in validation_error, and the status becomes warning. Returns the merged ResultObject ($null when no book got a response) and the token Usage of all requests.
+    # Audits the books of a file one at a time after Gemini blocked the request of the whole file for prohibited content: sends each book analysis record in its own request (with its original BookId, so content profiles still match) and merges the parsed responses into one result object for the file. A book that is blocked again, whose request fails, or whose response stays unparsable gets no record and is named in validation_error, and the status becomes warning. Returns the merged ResultObject ($null when no book got a response), the MissingBooks (Title, Author, Reason) without result, and the token Usage of all requests.
     function Invoke-SingleBookAudit {
         param(
             [Parameter(Mandatory = $true)]
@@ -1484,6 +1488,7 @@ $bookAnalysisInput
         $profileGaps = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $rawResponses = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $missingBooks = New-Object -TypeName 'System.Collections.Generic.List[string]'
+        $missingBookRecords = New-Object -TypeName 'System.Collections.Generic.List[object]'
 
         foreach ($bookRecord in $BookRecords) {
             $payload = ConvertTo-BookAuditPayload -TagSection $TagSection -BookFileName $BookFileName -BookRecords @($bookRecord)
@@ -1516,11 +1521,12 @@ $bookAnalysisInput
             }
 
             $missingBooks.Add("'$($bookRecord.Title)' ($reason)")
+            $missingBookRecords.Add([pscustomobject][ordered]@{ Title = [string]$bookRecord.Title; Author = [string]$bookRecord.Author; Reason = $reason })
             Write-ScriptLog -Level WARN -Message "No audit result for '$($bookRecord.Title)' in '$BookFileName': $reason."
         }
 
         if ($rawResponses.Count -eq 0) {
-            return [pscustomobject]@{ ResultObject = $null; Usage = $usage }
+            return [pscustomobject]@{ ResultObject = $null; MissingBooks = $missingBookRecords.ToArray(); Usage = $usage }
         }
 
         $expectedCount = Get-UniqueBookCount -Items @($BookRecords | ForEach-Object { [pscustomobject]$_ }) -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
@@ -1549,7 +1555,38 @@ $bookAnalysisInput
             parse_error              = $null
         }
 
-        return [pscustomobject]@{ ResultObject = $mergedResult; Usage = $usage }
+        return [pscustomobject]@{ ResultObject = $mergedResult; MissingBooks = $missingBookRecords.ToArray(); Usage = $usage }
+    }
+
+    # Returns the input books of a file that have no record in the audit result, compared by title and author (case and whitespace are ignored, like the unique-book count). Each missing book is returned with Title, Author, and the given Reason.
+    function Get-MissingBookRecord {
+        param(
+            [AllowNull()]
+            [object[]]$Books,
+            [AllowNull()]
+            [object[]]$Records,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Reason
+        )
+
+        $recordKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($record in @($Records | Where-Object { $null -ne $_ })) {
+            [void]$recordKeys.Add((Get-BookIdentityKey -Book $record -TitlePropertyName 'Title' -AuthorPropertyName 'Author'))
+        }
+
+        $missingBooks = New-Object -TypeName 'System.Collections.Generic.List[object]'
+        foreach ($book in @($Books | Where-Object { $null -ne $_ })) {
+            $bookKey = Get-BookIdentityKey -Book $book -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+            if ([string]::IsNullOrWhiteSpace($bookKey) -or $recordKeys.Contains($bookKey)) {
+                continue
+            }
+
+            [void]$recordKeys.Add($bookKey)
+            $missingBooks.Add([pscustomobject][ordered]@{ Title = [string]$book.Title; Author = [string]$book.Author; Reason = $Reason })
+        }
+
+        return $missingBooks.ToArray()
     }
 
     # Send the tag definitions as compact JSON; the indentation of the export file only costs tokens. The result of ConvertFrom-Json is assigned before it is wrapped in @(), because Windows PowerShell 5.1 writes a JSON array as one object, and wrapping the command itself in @() would nest it in a second array (sent as {"value":[...],"Count":n}).
@@ -1594,6 +1631,7 @@ $tagContent
     $totalProfileGapBookCount = 0
     $totalRefreshedTextCount = 0
     $totalRefreshedWebCount = 0
+    $allMissingBooks = New-Object -TypeName 'System.Collections.Generic.List[object]'
 
     if ($FullContent) {
         Write-ScriptLog "FullContent: the full book text is sent for every book; stored content profiles are not used."
@@ -1714,6 +1752,7 @@ $tagContent
         $apiResult = $auditResult.RawText
         $resultObject = $auditResult.ResultObject
         $contentAttempt = $auditResult.Attempts
+        $singleBookMissingBooks = @()
 
         # A block for prohibited content rejects the whole file, so the books are sent again one at a time and only the book that triggers the block stays without result.
         if ($null -eq $apiResult -and $bookAnalysisRecords.Count -gt 1 -and (Test-ProhibitedContentError -StatusCode $script:LastApiStatusCode -ErrorBody $script:LastApiErrorBody)) {
@@ -1722,6 +1761,7 @@ $tagContent
             if ($singleBookResult.Usage.Available) {
                 Add-TokenUsage -Counter $fileUsage -TokenUsage $singleBookResult.Usage
             }
+            $singleBookMissingBooks = @($singleBookResult.MissingBooks)
             if ($null -ne $singleBookResult.ResultObject) {
                 $resultObject = $singleBookResult.ResultObject
                 $apiResult = $resultObject.raw_response
@@ -1860,7 +1900,41 @@ $tagContent
             Write-ScriptLog "  -> Content profiles stored: $fileSavedProfileCount of $($fullTextBooksById.Count)"
         }
 
+        # Name every input book without a record, so it is listed in the run summary and in the ODS instead of disappearing. Books the book-by-book fallback already reported keep its reason and are not logged twice.
+        $missingBookReason = 'no result in the LLM response'
+        $fileRecords = @()
+        if ($null -eq $apiResult) {
+            $missingBookReason = 'API request failed'
+            if (Test-ProhibitedContentError -StatusCode $script:LastApiStatusCode -ErrorBody $script:LastApiErrorBody) {
+                $missingBookReason = 'blocked for prohibited content'
+            }
+        }
+        elseif ($resultObject.status -eq 'error') {
+            $missingBookReason = 'LLM response could not be parsed'
+        }
+        else {
+            $fileRecords = @($resultObject.records)
+        }
+
+        $knownMissingReasons = @{}
+        foreach ($knownMissingBook in $singleBookMissingBooks) {
+            $knownMissingReasons[(Get-BookIdentityKey -Book $knownMissingBook -TitlePropertyName 'Title' -AuthorPropertyName 'Author')] = $knownMissingBook.Reason
+        }
+
+        $fileMissingBooks = @(Get-MissingBookRecord -Books @($parsedInputBooks) -Records $fileRecords -Reason $missingBookReason)
+        foreach ($missingBook in $fileMissingBooks) {
+            $missingBookKey = Get-BookIdentityKey -Book $missingBook -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+            if ($knownMissingReasons.ContainsKey($missingBookKey)) {
+                $missingBook.Reason = $knownMissingReasons[$missingBookKey]
+            }
+            else {
+                Write-ScriptLog -Level WARN -Message "No audit result for '$($missingBook.Title)' in '$($bookFile.Name)': $($missingBook.Reason)."
+            }
+            $allMissingBooks.Add([pscustomobject][ordered]@{ Title = $missingBook.Title; Author = $missingBook.Author; Reason = $missingBook.Reason; SourceFile = $bookFile.Name })
+        }
+
         if ($null -ne $apiResult) {
+            $resultObject | Add-Member -MemberType NoteProperty -Name 'missing_books' -Value $fileMissingBooks -Force
             $resultObject.token_usage = $tokenUsage
             $savedCount++
             $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
@@ -1911,6 +1985,7 @@ $tagContent
                 unique_book_count_match  = $null
                 validation_error         = $null
                 records                  = @()
+                missing_books            = $fileMissingBooks
                 content_profiles         = @()
                 profile_gaps             = @()
                 profile_refresh          = $null
@@ -1942,6 +2017,15 @@ $tagContent
     Write-ScriptLog "Web search: $totalWebProfileCount web profile(s) written, $totalWebNotFoundCount book(s) not identified, $totalSearchQueryCount search queries (billed per query)."
     Write-ScriptLog "Profile gaps: $totalProfileGapBookCount book(s) with open tag decisions; refreshed $totalRefreshedTextCount with the full text and $totalRefreshedWebCount with a targeted web search."
     Write-ScriptLog "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))"
+    if ($allMissingBooks.Count -eq 0) {
+        Write-ScriptLog "Books without audit result: 0"
+    }
+    else {
+        Write-ScriptLog -Level WARN -Message "Books without audit result: $($allMissingBooks.Count) (listed in the ODS as NOT_AUDITED; check their tags manually)"
+        foreach ($missingBook in $allMissingBooks) {
+            Write-ScriptLog -Level WARN -Message "  - $($missingBook.Title) ($($missingBook.Author)): $($missingBook.Reason) [$($missingBook.SourceFile)]"
+        }
+    }
 }
 catch {
     $errorMessage = $null

@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays and FullContent script parameters, Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
+    Covers the ChangedWithinDays and FullContent script parameters, Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files. The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -39,6 +39,14 @@ Describe 'Invoke-CalibreToolsPipeline.ps1 source' {
 
     It 'has an optional switch parameter FullContent' {
         (Get-Command -Name $scriptPath).Parameters['FullContent'].ParameterType | Should Be ([switch])
+    }
+
+    It 'counts missing_books of the LLM result files only when the property exists' {
+        $scriptAst.Extent.Text | Should Match "if \(\`$null -ne \`$result\.PSObject\.Properties\['missing_books'\]\) \{\s+\`$totalMissingBooks \+= "
+    }
+
+    It 'prints the number of books without audit result in the summary' {
+        $scriptAst.Extent.Text | Should Match 'Books without audit result:\s+\$totalMissingBooks'
     }
 }
 

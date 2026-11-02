@@ -12,6 +12,7 @@
     Column E: Reason,         width 18 cm
 
     For rows where ProposedAction = NO_CHANGES, Tag and Reason are empty cells in the review sheet.
+    Books that the LLM step could not audit (listed in missing_books of a result file, e.g. blocked by Gemini for prohibited content) get one row with ProposedAction = NOT_AUDITED, an empty Tag, and the reason in the Reason column, so their tags can be checked manually. The number of these rows is logged.
     The final ODS file is written to the output folder using the naming pattern 03-ODS_Convert_<timestamp>.ods, where <timestamp> is taken from the first input JSON file. All temporary files are created under $env:TEMP and removed after use.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
@@ -22,7 +23,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.6
+    Version: 1.7
 #>
 
 [CmdletBinding()]
@@ -187,7 +188,26 @@ function Get-ParsedJsonObjectFromFile {
     return ConvertFrom-Json -InputObject $jsonText -ErrorAction Stop
 }
 
-# Read all JSON result files and return the flattened list of book result records.
+# Converts the missing_books entries of an LLM result file into review rows with ProposedAction NOT_AUDITED and the reason why the book has no audit result; returns nothing for files without missing_books.
+function ConvertTo-NotAuditedRecord {
+    param([object]$ParsedResult)
+
+    if ($null -eq $ParsedResult -or $null -eq $ParsedResult.PSObject.Properties['missing_books']) {
+        return
+    }
+
+    foreach ($missingBook in @($ParsedResult.missing_books | Where-Object { $null -ne $_ })) {
+        [pscustomobject][ordered]@{
+            Title          = $missingBook.Title
+            Author         = $missingBook.Author
+            ProposedAction = 'NOT_AUDITED'
+            Tag            = $null
+            Reason         = "No audit result: $($missingBook.Reason). Check the tags manually."
+        }
+    }
+}
+
+# Read all JSON result files and return the flattened list of book result records, plus a NOT_AUDITED record for every book listed in missing_books.
 function Get-BookRecordFromJsonFile {
     param([System.IO.FileInfo[]]$Files)
 
@@ -201,6 +221,10 @@ function Get-BookRecordFromJsonFile {
         catch {
             Write-ScriptLog -Level WARN -Message "Failed to process $($file.Name): $($_.Exception.Message)"
             continue
+        }
+
+        foreach ($notAuditedRecord in @(ConvertTo-NotAuditedRecord -ParsedResult $parsed)) {
+            $allObjects += $notAuditedRecord
         }
 
         if ($null -ne $parsed.records) {
@@ -823,6 +847,11 @@ try {
     if (-not $csvRows) {
         Write-ScriptLog -Level ERROR -Message "No valid book records with Title/Author/Action/Tag/Reason were found."
         throw "No valid book records were found."
+    }
+
+    $notAuditedRowCount = @($csvRows | Where-Object { $_.ProposedAction -eq 'NOT_AUDITED' }).Count
+    if ($notAuditedRowCount -gt 0) {
+        Write-ScriptLog -Level WARN -Message "Books without audit result: $notAuditedRowCount (rows with ProposedAction NOT_AUDITED)"
     }
 
     if (-not (Test-Path -Path $OdsOutputFolder -PathType Container)) {
