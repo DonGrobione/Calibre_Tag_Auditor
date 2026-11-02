@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), the resume functions Save-ResultFile (write through a .tmp file) and Test-ResultFileComplete, source checks of the resume cleanup and skip,Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -17,7 +17,7 @@ $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
 $functionNames = @(
     'Get-GeminiApiKey', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException', 'Get-ConnectionFailureStatus', 'Test-ProhibitedContentError',
-    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit', 'Get-MissingBookRecord',
+    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit', 'Get-MissingBookRecord', 'Save-ResultFile', 'Test-ResultFileComplete',
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
     'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
@@ -578,6 +578,76 @@ Describe 'Get-MissingBookRecord' {
 
     It 'returns nothing when the input books could not be parsed' {
         @(Get-MissingBookRecord -Books $null -Records @() -Reason 'no result').Count | Should Be 0
+    }
+}
+
+Describe 'Save-ResultFile' {
+    $resultPath = Join-Path -Path $TestDrive -ChildPath 'LLM-Result_01_2026-11-01_07-31-38.json'
+
+    It 'writes the content as UTF-8 with BOM and leaves no temporary file' {
+        Save-ResultFile -Path $resultPath -Content '{ "status": "success", "Title": "Begründung" }'
+        $bytes = [System.IO.File]::ReadAllBytes($resultPath)
+        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should Be $true
+        [System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8) | Should Match 'Begründung'
+        Test-Path -LiteralPath ([System.IO.Path]::ChangeExtension($resultPath, '.tmp')) | Should Be $false
+    }
+
+    It 'replaces an existing result file' {
+        Save-ResultFile -Path $resultPath -Content '{ "status": "warning" }'
+        [System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8) | Should Match 'warning'
+        Test-Path -LiteralPath ([System.IO.Path]::ChangeExtension($resultPath, '.tmp')) | Should Be $false
+    }
+}
+
+Describe 'Test-ResultFileComplete' {
+    It 'returns $false for a missing file' {
+        Test-ResultFileComplete -Path (Join-Path -Path $TestDrive -ChildPath 'missing.json') | Should Be $false
+    }
+
+    It 'returns $false for a truncated file' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'truncated.json'
+        Set-Content -LiteralPath $path -Value '{ "status": "success", "records": [ {'
+        Test-ResultFileComplete -Path $path | Should Be $false
+    }
+
+    It 'returns $false for a result with status error' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'error.json'
+        Set-Content -LiteralPath $path -Value '{ "status": "error", "records": [] }'
+        Test-ResultFileComplete -Path $path | Should Be $false
+    }
+
+    It 'returns $false for JSON without status' {
+        $path = Join-Path -Path $TestDrive -ChildPath 'nostatus.json'
+        Set-Content -LiteralPath $path -Value '{ "records": [] }'
+        Test-ResultFileComplete -Path $path | Should Be $false
+    }
+
+    It 'returns $true for results with status success or warning' {
+        $successPath = Join-Path -Path $TestDrive -ChildPath 'success.json'
+        $warningPath = Join-Path -Path $TestDrive -ChildPath 'warning.json'
+        Set-Content -LiteralPath $successPath -Value '{ "status": "success", "records": [] }'
+        Set-Content -LiteralPath $warningPath -Value '{ "status": "warning", "records": [] }'
+        Test-ResultFileComplete -Path $successPath | Should Be $true
+        Test-ResultFileComplete -Path $warningPath | Should Be $true
+    }
+}
+
+Describe 'Resume workflow' {
+    $scriptText = $scriptAst.Extent.Text
+
+    It 'removes only the result files of the previous run when not resuming, and keeps them when resuming' {
+        $scriptText | Should Match "Get-ChildItem -LiteralPath \`$OutputDir -Filter 'LLM-Result_\*\.tmp' -File"
+        $scriptText | Should Match "(?s)if \(\`$Resume\) \{\s+Write-ScriptLog `"Resume:[^`"]*`"\s+Write-Information[^\r\n]+\s+\}\s+else \{\s+\`$jsonFiles = @\(Get-ChildItem -LiteralPath \`$OutputDir -Filter 'LLM-Result_\*\.json' -File\)"
+        $scriptText | Should Not Match "-Filter `"\*\.json`""
+    }
+
+    It 'skips an export file with a complete result before any API call in a resumed run' {
+        $scriptText | Should Match '(?s)if \(\$Resume -and \(Test-ResultFileComplete -Path \$outPath\)\) \{\s+\$skippedFileCount\+\+.*?continue\s+\}\s+Write-ScriptLog "\[\$counter/\$total\] Processing'
+    }
+
+    It 'writes every result file through Save-ResultFile' {
+        $scriptText | Should Not Match 'WriteAllText\(\$outPath'
+        ([regex]::Matches($scriptText, 'Save-ResultFile -Path \$outPath -Content \$jsonOutput')).Count | Should Be 2
     }
 }
 

@@ -27,7 +27,7 @@ I started this project because I have several thousand books and lost track of t
   - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet.
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).
-- `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)).
+- `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)). `02-LLM-Result/` also holds the run state file `Pipeline-RunState.json` (see [Cancel And Resume A Run](#cancel-and-resume-a-run)).
 - `01-Cache/`: one cached book export per book, reused by `01-Export-CalibreBooks.ps1` (see [Book Export Cache](#book-export-cache)), including the book's content profile written by `02-Process-CalibreDataWithLLM.ps1` (see [Content Profiles](#content-profiles)). Not tracked by Git.
 - `CHANGELOG.md`: notable changes and module versions.
 
@@ -169,6 +169,22 @@ To export a different period for a single run without editing `01-CalibreExport.
 `01-Export-CalibreBooks.ps1` accepts the same parameter when it runs on its own.
 
 To send the full book text for every book instead of stored content profiles, pass `-FullContent` (see [Content Profiles](#content-profiles)). `02-Process-CalibreDataWithLLM.ps1` accepts the same switch when it runs on its own.
+
+## Cancel And Resume A Run
+A full run can take more than a day. You can cancel it with Ctrl+C and continue it later; a crash or power outage is handled the same way.
+
+```powershell
+# Continue the last run where it stopped
+.\Invoke-CalibreToolsPipeline.ps1 -Resume
+```
+
+- Once both export steps have finished, the pipeline writes the run state file `02-LLM-Result/Pipeline-RunState.json`. It records the run timestamp, the start time, the `-FullContent` setting, and the step the run is in (`02-Process` or `03-Convert`). After the ODS conversion, the run is marked `Completed`.
+- When you start the pipeline without `-Resume` and the last run is unfinished, it shows the progress (e.g. `210 of 472 export file(s) processed`) and asks: `[R]esume`, start a `[N]ew run` (discards the unfinished results), or `[A]bort`. An empty answer aborts and keeps the unfinished run.
+- A resumed run skips both export steps and continues with the export files of the original run, its tag definitions, and its `-FullContent` setting. `-Resume` therefore cannot be combined with `-ChangedWithinDays` or `-FullContent`. If the run stopped during the ODS conversion, only the conversion runs again.
+- The LLM step keeps the existing result files and skips every export file that already has a complete result. Result files with status `error` (e.g. a failed request) are processed again. At most the export file that was in progress when the run stopped is sent to Gemini again.
+- Result files are written to `LLM-Result_<nn>_<timestamp>.tmp` first and then renamed to `.json`, so an interruption never leaves a truncated result file. Leftover `.tmp` files are deleted at the next start.
+- An interruption during the export steps cannot be resumed; the next start simply runs a new export, which takes only seconds.
+- The token and search query totals in the pipeline summary are read from all result files, so they include the earlier sessions. The duration shown is the duration of the current session.
 
 ## Results
 After a successful run, the generated files are located here:

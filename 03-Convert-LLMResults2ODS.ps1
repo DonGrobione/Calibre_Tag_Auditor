@@ -3,7 +3,7 @@
     Convert LLM JSON result files directly into a formatted ODS review sheet.
 
 .DESCRIPTION
-    Reads all JSON files from the input folder, unwraps the JSON result payloads written by the LLM step, repairs mojibake from malformed input text, preserves German umlauts and special characters, and merges the extracted book records.
+    Reads all LLM result files (LLM-Result_*.json) from the input folder, unwraps the JSON result payloads written by the LLM step, repairs mojibake from malformed input text, preserves German umlauts and special characters, and merges the extracted book records.
     The merged records are written to a temporary pipe-delimited UTF-8 CSV file in $env:TEMP, converted to ODS with a headless LibreOffice instance, and then formatted: automatic line breaks in all cells and the column widths listed below.
     Column A: Title,          width 9 cm
     Column B: Author,         width 6 cm
@@ -17,13 +17,13 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER InputFolder
-    Folder with JSON files to convert. Defaults to .\02-LLM-Result.
+    Folder with the LLM result files (LLM-Result_*.json) to convert; other files in it are ignored. Defaults to .\02-LLM-Result.
 
 .PARAMETER OdsOutputFolder
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.7
+    Version: 1.8
 #>
 
 [CmdletBinding()]
@@ -825,9 +825,10 @@ try {
 
     $inputFolderFull = Resolve-Path -Path $InputFolder -ErrorAction Stop
 
-    $files = Get-ChildItem -Path $inputFolderFull -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
+    # Only the LLM result files are read; other files in the folder, such as the pipeline's run state file Pipeline-RunState.json, are not results.
+    $files = Get-ChildItem -Path $inputFolderFull -Filter 'LLM-Result_*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name
     if (-not $files) {
-        Write-ScriptLog -Level ERROR -Message "No JSON files found in folder: $(ConvertTo-DisplayPath -Path $inputFolderFull -BasePath $PSScriptRoot)"
+        Write-ScriptLog -Level ERROR -Message "No LLM result files (LLM-Result_*.json) found in folder: $(ConvertTo-DisplayPath -Path $inputFolderFull -BasePath $PSScriptRoot)"
         throw "No JSON input files found."
     }
 

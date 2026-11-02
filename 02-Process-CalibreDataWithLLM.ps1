@@ -10,6 +10,7 @@
     API requests are retried on HTTP 429, 500, 502, 503, and 504 and on connection failures without HTTP response (DNS lookup, connect, send/receive, timeout).
     When Gemini blocks the request of a file with several books for prohibited content (HTTP 400), the books of that file are sent again one at a time, so only the book that triggers the block stays without audit. The file is then saved with a validation warning that names the books without result. A block is not retried, because Gemini blocks the same input again.
     Every input book without a record in the result (blocked, failed request, unparsable response, or simply left out by the LLM) is written to the result file as missing_books with Title, Author, and Reason, logged by title, and listed in the run summary under "Books without audit result". 03-Convert-LLMResults2ODS.ps1 turns these entries into rows with ProposedAction NOT_AUDITED, so their tags can be checked manually.
+    Result files are written to LLM-Result_<nn>_<timestamp>.tmp first and then renamed to .json, so a crash or power outage never leaves a truncated result file that a resumed run (-Resume) would count as done.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
@@ -17,6 +18,9 @@
     Profile gaps: for a book sent with its profile, the LLM lists every tag whose decision the profile cannot settle (ProfileGaps). Each profile stores the fingerprints of the tag definitions that were already checked against the book's source (ContentProfileTagHashes: all tags for a profile written from the text, the focus tags of targeted searches for a web profile). A gap tag that is new or whose definition changed since then leads to a refresh in the same run: a text book is audited again with its full excerpt and gets a new profile; a book without text gets a new web search that targets the open tag definitions, and is audited again with the new profile. The refresh replaces the first results of these books. Gaps for unchanged definitions are not refreshed again, so the refresh cost stays bounded.
     Web content profiles: a book without text (ContentStatus NoText, e.g. a comic, manga, or graphic novel made of images) has no excerpt to write a profile from. Before the tag audit of each export file, the script sends each such book's metadata (title, author, series, identifiers, publisher, year, Calibre description) in a separate request with the google_search tool and the prompt 02-CalibreWebProfile-Prompt.txt; the tag definitions are not sent. The LLM identifies the exact work and writes a profile only from facts found in the search results and the description. The profile is stored in the cache file with ContentProfileSource Web and the cited web sources; when the work cannot be identified reliably, a WebNotFound marker is stored instead, so the book is not searched again until its identity metadata changes. The tag audit request itself never uses search. Google bills grounded requests per executed search query, so the number of search queries is logged per file and in the run summary.
     The book data and tag definitions are sent as compact JSON without indentation.
+
+.PARAMETER Resume
+    Continues an interrupted run: the result files already in 02-LLM-Result are kept (only orphaned LLM-Result_*.tmp files are removed), and every export file whose result file is complete (valid JSON with a status other than error) is skipped. Invoke-CalibreToolsPipeline.ps1 passes it when it resumes a run. Without -Resume, the result files of the previous run (LLM-Result_*.json) are removed at the start; other files in the folder, such as the pipeline's run state file, are kept.
 
 .PARAMETER FullContent
     Sends the full book text for every book, even when a content profile exists, and stores new profiles from the responses. Books without text get a new web content profile from a new Google Search (this costs search queries). Profile gaps already refresh the affected books automatically, so this is only needed to rebuild all profiles of the exported books at once.
@@ -29,8 +33,12 @@
     .\02-Process-CalibreDataWithLLM.ps1 -FullContent
     Validates the latest book export with the full book text of every book.
 
+.EXAMPLE
+    .\02-Process-CalibreDataWithLLM.ps1 -Resume
+    Continues an interrupted run and skips the export files that already have a complete result.
+
 .NOTES
-    Version: 7.3
+    Version: 7.4
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, missing books, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -39,7 +47,10 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [switch]$FullContent
+    [switch]$FullContent,
+
+    [Parameter()]
+    [switch]$Resume
 )
 
 # Import the central logging module and the console/log output helpers.
@@ -105,17 +116,24 @@ try {
     $script:LastApiErrorBody = $null
     $script:LastApiStatusCode = $null
 
-    # Ensure the output folder exists before writing results and remove stale JSON files from a previous run.
+    # Ensure the output folder exists. Orphaned temporary result files (a write interrupted before its rename) are always removed. A new run also removes the result files of the previous run; a resumed run keeps them. Other files in the folder, such as the pipeline's run state file, are not touched.
     if (-not (Test-Path -Path $OutputDir)) {
         New-Item -Path $OutputDir -ItemType Directory | Out-Null
     }
     else {
-        $jsonFiles = Get-ChildItem -Path $OutputDir -Filter "*.json" -File
-        if ($jsonFiles.Count -gt 0) {
-            Write-ScriptLog "Cleaning $($jsonFiles.Count) JSON file(s) from 02-LLM-Result..."
-            $jsonFiles | Remove-Item -Force
-            Write-ScriptLog "Done."
+        @(Get-ChildItem -LiteralPath $OutputDir -Filter 'LLM-Result_*.tmp' -File) | Remove-Item -Force
+        if ($Resume) {
+            Write-ScriptLog "Resume: existing result files in 02-LLM-Result are kept; export files with a complete result are skipped."
             Write-Information -MessageData '' -InformationAction Continue
+        }
+        else {
+            $jsonFiles = @(Get-ChildItem -LiteralPath $OutputDir -Filter 'LLM-Result_*.json' -File)
+            if ($jsonFiles.Count -gt 0) {
+                Write-ScriptLog "Cleaning $($jsonFiles.Count) result file(s) from 02-LLM-Result..."
+                $jsonFiles | Remove-Item -Force
+                Write-ScriptLog "Done."
+                Write-Information -MessageData '' -InformationAction Continue
+            }
         }
     }
 
@@ -1558,6 +1576,55 @@ $bookAnalysisInput
         return [pscustomobject]@{ ResultObject = $mergedResult; MissingBooks = $missingBookRecords.ToArray(); Usage = $usage }
     }
 
+    # Writes a result file as UTF-8 with BOM in two steps: the content goes to <name>.tmp first, which then replaces <name>.json. An interruption therefore leaves either the complete previous state or an orphaned .tmp file, never a truncated .json that a resumed run would count as done.
+    function Save-ResultFile {
+        [CmdletBinding(SupportsShouldProcess = $true)]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyString()]
+            [string]$Content
+        )
+
+        if (-not $PSCmdlet.ShouldProcess($Path, 'Write LLM result file')) {
+            return
+        }
+
+        $temporaryPath = [System.IO.Path]::ChangeExtension($Path, '.tmp')
+        [System.IO.File]::WriteAllText($temporaryPath, $Content, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $true))
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            # [NullString]::Value passes a real null for the backup file; PowerShell would turn $null into an empty, invalid path.
+            [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $Path)
+        }
+    }
+
+    # Returns $true when a result file exists, is valid JSON, and has a status other than error, so a resumed run can skip its export file. Files with status error (e.g. a failed request) are processed again.
+    function Test-ResultFileComplete {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path
+        )
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $false
+        }
+
+        try {
+            $result = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            return $false
+        }
+
+        return ($null -ne $result -and $null -ne $result.PSObject.Properties['status'] -and -not [string]::IsNullOrWhiteSpace([string]$result.status) -and [string]$result.status -ne 'error')
+    }
+
     # Returns the input books of a file that have no record in the audit result, compared by title and author (case and whitespace are ignored, like the unique-book count). Each missing book is returned with Title, Author, and the given Reason.
     function Get-MissingBookRecord {
         param(
@@ -1632,6 +1699,7 @@ $tagContent
     $totalRefreshedTextCount = 0
     $totalRefreshedWebCount = 0
     $allMissingBooks = New-Object -TypeName 'System.Collections.Generic.List[object]'
+    $skippedFileCount = 0
 
     if ($FullContent) {
         Write-ScriptLog "FullContent: the full book text is sent for every book; stored content profiles are not used."
@@ -1640,6 +1708,16 @@ $tagContent
 
     foreach ($bookFile in $bookFiles) {
         $counter++
+        $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
+        $outPath = Join-Path -Path $OutputDir -ChildPath $outName
+
+        # A resumed run skips every export file that already has a complete result from the earlier session.
+        if ($Resume -and (Test-ResultFileComplete -Path $outPath)) {
+            $skippedFileCount++
+            Write-ScriptLog "[$counter/$total] Skipped (already processed): $($bookFile.Name)"
+            continue
+        }
+
         Write-ScriptLog "[$counter/$total] Processing $($bookFile.Name)..."
 
         # Read the current book export and build the full prompt payload.
@@ -1937,13 +2015,10 @@ $tagContent
             $resultObject | Add-Member -MemberType NoteProperty -Name 'missing_books' -Value $fileMissingBooks -Force
             $resultObject.token_usage = $tokenUsage
             $savedCount++
-            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
-            $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
-            $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
-            [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
+            Save-ResultFile -Path $outPath -Content $jsonOutput
 
             $inputCountText = if ($null -ne $resultObject.input_unique_book_count) { $resultObject.input_unique_book_count } else { 'n/a' }
             Write-ScriptLog "  -> Validation check: input=$inputCountText, output=$($resultObject.output_unique_book_count)"
@@ -1964,8 +2039,6 @@ $tagContent
         }
         else {
             $savedCount++
-            $outName = $bookFile.Name -replace "^01-Export-CalibreBooks_", "LLM-Result_"
-            $outPath = Join-Path -Path $OutputDir -ChildPath $outName
 
             $apiDetail = $script:LastApiErrorMessage
             if ([string]::IsNullOrWhiteSpace($apiDetail)) {
@@ -1995,8 +2068,7 @@ $tagContent
             }
 
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
-            $utf8WithBom = [System.Text.UTF8Encoding]::new($true)
-            [System.IO.File]::WriteAllText($outPath, $jsonOutput, $utf8WithBom)
+            Save-ResultFile -Path $outPath -Content $jsonOutput
 
             Write-ScriptLog "  -> Saved with API error: $outName"
             $validationErrorText = "Validation error in '$($bookFile.Name)': $apiDetail"
@@ -2013,6 +2085,9 @@ $tagContent
     Write-ScriptLog "--- Processing Complete ---"
     Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $(Format-Duration -Duration $scriptDuration)"
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
+    if ($Resume) {
+        Write-ScriptLog "Resumed: $skippedFileCount file(s) skipped as already processed. The counters below cover this session only; the pipeline summary totals all result files."
+    }
     Write-ScriptLog "Books sent: $totalFullTextBookCount with full text, $totalProfileBookCount with content profile, $totalNoContentBookCount without content; $totalSavedProfileCount content profile(s) stored."
     Write-ScriptLog "Web search: $totalWebProfileCount web profile(s) written, $totalWebNotFoundCount book(s) not identified, $totalSearchQueryCount search queries (billed per query)."
     Write-ScriptLog "Profile gaps: $totalProfileGapBookCount book(s) with open tag decisions; refreshed $totalRefreshedTextCount with the full text and $totalRefreshedWebCount with a targeted web search."
