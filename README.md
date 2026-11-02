@@ -23,7 +23,7 @@ I started this project because I have several thousand books and lost track of t
 - `02-CalibreContentProfile-Checklist.txt`: the fixed facets of a content profile, inserted into both prompts at the placeholder `{{CONTENT_PROFILE_CHECKLIST}}` (see [Content Profiles](#content-profiles)).
 - `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
-  - `Calibre.Console`: writes terminal and log output and converts paths into project-relative display paths.
+  - `Calibre.Console`: writes terminal and log output, converts paths into project-relative display paths, and formats run durations.
   - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet.
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).

@@ -28,7 +28,7 @@
     Validates all books with their full text, e.g. after the tag definitions were changed.
 
 .NOTES
-    Version: 1.17
+    Version: 1.18
 #>
 
 [CmdletBinding()]
@@ -144,9 +144,9 @@ try {
     if ($noBooksToProcess) {
         $endTime = Get-Date
         Write-ScriptLog "--- Pipeline complete (no books to process) ---"
-        Write-ScriptLog "Start:    $($startTime.ToString('HH:mm:ss'))"
-        Write-ScriptLog "End:      $($endTime.ToString('HH:mm:ss'))"
-        Write-ScriptLog "Duration: $(($endTime - $startTime).ToString('hh\:mm\:ss'))"
+        Write-ScriptLog "Start:    $($startTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-ScriptLog "End:      $($endTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-ScriptLog "Duration: $(Format-Duration -Duration ($endTime - $startTime))"
         return
     }
 
@@ -174,9 +174,9 @@ try {
     Write-ScriptLog "--- Pipeline complete ---"
     $endTime = Get-Date
     $duration = $endTime - $startTime
-    Write-ScriptLog "Start:    $($startTime.ToString('HH:mm:ss'))"
-    Write-ScriptLog "End:      $($endTime.ToString('HH:mm:ss'))"
-    Write-ScriptLog "Duration: $($duration.ToString('hh\:mm\:ss'))"
+    Write-ScriptLog "Start:    $($startTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    Write-ScriptLog "End:      $($endTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    Write-ScriptLog "Duration: $(Format-Duration -Duration $duration)"
     Write-Information -MessageData '' -InformationAction Continue
     Write-ScriptLog "Prompt tokens (input, all files):       $($totalPromptTokens.ToString('N0'))"
     Write-ScriptLog "Completion tokens (output, all files):  $($totalCompletionTokens.ToString('N0'))"

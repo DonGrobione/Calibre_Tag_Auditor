@@ -1,6 +1,14 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-11-02
+
+### Modules
+- `Calibre.Console` 1.2.0: added `Format-Duration`, which formats a time span as `hh:mm:ss` with the total number of hours (e.g. `31:23:48`). With tests.
+
+### Scripts
+- `Invoke-CalibreToolsPipeline.ps1` 1.18 and `02-Process-CalibreDataWithLLM.ps1` 7.2: fixed: runs of 24 hours or longer showed a duration shortened by whole days (a 31:23:48 run was logged as `07:23:48`), because the TimeSpan format `hh` is the hours component (0-23), not the total hours. Both now use `Format-Duration`. The pipeline summary also shows Start and End with the date, so runs over midnight are recognisable.
+
 ## 2026-11-01
 
 ### Scripts
