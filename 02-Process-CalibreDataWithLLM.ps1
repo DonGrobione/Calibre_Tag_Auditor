@@ -29,7 +29,7 @@
     Validates the latest book export with the full book text of every book.
 
 .NOTES
-    Version: 7.1
+    Version: 7.2
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -1936,7 +1936,7 @@ $tagContent
     $scriptDuration = $scriptEndTime - $scriptStartTime
     Write-Information -MessageData '' -InformationAction Continue
     Write-ScriptLog "--- Processing Complete ---"
-    Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $($scriptDuration.ToString('hh\:mm\:ss'))"
+    Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $(Format-Duration -Duration $scriptDuration)"
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
     Write-ScriptLog "Books sent: $totalFullTextBookCount with full text, $totalProfileBookCount with content profile, $totalNoContentBookCount without content; $totalSavedProfileCount content profile(s) stored."
     Write-ScriptLog "Web search: $totalWebProfileCount web profile(s) written, $totalWebNotFoundCount book(s) not identified, $totalSearchQueryCount search queries (billed per query)."

@@ -3,7 +3,7 @@
     Pester tests for Modules\Calibre.Console.psd1.
 
 .DESCRIPTION
-    Verifies the module manifest, ConvertTo-DisplayPath, and Write-ScriptLog. The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
+    Verifies the module manifest, ConvertTo-DisplayPath, Format-Duration, and Write-ScriptLog. The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
     Write-ScriptLog calls DonGrobione.Logging\Write-Log with a module-qualified name, so the tests load an in-memory stub module named DonGrobione.Logging that records every call instead of writing a log file. The stub is removed after the tests.
 
 .EXAMPLE
@@ -58,7 +58,7 @@ Describe 'Calibre.Console manifest' {
     }
 
     It 'exports exactly the public functions' {
-        (@($manifest.ExportedFunctions.Keys) | Sort-Object) -join ',' | Should Be 'ConvertTo-DisplayPath,Write-ScriptLog'
+        (@($manifest.ExportedFunctions.Keys) | Sort-Object) -join ',' | Should Be 'ConvertTo-DisplayPath,Format-Duration,Write-ScriptLog'
     }
 
     It 'contains no wildcard exports' {
@@ -116,6 +116,37 @@ Describe 'ConvertTo-DisplayPath' {
             $tempFile = Join-Path -Path ([System.IO.Path]::GetFullPath($env:TEMP)) -ChildPath 'calibre.csv'
             ConvertTo-DisplayPath -Path $tempFile -BasePath $env:TEMP | Should Be $tempFile
         }
+    }
+}
+
+Describe 'Format-Duration' {
+    It 'formats a zero duration' {
+        Format-Duration -Duration ([timespan]::Zero) | Should Be '00:00:00'
+    }
+
+    It 'formats a duration below one hour' {
+        Format-Duration -Duration (New-TimeSpan -Seconds 5) | Should Be '00:00:05'
+    }
+
+    It 'formats a duration below one day' {
+        Format-Duration -Duration (New-TimeSpan -Hours 7 -Minutes 23 -Seconds 48) | Should Be '07:23:48'
+    }
+
+    It 'counts days as hours for a duration over 24 hours' {
+        $duration = [datetime]'2026-11-02 14:55:26' - [datetime]'2026-11-01 07:31:38'
+        Format-Duration -Duration $duration | Should Be '31:23:48'
+    }
+
+    It 'formats durations of 100 hours or more' {
+        Format-Duration -Duration (New-TimeSpan -Days 4 -Hours 4) | Should Be '100:00:00'
+    }
+
+    It 'truncates fractions of a second' {
+        Format-Duration -Duration ([timespan]::FromMilliseconds(59999)) | Should Be '00:00:59'
+    }
+
+    It 'prefixes a negative duration with a minus sign' {
+        Format-Duration -Duration (New-TimeSpan -Hours -25 -Minutes -1) | Should Be '-25:01:00'
     }
 }
 

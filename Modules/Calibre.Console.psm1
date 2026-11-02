@@ -3,7 +3,7 @@
     Console and log output helpers for the Calibre Tag Auditor scripts.
 
 .DESCRIPTION
-    Write-ScriptLog forwards every message unchanged to DonGrobione.Logging\Write-Log and also writes it to the information stream so it stays visible in the terminal. Non-INFO messages are shown in the terminal with a level prefix (for example "WARN: ..."). Like Write-Log, it never terminates the calling script. ConvertTo-DisplayPath converts absolute paths into readable project-relative paths for output; paths under $env:TEMP and outside BasePath stay absolute.
+    Write-ScriptLog forwards every message unchanged to DonGrobione.Logging\Write-Log and also writes it to the information stream so it stays visible in the terminal. Non-INFO messages are shown in the terminal with a level prefix (for example "WARN: ..."). Like Write-Log, it never terminates the calling script. ConvertTo-DisplayPath converts absolute paths into readable project-relative paths for output; paths under $env:TEMP and outside BasePath stay absolute. Format-Duration formats a time span as total hours, minutes, and seconds (for example "31:23:48"), so durations of a day or longer keep their full length.
     The calling script imports DonGrobione.Logging (>= 2.2.0) and starts the log session; this module neither imports the logging module nor starts a session.
 
 .PARAMETER Message
@@ -21,6 +21,9 @@
 .PARAMETER BasePath
     ConvertTo-DisplayPath: base path that project-relative display paths are calculated from.
 
+.PARAMETER Duration
+    Format-Duration: time span to format.
+
 .EXAMPLE
     Write-ScriptLog "Export complete."
 
@@ -29,6 +32,9 @@
 
 .EXAMPLE
     ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot
+
+.EXAMPLE
+    Format-Duration -Duration ($endTime - $startTime)
 
 .NOTES
     Filename: Modules\Calibre.Console.psm1
@@ -115,4 +121,23 @@ function ConvertTo-DisplayPath {
     }
 }
 
-Export-ModuleMember -Function Write-ScriptLog, ConvertTo-DisplayPath
+# Formats a time span as hh:mm:ss with the total number of hours, so days are counted as hours instead of being dropped; negative spans get a leading minus sign.
+function Format-Duration {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [timespan]$Duration
+    )
+
+    $sign = ''
+    if ($Duration -lt [timespan]::Zero) {
+        $sign = '-'
+        $Duration = $Duration.Negate()
+    }
+
+    $totalHours = [math]::Floor($Duration.TotalHours)
+    return '{0}{1:00}:{2:00}:{3:00}' -f $sign, $totalHours, $Duration.Minutes, $Duration.Seconds
+}
+
+Export-ModuleMember -Function Write-ScriptLog, ConvertTo-DisplayPath, Format-Duration
