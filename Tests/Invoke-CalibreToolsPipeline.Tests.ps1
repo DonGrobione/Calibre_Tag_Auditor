@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays and FullContent script parameters, Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files. The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
+    Covers the ChangedWithinDays, FullContent, and Resume script parameters, the resume functions Get-PipelineRunState, Save-PipelineRunState, Get-BookExportTimestamp, Test-PipelineRunResumable, Get-ResumeProgress, and Read-ResumeChoice (with files under $TestDrive and a mocked Read-Host), source checks of the resume flow (export steps skipped, run state written before the LLM step, -Resume not combinable with ChangedWithinDays or FullContent), Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files. The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath 'Invoke-CalibreToolsPipeline.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter')) {
+foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter', 'Get-PipelineRunState', 'Save-PipelineRunState', 'Get-BookExportTimestamp', 'Test-PipelineRunResumable', 'Get-ResumeProgress', 'Read-ResumeChoice')) {
     $definition = $scriptAst.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -110,6 +110,174 @@ Describe 'Get-StepScriptParameter' {
 
     It 'returns no parameters for the LLM step when FullContent was not given' {
         (Get-StepScriptParameter -ScriptName '02-Process-CalibreDataWithLLM.ps1' -PipelineParameters @{ ChangedWithinDays = 7 }).Count | Should Be 0
+    }
+
+    It 'forwards Resume and the stored FullContent only to the LLM step' {
+        $parameters = @{ Resume = $true; FullContent = $true }
+        $llmStep = Get-StepScriptParameter -ScriptName '02-Process-CalibreDataWithLLM.ps1' -PipelineParameters $parameters
+        $llmStep['Resume'] | Should Be $true
+        $llmStep['FullContent'] | Should Be $true
+        (Get-StepScriptParameter -ScriptName '03-Convert-LLMResults2ODS.ps1' -PipelineParameters $parameters).Count | Should Be 0
+    }
+}
+
+Describe 'Get-PipelineRunState and Save-PipelineRunState' {
+    $statePath = Join-Path -Path $TestDrive -ChildPath 'Pipeline-RunState.json'
+
+    It 'returns $null when the state file does not exist' {
+        Get-PipelineRunState -Path (Join-Path -Path $TestDrive -ChildPath 'missing.json') | Should Be $null
+    }
+
+    It 'returns $null for a state file that is not valid JSON' {
+        $brokenPath = Join-Path -Path $TestDrive -ChildPath 'broken.json'
+        Set-Content -LiteralPath $brokenPath -Value '{ "RunTimestamp": "2026-11-01_07-31-38", "Sta'
+        Get-PipelineRunState -Path $brokenPath | Should Be $null
+    }
+
+    It 'returns $null for a state file without Step' {
+        $incompletePath = Join-Path -Path $TestDrive -ChildPath 'incomplete.json'
+        Set-Content -LiteralPath $incompletePath -Value '{ "RunTimestamp": "2026-11-01_07-31-38", "Status": "Running" }'
+        Get-PipelineRunState -Path $incompletePath | Should Be $null
+    }
+
+    It 'writes and reads back the run state without leaving a temporary file' {
+        $state = [pscustomobject][ordered]@{ RunTimestamp = '2026-11-01_07-31-38'; StartTime = '2026-11-01 07:31:38'; FullContent = $true; ChangedWithinDays = 0; Status = 'Running'; Step = '02-Process' }
+        Save-PipelineRunState -Path $statePath -State $state
+        $readState = Get-PipelineRunState -Path $statePath
+        $readState.RunTimestamp | Should Be '2026-11-01_07-31-38'
+        $readState.FullContent | Should Be $true
+        $readState.Step | Should Be '02-Process'
+        Test-Path -LiteralPath "$statePath.tmp" | Should Be $false
+    }
+
+    It 'replaces an existing state file' {
+        $state = Get-PipelineRunState -Path $statePath
+        $state.Status = 'Completed'
+        Save-PipelineRunState -Path $statePath -State $state
+        (Get-PipelineRunState -Path $statePath).Status | Should Be 'Completed'
+    }
+}
+
+Describe 'Get-BookExportTimestamp' {
+    It 'returns the timestamp of the book export files' {
+        $exportDirectory = Join-Path -Path $TestDrive -ChildPath 'timestamp'
+        New-Item -Path $exportDirectory -ItemType Directory | Out-Null
+        Set-Content -LiteralPath (Join-Path -Path $exportDirectory -ChildPath '01-Export-CalibreBooks_01_2026-11-01_07-31-38.json') -Value '[]'
+        Set-Content -LiteralPath (Join-Path -Path $exportDirectory -ChildPath '02-Export-CalibreTags_2026-11-01_07-31-40.json') -Value '[]'
+        Get-BookExportTimestamp -ExportDirectory $exportDirectory | Should Be '2026-11-01_07-31-38'
+    }
+
+    It 'returns $null without book export files' {
+        Get-BookExportTimestamp -ExportDirectory (Join-Path -Path $TestDrive -ChildPath 'missing') | Should Be $null
+    }
+}
+
+Describe 'Test-PipelineRunResumable' {
+    $exportDirectory = Join-Path -Path $TestDrive -ChildPath 'resumable'
+    New-Item -Path $exportDirectory -ItemType Directory | Out-Null
+    Set-Content -LiteralPath (Join-Path -Path $exportDirectory -ChildPath '01-Export-CalibreBooks_01_2026-11-01_07-31-38.json') -Value '[]'
+    Set-Content -LiteralPath (Join-Path -Path $exportDirectory -ChildPath '02-Export-CalibreTags_2026-11-01_07-31-40.json') -Value '[]'
+    $runningState = [pscustomobject]@{ RunTimestamp = '2026-11-01_07-31-38'; Status = 'Running'; Step = '02-Process' }
+
+    It 'returns $true for a running state whose export files exist' {
+        Test-PipelineRunResumable -State $runningState -ExportDirectory $exportDirectory | Should Be $true
+    }
+
+    It 'returns $false without a state' {
+        Test-PipelineRunResumable -State $null -ExportDirectory $exportDirectory | Should Be $false
+    }
+
+    It 'returns $false for a completed run' {
+        $completedState = [pscustomobject]@{ RunTimestamp = '2026-11-01_07-31-38'; Status = 'Completed'; Step = '03-Convert' }
+        Test-PipelineRunResumable -State $completedState -ExportDirectory $exportDirectory | Should Be $false
+    }
+
+    It 'returns $false when the book export files belong to another run' {
+        $otherState = [pscustomobject]@{ RunTimestamp = '2026-10-01_10-00-00'; Status = 'Running'; Step = '02-Process' }
+        Test-PipelineRunResumable -State $otherState -ExportDirectory $exportDirectory | Should Be $false
+    }
+
+    It 'returns $false when the tag export file is missing' {
+        $noTagDirectory = Join-Path -Path $TestDrive -ChildPath 'no-tags'
+        New-Item -Path $noTagDirectory -ItemType Directory | Out-Null
+        Set-Content -LiteralPath (Join-Path -Path $noTagDirectory -ChildPath '01-Export-CalibreBooks_01_2026-11-01_07-31-38.json') -Value '[]'
+        Test-PipelineRunResumable -State $runningState -ExportDirectory $noTagDirectory | Should Be $false
+    }
+}
+
+Describe 'Get-ResumeProgress' {
+    $exportDirectory = Join-Path -Path $TestDrive -ChildPath 'progress-export'
+    $resultDirectory = Join-Path -Path $TestDrive -ChildPath 'progress-result'
+    New-Item -Path $exportDirectory, $resultDirectory -ItemType Directory | Out-Null
+    foreach ($number in '01', '02', '03', '04', '05') {
+        Set-Content -LiteralPath (Join-Path -Path $exportDirectory -ChildPath "01-Export-CalibreBooks_${number}_2026-11-01_07-31-38.json") -Value '[]'
+    }
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_01_2026-11-01_07-31-38.json') -Value '{ "status": "success" }'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_02_2026-11-01_07-31-38.json') -Value '{ "status": "warning" }'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_03_2026-11-01_07-31-38.json') -Value '{ "status": "error" }'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_04_2026-11-01_07-31-38.json') -Value '{ "status": "succ'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_05_2026-11-01_07-31-38.tmp') -Value '{ "status": "success" }'
+
+    It 'counts only complete results that are not errors' {
+        $progress = Get-ResumeProgress -ExportDirectory $exportDirectory -ResultDirectory $resultDirectory -RunTimestamp '2026-11-01_07-31-38'
+        $progress.Total | Should Be 5
+        $progress.Done | Should Be 2
+    }
+}
+
+Describe 'Read-ResumeChoice' {
+    It 'returns R for the answer resume' {
+        Mock Read-Host { 'resume' }
+        Read-ResumeChoice | Should Be 'R'
+    }
+
+    It 'returns N for the answer n' {
+        Mock Read-Host { 'n' }
+        Read-ResumeChoice | Should Be 'N'
+    }
+
+    It 'returns A for an empty answer' {
+        Mock Read-Host { '' }
+        Read-ResumeChoice | Should Be 'A'
+    }
+
+    It 'asks again after an invalid answer' {
+        $script:answers = New-Object -TypeName System.Collections.Queue
+        $script:answers.Enqueue('x')
+        $script:answers.Enqueue('a')
+        Mock Read-Host { $script:answers.Dequeue() }
+        Read-ResumeChoice | Should Be 'A'
+        Assert-MockCalled Read-Host -Scope It -Times 2 -Exactly
+    }
+
+    It 'returns A when the host cannot prompt' {
+        Mock Read-Host { throw 'non-interactive' }
+        Read-ResumeChoice | Should Be 'A'
+    }
+}
+
+Describe 'Resume flow' {
+    $scriptText = $scriptAst.Extent.Text
+
+    It 'has an optional switch parameter Resume' {
+        (Get-Command -Name $scriptPath).Parameters['Resume'].ParameterType | Should Be ([switch])
+    }
+
+    It 'rejects -Resume together with -ChangedWithinDays or -FullContent' {
+        $scriptText | Should Match "if \(\`$Resume -and \(\`$PSBoundParameters\.ContainsKey\('ChangedWithinDays'\) -or \`$FullContent\)\) \{\s+throw"
+    }
+
+    It 'skips both export steps in a resumed run and the LLM step at step 03-Convert' {
+        $scriptText | Should Match '\$skippedScripts = @\("01-Export-CalibreBooks\.ps1", "01-Export-CalibreTags\.ps1"\)'
+        $scriptText | Should Match "(?s)if \(\[string\]\`$runState\.Step -eq '03-Convert'\) \{\s+\`$skippedScripts \+= `"02-Process-CalibreDataWithLLM\.ps1`""
+    }
+
+    It 'writes the run state right before the LLM step of a new run' {
+        $scriptText | Should Match "(?s)if \(\`$script -eq '02-Process-CalibreDataWithLLM\.ps1' -and -not \`$resumeRun\) \{.*?Status\s+= 'Running'.*?Save-PipelineRunState"
+    }
+
+    It 'deletes the old run state before a new run' {
+        $scriptText | Should Match '(?s)elseif \(Test-Path -LiteralPath \$runStatePath -PathType Leaf\) \{[^}]*Remove-Item -LiteralPath \$runStatePath'
     }
 }
 

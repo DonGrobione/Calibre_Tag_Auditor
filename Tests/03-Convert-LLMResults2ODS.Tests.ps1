@@ -3,7 +3,7 @@
     Pester tests for the JSON, CSV, and LibreOffice functions in 03-Convert-LLMResults2ODS.ps1.
 
 .DESCRIPTION
-    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile (with NOT_AUDITED records from missing_books via ConvertTo-NotAuditedRecord), ConvertTo-CsvRow, Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
+    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile (with NOT_AUDITED records from missing_books via ConvertTo-NotAuditedRecord), ConvertTo-CsvRow, the input file filter (only LLM-Result_*.json), Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -172,6 +172,13 @@ Describe 'Get-BookRecordFromJsonFile' {
         $row = @($rows | Where-Object { $_.ProposedAction -eq 'NOT_AUDITED' })[0]
         $row.Title | Should Be 'Blocked'
         $row.Reason | Should Match 'blocked for prohibited content'
+    }
+}
+
+Describe 'Input file selection' {
+    It 'reads only LLM result files, so the run state file and temporary files are ignored' {
+        $scriptAst.Extent.Text | Should Match "Get-ChildItem -Path \`$inputFolderFull -Filter 'LLM-Result_\*\.json' -File"
+        $scriptAst.Extent.Text | Should Not Match '-Filter \*\.json'
     }
 }
 
