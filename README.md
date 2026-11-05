@@ -27,7 +27,7 @@ I started this project because I have several thousand books and lost track of t
   - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet.
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).
-- `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)). `02-LLM-Result/` also holds the run state file `Pipeline-RunState.json` (see [Cancel And Resume A Run](#cancel-and-resume-a-run)).
+- `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)). `02-LLM-Result/` also holds the run state file `Pipeline-RunState.json` (see [Cancel And Resume A Run](#cancel-and-resume-a-run)) and the token ledger `LLM-TokenUsage.json` (see [Token Usage](#token-usage)).
 - `01-Cache/`: one cached book export per book, reused by `01-Export-CalibreBooks.ps1` (see [Book Export Cache](#book-export-cache)), including the book's content profile written by `02-Process-CalibreDataWithLLM.ps1` (see [Content Profiles](#content-profiles)). Not tracked by Git.
 - `CHANGELOG.md`: notable changes and module versions.
 
@@ -184,7 +184,31 @@ A full run can take more than a day. You can cancel it with Ctrl+C and continue 
 - The LLM step keeps the existing result files and skips every export file that already has a complete result. Result files with status `error` (e.g. a failed request) are processed again. At most the export file that was in progress when the run stopped is sent to Gemini again.
 - Result files are written to `LLM-Result_<nn>_<timestamp>.tmp` first and then renamed to `.json`, so an interruption never leaves a truncated result file. Leftover `.tmp` files are deleted at the next start.
 - An interruption during the export steps cannot be resumed; the next start simply runs a new export, which takes only seconds.
-- The token and search query totals in the pipeline summary are read from all result files, so they include the earlier sessions. The duration shown is the duration of the current session.
+- The LLM step continues the token ledger of the earlier sessions, so the token and search query totals in the pipeline summary cover the whole run, including the requests of the export file that was interrupted. The duration shown is the duration of the current session.
+
+## Token Usage
+The pipeline summary ends with the token usage of the run:
+
+```text
+Books without audit result:                       0
+Web search queries (billed per query):            14
+Tokens of interrupted or repeated requests:       0 (included in the counts below)
+Prompt tokens (input):                            322,671
+  of which cached (billed at a lower rate):       0
+Tool use tokens (input from Google Search):       0
+Completion tokens (output including thinking):    45,630
+Tokens total (prompt + tool use + completion):    368,301
+```
+
+The thousands separator follows the regional settings of Windows.
+
+- Prompt tokens are the input. The cached part is already included in them; Gemini bills it at a lower rate.
+- Tool use tokens are the search results that the Google Search tool adds to the input of a web profile request.
+- Completion tokens are the output including the thinking tokens, which Gemini bills as output.
+- The total is the sum of prompt, tool use, and completion tokens, so it is the number of all billed tokens. Search queries are billed separately per query.
+- The counts come from the token ledger `02-LLM-Result/LLM-TokenUsage.json`. The LLM step updates it after every Gemini response, so it also counts requests whose export file never got a result file (Ctrl+C, crash) or was processed again; the summary shows these tokens in their own line. A new run starts a new ledger. Each result file also stores its own counts in `token_usage`.
+- The log of the LLM step shows the counts per export file and for the session (`prompt=... (cached=...), tool use=..., completion=..., total=...`).
+- The log keeps only the 5 newest runs per computer, and a new run deletes the result files and the ledger of the old run. To keep the token usage of a large run, copy its log file or the ledger before the next run.
 
 ## Results
 After a successful run, the generated files are located here:

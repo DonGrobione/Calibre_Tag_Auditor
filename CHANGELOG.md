@@ -1,6 +1,13 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-11-05
+
+### Scripts
+- Complete token accounting. The totals missed the tokens of interrupted runs and did not record cached or tool use tokens. With tests.
+  - `02-Process-CalibreDataWithLLM.ps1` 7.5: every token count now has prompt (input, including the cached part), cached (`total_cached_tokens`, billed at a lower rate), tool use (`total_tool_use_tokens`, search results added to the input), completion (output plus thinking), and total. The total is computed as prompt + tool use + completion instead of being taken from `total_tokens`. The result files store `cached_tokens` and `tool_use_tokens` in `token_usage`, and the per-file and summary log lines show all counts with the total last. New token ledger `02-LLM-Result/LLM-TokenUsage.json`: it is updated after every Gemini response, so it also counts the requests of an export file whose processing was interrupted or repeated, which no result file holds. A new run starts it at 0; `-Resume` continues it (and rebuilds it from the result files when it is missing). New functions `Get-TokenUsageCounter`, `Format-TokenUsage`, `ConvertTo-TokenUsageRecord`, `Add-TokenUsageRecord`, `Initialize-TokenLedger`, `Save-TokenLedger`, and `Add-TokenLedgerUsage`.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.21: the summary reads the token counts from the token ledger (from the result files, with a warning, when there is none) and shows the books without audit result, the web search queries, the tokens of interrupted or repeated requests, prompt tokens with their cached part, tool use tokens, completion tokens, and as last line the total, which is the sum of all billed token counts. A new run deletes the ledger of the old run. New functions `Add-TokenUsageCount` and `Get-RunTokenSummary`.
+
 ## 2026-11-02
 
 ### Modules

@@ -12,6 +12,7 @@
     Every input book without a record in the result (blocked, failed request, unparsable response, or simply left out by the LLM) is written to the result file as missing_books with Title, Author, and Reason, logged by title, and listed in the run summary under "Books without audit result". 03-Convert-LLMResults2ODS.ps1 turns these entries into rows with ProposedAction NOT_AUDITED, so their tags can be checked manually.
     Result files are written to LLM-Result_<nn>_<timestamp>.tmp first and then renamed to .json, so a crash or power outage never leaves a truncated result file that a resumed run (-Resume) would count as done.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
+    Token usage: every count has prompt tokens (input, including the cached part), cached tokens (the part of the prompt served from Gemini's cache at a lower rate), tool use tokens (search results the google_search tool added to the input), completion tokens (output plus thinking), and the total (prompt + tool use + completion). Besides the per-file token_usage in the result files, the script keeps the token ledger 02-LLM-Result\LLM-TokenUsage.json, which it updates after every Gemini response. The ledger therefore also counts the tokens of an export file whose processing was interrupted (Ctrl+C, crash) or repeated, which no result file holds. A new run starts a new ledger; a run with -Resume continues it. Invoke-CalibreToolsPipeline.ps1 reads the ledger for its summary.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
     Content profiles: for every book sent with its full text, the LLM also returns a content profile (a factual description of the excerpt in fixed facets, 400 to 700 words). The facets come from 02-CalibreContentProfile-Checklist.txt, which the script inserts into both prompt files at the placeholder {{CONTENT_PROFILE_CHECKLIST}}; they do not depend on the tag definitions, so a profile stays useful when tags are added or changed. A profile with fewer than $MinimumProfileWords words is stored with a warning. The script stores the profile in the book's cache file 01-Cache/<uuid>.json, but only when that file still holds the same book text (same ContentHash). On later runs, 01-Export-CalibreBooks.ps1 exports the profile with the book, and this script sends the profile instead of the full text while the profile has the current $ContentProfileVersion. This cuts the input tokens of a re-audited book from about 40,000 to about a thousand. Increase $ContentProfileVersion when the checklist or the profile instructions in a prompt change, so all profiles are rebuilt.
@@ -20,7 +21,7 @@
     The book data and tag definitions are sent as compact JSON without indentation.
 
 .PARAMETER Resume
-    Continues an interrupted run: the result files already in 02-LLM-Result are kept (only orphaned LLM-Result_*.tmp files are removed), and every export file whose result file is complete (valid JSON with a status other than error) is skipped. Invoke-CalibreToolsPipeline.ps1 passes it when it resumes a run. Without -Resume, the result files of the previous run (LLM-Result_*.json) are removed at the start; other files in the folder, such as the pipeline's run state file, are kept.
+    Continues an interrupted run: the result files already in 02-LLM-Result are kept (only orphaned LLM-Result_*.tmp files are removed), every export file whose result file is complete (valid JSON with a status other than error) is skipped, and the token ledger LLM-TokenUsage.json is continued (rebuilt from the result files when it is missing). Invoke-CalibreToolsPipeline.ps1 passes it when it resumes a run. Without -Resume, the result files of the previous run (LLM-Result_*.json) are removed at the start and the token ledger starts at 0; other files in the folder, such as the pipeline's run state file, are kept.
 
 .PARAMETER FullContent
     Sends the full book text for every book, even when a content profile exists, and stores new profiles from the responses. Books without text get a new web content profile from a new Google Search (this costs search queries). Profile gaps already refresh the affected books automatically, so this is only needed to rebuild all profiles of the exported books at once.
@@ -38,7 +39,7 @@
     Continues an interrupted run and skips the export files that already have a complete result.
 
 .NOTES
-    Version: 7.4
+    Version: 7.5
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, missing books, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
     All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
@@ -85,6 +86,7 @@ try {
     $ScriptDir = $PSScriptRoot
     $ExportDir = Join-Path -Path $ScriptDir -ChildPath "01-Export"
     $OutputDir = Join-Path -Path $ScriptDir -ChildPath "02-LLM-Result"
+    $TokenLedgerFile = Join-Path -Path $OutputDir -ChildPath "LLM-TokenUsage.json"
     $ApiKeyFile = Join-Path -Path $ScriptDir -ChildPath "Secrets\Gemini_API.json.key"
     $PromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreDataLLM-Prompt.txt"
     $WebProfilePromptFile = Join-Path -Path $ScriptDir -ChildPath "02-CalibreWebProfile-Prompt.txt"
@@ -302,7 +304,7 @@ try {
         return ($ErrorBody -match '(?i)prohibited (content|use)')
     }
 
-    # Extracts prompt, completion (output plus thinking), and total token usage from a Gemini interaction response.
+    # Extracts the token usage of a Gemini interaction response: prompt (input, including the cached part), cached (the part of the prompt served from the cache at a lower rate), tool use (search results the google_search tool added to the input), completion (output plus thinking), and total (prompt + tool use + completion; the API's total_tokens only when none of the parts is reported).
     function Get-TokenUsageFromResponse {
         param($Response)
 
@@ -312,11 +314,19 @@ try {
 
         $usage = $Response.usage
         $promptTokens = $null
+        $cachedTokens = $null
+        $toolUseTokens = $null
         $completionTokens = $null
         $totalTokens = $null
 
         if ($null -ne $usage.PSObject.Properties['total_input_tokens']) {
             $promptTokens = [int64]$usage.total_input_tokens
+        }
+        if ($null -ne $usage.PSObject.Properties['total_cached_tokens']) {
+            $cachedTokens = [int64]$usage.total_cached_tokens
+        }
+        if ($null -ne $usage.PSObject.Properties['total_tool_use_tokens']) {
+            $toolUseTokens = [int64]$usage.total_tool_use_tokens
         }
 
         # Thinking tokens are billed as output tokens, so they count as completion tokens.
@@ -329,15 +339,23 @@ try {
             }
         }
 
-        if ($null -ne $usage.PSObject.Properties['total_tokens']) {
-            $totalTokens = [int64]$usage.total_tokens
+        # Cached tokens are part of the prompt tokens, so they are not added to the total a second time.
+        foreach ($partTokens in @($promptTokens, $toolUseTokens, $completionTokens)) {
+            if ($null -ne $partTokens) {
+                if ($null -eq $totalTokens) {
+                    $totalTokens = [int64]0
+                }
+                $totalTokens += $partTokens
+            }
         }
-        elseif ($null -ne $promptTokens -and $null -ne $completionTokens) {
-            $totalTokens = $promptTokens + $completionTokens
+        if ($null -eq $totalTokens -and $null -ne $usage.PSObject.Properties['total_tokens']) {
+            $totalTokens = [int64]$usage.total_tokens
         }
 
         return [pscustomobject]@{
             PromptTokens     = $promptTokens
+            CachedTokens     = $cachedTokens
+            ToolUseTokens    = $toolUseTokens
             CompletionTokens = $completionTokens
             TotalTokens      = $totalTokens
         }
@@ -823,7 +841,12 @@ try {
         return [pscustomobject]@{ ContentProfile = $profileText }
     }
 
-    # Adds the prompt, completion, and total tokens of one request to a usage counter object (Available, PromptTokens, CompletionTokens, TotalTokens); a $null token usage leaves the counter unchanged.
+    # Returns an empty token usage counter (Available $false, all token counts 0).
+    function Get-TokenUsageCounter {
+        return [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CachedTokens = [int64]0; ToolUseTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+    }
+
+    # Adds the prompt, cached, tool use, completion, and total tokens of one request (or of another counter) to a usage counter from Get-TokenUsageCounter; a $null token usage leaves the counter unchanged, a missing or $null count adds nothing.
     function Add-TokenUsage {
         param(
             [Parameter(Mandatory = $true)]
@@ -837,14 +860,153 @@ try {
         }
 
         $Counter.Available = $true
-        if ($null -ne $TokenUsage.PromptTokens) {
-            $Counter.PromptTokens += [int64]$TokenUsage.PromptTokens
+        foreach ($propertyName in @('PromptTokens', 'CachedTokens', 'ToolUseTokens', 'CompletionTokens', 'TotalTokens')) {
+            if ($null -ne $TokenUsage.PSObject.Properties[$propertyName] -and $null -ne $TokenUsage.$propertyName) {
+                $Counter.$propertyName += [int64]$TokenUsage.$propertyName
+            }
         }
-        if ($null -ne $TokenUsage.CompletionTokens) {
-            $Counter.CompletionTokens += [int64]$TokenUsage.CompletionTokens
+    }
+
+    # Returns the token_usage object of a result file or of the token ledger: the counts of a usage counter (all $null when the counter is not Available) and the number of web search queries.
+    function ConvertTo-TokenUsageRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Counter,
+            [int64]$SearchQueryCount = 0
+        )
+
+        return [ordered]@{
+            prompt_tokens      = if ($Counter.Available) { $Counter.PromptTokens } else { $null }
+            cached_tokens      = if ($Counter.Available) { $Counter.CachedTokens } else { $null }
+            tool_use_tokens    = if ($Counter.Available) { $Counter.ToolUseTokens } else { $null }
+            completion_tokens  = if ($Counter.Available) { $Counter.CompletionTokens } else { $null }
+            total_tokens       = if ($Counter.Available) { $Counter.TotalTokens } else { $null }
+            web_search_queries = $SearchQueryCount
         }
-        if ($null -ne $TokenUsage.TotalTokens) {
-            $Counter.TotalTokens += [int64]$TokenUsage.TotalTokens
+    }
+
+    # Formats the counts of a usage counter for the log, with the total last: prompt (with its cached part), tool use, completion, total.
+    function Format-TokenUsage {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Counter
+        )
+
+        return "prompt=$($Counter.PromptTokens.ToString('N0')) (cached=$($Counter.CachedTokens.ToString('N0'))), tool use=$($Counter.ToolUseTokens.ToString('N0')), completion=$($Counter.CompletionTokens.ToString('N0')), total=$($Counter.TotalTokens.ToString('N0'))"
+    }
+
+    # Adds the token_usage object of a result file or of the token ledger to a usage counter and returns its web_search_queries (0 when missing). Files written before cached and tool use tokens were recorded add only the counts they hold; a missing total is computed as prompt + tool use + completion.
+    function Add-TokenUsageRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object]$Counter,
+            [AllowNull()]
+            [object]$Record
+        )
+
+        if ($null -eq $Record) {
+            return 0
+        }
+
+        $tokenUsage = Get-TokenUsageCounter
+        $propertyMap = [ordered]@{ prompt_tokens = 'PromptTokens'; cached_tokens = 'CachedTokens'; tool_use_tokens = 'ToolUseTokens'; completion_tokens = 'CompletionTokens'; total_tokens = 'TotalTokens' }
+        foreach ($recordPropertyName in $propertyMap.Keys) {
+            if ($null -ne $Record.PSObject.Properties[$recordPropertyName] -and $null -ne $Record.$recordPropertyName) {
+                $tokenUsage.Available = $true
+                $tokenUsage.($propertyMap[$recordPropertyName]) = [int64]$Record.$recordPropertyName
+            }
+        }
+        if ($null -eq $Record.PSObject.Properties['total_tokens'] -or $null -eq $Record.total_tokens) {
+            $tokenUsage.TotalTokens = $tokenUsage.PromptTokens + $tokenUsage.ToolUseTokens + $tokenUsage.CompletionTokens
+        }
+        if ($tokenUsage.Available) {
+            Add-TokenUsage -Counter $Counter -TokenUsage $tokenUsage
+        }
+
+        if ($null -ne $Record.PSObject.Properties['web_search_queries'] -and $null -ne $Record.web_search_queries) {
+            return [int64]$Record.web_search_queries
+        }
+        return 0
+    }
+
+    # Prepares the token ledger of the run in $script:TokenLedger, which counts the tokens and search queries of every Gemini response, including the requests of export files that never got a result file (interrupted run, Ctrl+C, crash). A resumed run continues the existing ledger file; otherwise, or when the ledger file is missing or invalid, the ledger starts from the token_usage of the result files in the folder (none after the cleanup of a new run). The ledger is written to the file right away.
+    function Initialize-TokenLedger {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Path,
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$ResultDirectory,
+            [switch]$Resume
+        )
+
+        $ledger = Get-TokenUsageCounter
+        $ledger | Add-Member -MemberType NoteProperty -Name 'SearchQueryCount' -Value ([int64]0)
+        $ledger | Add-Member -MemberType NoteProperty -Name 'RequestCount' -Value ([int64]0)
+
+        $storedLedger = $null
+        if ($Resume -and (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            try {
+                $storedLedger = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                $storedLedger = $null
+            }
+        }
+
+        if ($null -ne $storedLedger) {
+            $ledger.SearchQueryCount = Add-TokenUsageRecord -Counter $ledger -Record $storedLedger
+            if ($null -ne $storedLedger.PSObject.Properties['requests'] -and $null -ne $storedLedger.requests) {
+                $ledger.RequestCount = [int64]$storedLedger.requests
+            }
+        }
+        else {
+            foreach ($resultFile in @(Get-ChildItem -LiteralPath $ResultDirectory -Filter 'LLM-Result_*.json' -File)) {
+                try {
+                    $result = [System.IO.File]::ReadAllText($resultFile.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
+                }
+                catch {
+                    continue
+                }
+                if ($null -ne $result -and $null -ne $result.PSObject.Properties['token_usage']) {
+                    $ledger.SearchQueryCount += Add-TokenUsageRecord -Counter $ledger -Record $result.token_usage
+                }
+            }
+        }
+
+        $script:TokenLedgerPath = $Path
+        $script:TokenLedger = $ledger
+        Save-TokenLedger
+    }
+
+    # Writes $script:TokenLedger to $script:TokenLedgerPath through a temporary file (Save-ResultFile), so an interruption never leaves a truncated ledger.
+    function Save-TokenLedger {
+        $record = ConvertTo-TokenUsageRecord -Counter $script:TokenLedger -SearchQueryCount $script:TokenLedger.SearchQueryCount
+        $record['requests'] = $script:TokenLedger.RequestCount
+        Save-ResultFile -Path $script:TokenLedgerPath -Content (ConvertTo-Json -InputObject $record)
+    }
+
+    # Adds the token usage and search queries of one Gemini response to the token ledger and writes it at once, so the tokens stay counted even when the run is interrupted before the result file of the export file is written. Does nothing while no ledger is initialized; a failed write is logged as a warning and does not stop the run.
+    function Add-TokenLedgerUsage {
+        param(
+            [AllowNull()]
+            [object]$TokenUsage,
+            [int64]$SearchQueryCount = 0
+        )
+
+        if ($null -eq $script:TokenLedger) {
+            return
+        }
+
+        $script:TokenLedger.RequestCount++
+        $script:TokenLedger.SearchQueryCount += $SearchQueryCount
+        Add-TokenUsage -Counter $script:TokenLedger -TokenUsage $TokenUsage
+        try {
+            Save-TokenLedger
+        }
+        catch {
+            Write-ScriptLog -Level WARN -Message "The token ledger could not be written: $($_.Exception.Message)"
         }
     }
 
@@ -1324,9 +1486,11 @@ $FocusTagDefinitions
                 $response = ConvertFrom-Utf8JsonResponse -WebResponse $webResponse
                 $text = Get-GeminiResponseText -Response $response
                 $searchSummary = Get-GeminiSearchSummary -Response $response
+                $tokenUsage = Get-TokenUsageFromResponse -Response $response
+                Add-TokenLedgerUsage -TokenUsage $tokenUsage -SearchQueryCount $searchSummary.QueryCount
                 return [pscustomobject]@{
                     Text             = $text
-                    TokenUsage       = Get-TokenUsageFromResponse -Response $response
+                    TokenUsage       = $tokenUsage
                     SearchQueryCount = $searchSummary.QueryCount
                     Sources          = $searchSummary.Sources
                 }
@@ -1447,7 +1611,7 @@ $bookAnalysisInput
             [int]$ExpectedUniqueBookCount = -1
         )
 
-        $usage = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        $usage = Get-TokenUsageCounter
         $rawText = $null
         $resultObject = $null
         $attempt = 0
@@ -1500,7 +1664,7 @@ $bookAnalysisInput
             [string]$BookFileName
         )
 
-        $usage = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        $usage = Get-TokenUsageCounter
         $records = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $contentProfiles = New-Object -TypeName 'System.Collections.Generic.List[object]'
         $profileGaps = New-Object -TypeName 'System.Collections.Generic.List[object]'
@@ -1685,9 +1849,7 @@ $tagContent
     $savedCount = 0
     $retriedFileCount = 0
     $retriedFileSuccessCount = 0
-    $totalPromptTokens = [int64]0
-    $totalCompletionTokens = [int64]0
-    $totalTokens = [int64]0
+    $sessionUsage = Get-TokenUsageCounter
     $totalFullTextBookCount = 0
     $totalProfileBookCount = 0
     $totalSavedProfileCount = 0
@@ -1700,6 +1862,9 @@ $tagContent
     $totalRefreshedWebCount = 0
     $allMissingBooks = New-Object -TypeName 'System.Collections.Generic.List[object]'
     $skippedFileCount = 0
+
+    # Count the tokens of every response in the run's token ledger, so requests of an interrupted export file stay counted. A resumed run continues the ledger of the earlier sessions.
+    Initialize-TokenLedger -Path $TokenLedgerFile -ResultDirectory $OutputDir -Resume:$Resume
 
     if ($FullContent) {
         Write-ScriptLog "FullContent: the full book text is sent for every book; stored content profiles are not used."
@@ -1740,7 +1905,7 @@ $tagContent
             Write-ScriptLog -Level WARN -Message $validationWarningText
         }
 
-        $fileUsage = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        $fileUsage = Get-TokenUsageCounter
         $fileSearchQueryCount = 0
 
         # Books without text first get a content profile from a Google Search in a separate request, so the tag audit below can use it like any other profile. The audit request itself never searches.
@@ -1955,21 +2120,14 @@ $tagContent
 
         $totalSearchQueryCount += $fileSearchQueryCount
         if ($fileUsage.Available) {
-            $totalPromptTokens += $fileUsage.PromptTokens
-            $totalCompletionTokens += $fileUsage.CompletionTokens
-            $totalTokens += $fileUsage.TotalTokens
-            Write-ScriptLog "  -> Token usage for $($bookFile.Name): prompt=$($fileUsage.PromptTokens.ToString('N0')), completion=$($fileUsage.CompletionTokens.ToString('N0')), total=$($fileUsage.TotalTokens.ToString('N0'))"
+            Add-TokenUsage -Counter $sessionUsage -TokenUsage $fileUsage
+            Write-ScriptLog "  -> Token usage for $($bookFile.Name): $(Format-TokenUsage -Counter $fileUsage)"
         }
         else {
             Write-ScriptLog "  -> Token usage for $($bookFile.Name): unavailable"
         }
 
-        $tokenUsage = [ordered]@{
-            prompt_tokens      = if ($fileUsage.Available) { $fileUsage.PromptTokens } else { $null }
-            completion_tokens  = if ($fileUsage.Available) { $fileUsage.CompletionTokens } else { $null }
-            total_tokens       = if ($fileUsage.Available) { $fileUsage.TotalTokens } else { $null }
-            web_search_queries = $fileSearchQueryCount
-        }
+        $tokenUsage = ConvertTo-TokenUsageRecord -Counter $fileUsage -SearchQueryCount $fileSearchQueryCount
 
         # Store the content profiles of the books sent with their full text, so later runs can send the profile instead.
         if ($null -ne $apiResult -and $resultObject.status -ne 'error' -and $fullTextBooksById.Count -gt 0) {
@@ -2086,12 +2244,12 @@ $tagContent
     Write-ScriptLog "Start: $($scriptStartTime.ToString('yyyy-MM-dd HH:mm:ss'))  End: $($scriptEndTime.ToString('yyyy-MM-dd HH:mm:ss'))  Duration: $(Format-Duration -Duration $scriptDuration)"
     Write-ScriptLog "$total files processed, $retriedFileCount retried, $retriedFileSuccessCount successful after retries."
     if ($Resume) {
-        Write-ScriptLog "Resumed: $skippedFileCount file(s) skipped as already processed. The counters below cover this session only; the pipeline summary totals all result files."
+        Write-ScriptLog "Resumed: $skippedFileCount file(s) skipped as already processed. The counters below cover this session only; the pipeline summary totals the whole run from the token ledger (02-LLM-Result\LLM-TokenUsage.json)."
     }
     Write-ScriptLog "Books sent: $totalFullTextBookCount with full text, $totalProfileBookCount with content profile, $totalNoContentBookCount without content; $totalSavedProfileCount content profile(s) stored."
     Write-ScriptLog "Web search: $totalWebProfileCount web profile(s) written, $totalWebNotFoundCount book(s) not identified, $totalSearchQueryCount search queries (billed per query)."
     Write-ScriptLog "Profile gaps: $totalProfileGapBookCount book(s) with open tag decisions; refreshed $totalRefreshedTextCount with the full text and $totalRefreshedWebCount with a targeted web search."
-    Write-ScriptLog "Total token usage: prompt=$($totalPromptTokens.ToString('N0')), completion=$($totalCompletionTokens.ToString('N0')), total=$($totalTokens.ToString('N0'))"
+    Write-ScriptLog "Total token usage: $(Format-TokenUsage -Counter $sessionUsage)"
     if ($allMissingBooks.Count -eq 0) {
         Write-ScriptLog "Books without audit result: 0"
     }
