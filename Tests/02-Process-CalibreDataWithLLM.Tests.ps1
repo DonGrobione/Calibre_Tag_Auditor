@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), the resume functions Save-ResultFile (write through a .tmp file) and Test-ResultFileComplete, source checks of the resume cleanup and skip,Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, Add-TokenUsage, the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), the resume functions Save-ResultFile (write through a .tmp file) and Test-ResultFileComplete, source checks of the resume cleanup and skip,Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, the token usage functions Get-TokenUsageCounter, Add-TokenUsage, Format-TokenUsage, ConvertTo-TokenUsageRecord, and Add-TokenUsageRecord (prompt, cached, tool use, completion, and total tokens), the token ledger functions Initialize-TokenLedger, Save-TokenLedger, and Add-TokenLedgerUsage (a ledger file under $TestDrive that counts every response, continued with -Resume), the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -21,7 +21,7 @@ $functionNames = @(
     'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
     'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
     'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
-    'Add-TokenUsage', 'Request-WebContentProfile', 'Add-BookContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
+    'Get-TokenUsageCounter', 'Add-TokenUsage', 'Format-TokenUsage', 'ConvertTo-TokenUsageRecord', 'Add-TokenUsageRecord', 'Initialize-TokenLedger', 'Save-TokenLedger', 'Add-TokenLedgerUsage', 'Request-WebContentProfile', 'Add-BookContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
     'Merge-ContentProfileChecklist', 'Get-TagDefinitionHashTable', 'ConvertTo-TagHashTable', 'Merge-TagHashTable', 'Select-TagDefinition', 'Get-ProfileRefreshCandidate', 'Merge-RefreshedAuditRecord'
 )
 foreach ($functionName in $functionNames) {
@@ -84,6 +84,8 @@ $script:LastApiErrorBody = $null
 $script:ContentProfileVersion = 1
 $script:MinimumProfileWords = 2
 $script:TagDefinitionHashes = [ordered]@{ Fantasy = '1111111111111111'; LitRPG = '2222222222222222' }
+$script:TokenLedger = $null
+$script:TokenLedgerPath = $null
 
 Describe '02-Process-CalibreDataWithLLM.ps1 source' {
     It 'parses without errors' {
@@ -132,6 +134,27 @@ Describe 'Get-TokenUsageFromResponse' {
     It 'calculates the total when the response has no total' {
         $response = [pscustomobject]@{ usage = [pscustomobject]@{ total_input_tokens = 10; total_output_tokens = 5 } }
         (Get-TokenUsageFromResponse -Response $response).TotalTokens | Should Be 15
+    }
+
+    It 'reads cached and tool use tokens and adds tool use, but not the cached part of the prompt, to the total' {
+        $response = [pscustomobject]@{ usage = [pscustomobject]@{ total_input_tokens = 100; total_cached_tokens = 60; total_tool_use_tokens = 40; total_output_tokens = 20; total_thought_tokens = 30; total_tokens = 150 } }
+        $usage = Get-TokenUsageFromResponse -Response $response
+        $usage.PromptTokens | Should Be 100
+        $usage.CachedTokens | Should Be 60
+        $usage.ToolUseTokens | Should Be 40
+        $usage.CompletionTokens | Should Be 50
+        $usage.TotalTokens | Should Be 190
+    }
+
+    It 'returns $null for cached and tool use tokens the response does not report' {
+        $usage = Get-TokenUsageFromResponse -Response (Get-TestInteractionResponse -Text 'x')
+        $usage.CachedTokens | Should Be $null
+        $usage.ToolUseTokens | Should Be $null
+    }
+
+    It 'uses total_tokens only when no part is reported' {
+        $response = [pscustomobject]@{ usage = [pscustomobject]@{ total_tokens = 42 } }
+        (Get-TokenUsageFromResponse -Response $response).TotalTokens | Should Be 42
     }
 
     It 'returns $null without usage data' {
@@ -375,6 +398,25 @@ Describe 'Invoke-GeminiRequest' {
         $null = Invoke-GeminiRequest -PayloadText 'book data'
         $script:LastApiStatusCode | Should Be $null
     }
+
+    It 'adds the tokens and search queries of every response to the token ledger, but not of a failed request' {
+        Initialize-TokenLedger -Path (Join-Path -Path $TestDrive -ChildPath 'request-ledger.json') -ResultDirectory $TestDrive
+        try {
+            Mock Invoke-WebRequest { Get-TestWebResponse -InputObject (Get-TestInteractionResponse -Text 'ok') }
+            $null = Invoke-GeminiRequest -PayloadText 'book data'
+            $null = Invoke-GeminiRequest -PayloadText 'book data'
+            Mock Invoke-WebRequest { throw (Get-TestHttpException -StatusCode 400 -Body $prohibitedContentBody) }
+            $null = Invoke-GeminiRequest -PayloadText 'book data'
+            $script:TokenLedger.RequestCount | Should Be 2
+            $script:TokenLedger.TotalTokens | Should Be 300
+            $stored = [System.IO.File]::ReadAllText($script:TokenLedgerPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            $stored.total_tokens | Should Be 300
+            $stored.requests | Should Be 2
+        }
+        finally {
+            $script:TokenLedger = $null
+        }
+    }
 }
 
 Describe 'Get-ConnectionFailureStatus' {
@@ -420,7 +462,7 @@ Describe 'ConvertTo-BookAuditPayload' {
 
 # Returns a fresh token usage counter.
 function Get-TestUsageCounter {
-    return [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+    return Get-TokenUsageCounter
 }
 
 # Returns a successful Invoke-GeminiRequest result with the given text and 15 tokens.
@@ -1156,18 +1198,148 @@ Describe 'ConvertFrom-WebProfileResponse' {
 
 Describe 'Add-TokenUsage' {
     It 'adds the token counts and marks the counter as available' {
-        $counter = [pscustomobject]@{ Available = $false; PromptTokens = [int64]1; CompletionTokens = [int64]2; TotalTokens = [int64]3 }
-        Add-TokenUsage -Counter $counter -TokenUsage ([pscustomobject]@{ PromptTokens = 10; CompletionTokens = 20; TotalTokens = 30 })
+        $counter = Get-TokenUsageCounter
+        $counter.PromptTokens = [int64]1
+        Add-TokenUsage -Counter $counter -TokenUsage ([pscustomobject]@{ PromptTokens = 10; CachedTokens = 4; ToolUseTokens = 3; CompletionTokens = 20; TotalTokens = 33 })
         $counter.Available | Should Be $true
         $counter.PromptTokens | Should Be 11
-        $counter.CompletionTokens | Should Be 22
+        $counter.CachedTokens | Should Be 4
+        $counter.ToolUseTokens | Should Be 3
+        $counter.CompletionTokens | Should Be 20
         $counter.TotalTokens | Should Be 33
     }
 
+    It 'adds nothing for counts that are missing or $null' {
+        $counter = Get-TokenUsageCounter
+        Add-TokenUsage -Counter $counter -TokenUsage ([pscustomobject]@{ PromptTokens = 10; CachedTokens = $null; CompletionTokens = 5; TotalTokens = 15 })
+        $counter.CachedTokens | Should Be 0
+        $counter.ToolUseTokens | Should Be 0
+        $counter.TotalTokens | Should Be 15
+    }
+
     It 'leaves the counter unchanged for $null' {
-        $counter = [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
+        $counter = Get-TokenUsageCounter
         Add-TokenUsage -Counter $counter -TokenUsage $null
         $counter.Available | Should Be $false
+    }
+}
+
+Describe 'Format-TokenUsage' {
+    It 'lists all counts with the total last' {
+        $counter = Get-TokenUsageCounter
+        Add-TokenUsage -Counter $counter -TokenUsage ([pscustomobject]@{ PromptTokens = 1000; CachedTokens = 400; ToolUseTokens = 10; CompletionTokens = 200; TotalTokens = 1210 })
+        $text = Format-TokenUsage -Counter $counter
+        $text | Should Match '^prompt=1.000 \(cached=400\), tool use=10, completion=200, total=1.210$'
+    }
+}
+
+Describe 'ConvertTo-TokenUsageRecord and Add-TokenUsageRecord' {
+    It 'writes all counts and the search queries' {
+        $counter = Get-TokenUsageCounter
+        Add-TokenUsage -Counter $counter -TokenUsage ([pscustomobject]@{ PromptTokens = 100; CachedTokens = 40; ToolUseTokens = 10; CompletionTokens = 50; TotalTokens = 160 })
+        $record = ConvertTo-TokenUsageRecord -Counter $counter -SearchQueryCount 3
+        @($record.Keys) -join ',' | Should Be 'prompt_tokens,cached_tokens,tool_use_tokens,completion_tokens,total_tokens,web_search_queries'
+        $record.cached_tokens | Should Be 40
+        $record.total_tokens | Should Be 160
+        $record.web_search_queries | Should Be 3
+    }
+
+    It 'writes $null counts for a counter without usage' {
+        $record = ConvertTo-TokenUsageRecord -Counter (Get-TokenUsageCounter) -SearchQueryCount 1
+        $record.prompt_tokens | Should Be $null
+        $record.total_tokens | Should Be $null
+        $record.web_search_queries | Should Be 1
+    }
+
+    It 'reads a record back into a counter and returns its search queries' {
+        $counter = Get-TokenUsageCounter
+        $queries = Add-TokenUsageRecord -Counter $counter -Record ([pscustomobject]@{ prompt_tokens = 100; cached_tokens = 40; tool_use_tokens = 10; completion_tokens = 50; total_tokens = 160; web_search_queries = 3 })
+        $queries | Should Be 3
+        $counter.CachedTokens | Should Be 40
+        $counter.TotalTokens | Should Be 160
+    }
+
+    It 'reads an older record without cached and tool use tokens' {
+        $counter = Get-TokenUsageCounter
+        $queries = Add-TokenUsageRecord -Counter $counter -Record ([pscustomobject]@{ prompt_tokens = 30; completion_tokens = 20; total_tokens = 50 })
+        $queries | Should Be 0
+        $counter.PromptTokens | Should Be 30
+        $counter.TotalTokens | Should Be 50
+    }
+
+    It 'computes a missing total as prompt + tool use + completion' {
+        $counter = Get-TokenUsageCounter
+        $null = Add-TokenUsageRecord -Counter $counter -Record ([pscustomobject]@{ prompt_tokens = 30; tool_use_tokens = 5; completion_tokens = 20 })
+        $counter.TotalTokens | Should Be 55
+    }
+
+    It 'adds nothing for a $null record or a record without counts' {
+        $counter = Get-TokenUsageCounter
+        Add-TokenUsageRecord -Counter $counter -Record $null | Should Be 0
+        $null = Add-TokenUsageRecord -Counter $counter -Record ([pscustomobject]@{ prompt_tokens = $null })
+        $counter.Available | Should Be $false
+    }
+}
+
+Describe 'Token ledger' {
+    $resultDirectory = Join-Path -Path $TestDrive -ChildPath 'ledger-results'
+    New-Item -Path $resultDirectory -ItemType Directory | Out-Null
+    $ledgerPath = Join-Path -Path $resultDirectory -ChildPath 'LLM-TokenUsage.json'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_01_2026-11-01_07-31-38.json') -Value '{ "status": "success", "token_usage": { "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "web_search_queries": 2 } }'
+
+    It 'starts from the result files in the folder and writes the ledger file at once' {
+        Initialize-TokenLedger -Path $ledgerPath -ResultDirectory $resultDirectory
+        $script:TokenLedger.TotalTokens | Should Be 150
+        $script:TokenLedger.SearchQueryCount | Should Be 2
+        $stored = [System.IO.File]::ReadAllText($ledgerPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $stored.total_tokens | Should Be 150
+        $stored.web_search_queries | Should Be 2
+        $stored.requests | Should Be 0
+    }
+
+    It 'counts the tokens of every response and writes them at once' {
+        Add-TokenLedgerUsage -TokenUsage ([pscustomobject]@{ PromptTokens = 10; CachedTokens = 4; ToolUseTokens = 2; CompletionTokens = 5; TotalTokens = 17 }) -SearchQueryCount 1
+        Add-TokenLedgerUsage -TokenUsage $null
+        $stored = [System.IO.File]::ReadAllText($ledgerPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $stored.prompt_tokens | Should Be 110
+        $stored.cached_tokens | Should Be 4
+        $stored.tool_use_tokens | Should Be 2
+        $stored.total_tokens | Should Be 167
+        $stored.web_search_queries | Should Be 3
+        $stored.requests | Should Be 2
+    }
+
+    It 'continues the ledger file with -Resume, so the tokens of interrupted requests stay counted' {
+        Initialize-TokenLedger -Path $ledgerPath -ResultDirectory $resultDirectory -Resume
+        $script:TokenLedger.TotalTokens | Should Be 167
+        $script:TokenLedger.RequestCount | Should Be 2
+    }
+
+    It 'starts again from the result files without -Resume' {
+        Initialize-TokenLedger -Path $ledgerPath -ResultDirectory $resultDirectory
+        $script:TokenLedger.TotalTokens | Should Be 150
+        $script:TokenLedger.RequestCount | Should Be 0
+    }
+
+    It 'rebuilds an invalid ledger file from the result files with -Resume' {
+        Set-Content -LiteralPath $ledgerPath -Value '{ "prompt_tokens": 1'
+        Initialize-TokenLedger -Path $ledgerPath -ResultDirectory $resultDirectory -Resume
+        $script:TokenLedger.TotalTokens | Should Be 150
+    }
+
+    It 'does nothing while no ledger is initialized' {
+        $script:TokenLedger = $null
+        Add-TokenLedgerUsage -TokenUsage ([pscustomobject]@{ PromptTokens = 10; TotalTokens = 10 })
+        $script:TokenLedger | Should Be $null
+    }
+
+    It 'is not deleted by the cleanup of a new run, which removes only LLM-Result_* files' {
+        $scriptAst.Extent.Text | Should Match "Initialize-TokenLedger -Path \`$TokenLedgerFile -ResultDirectory \`$OutputDir -Resume:\`$Resume"
+        $scriptAst.Extent.Text | Should Match '\$TokenLedgerFile = Join-Path -Path \$OutputDir -ChildPath "LLM-TokenUsage\.json"'
+    }
+
+    It 'counts every response in Invoke-GeminiRequest' {
+        $scriptAst.Extent.Text | Should Match 'Add-TokenLedgerUsage -TokenUsage \$tokenUsage -SearchQueryCount \$searchSummary\.QueryCount'
     }
 }
 
@@ -1520,7 +1692,7 @@ Describe 'Web profile workflow' {
     }
 
     It 'stores the search query count in the token usage of the result file' {
-        $scriptAst.Extent.Text | Should Match 'web_search_queries = \$fileSearchQueryCount'
+        $scriptAst.Extent.Text | Should Match 'ConvertTo-TokenUsageRecord -Counter \$fileUsage -SearchQueryCount \$fileSearchQueryCount'
     }
 }
 

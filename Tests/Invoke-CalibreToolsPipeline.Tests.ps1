@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays, FullContent, and Resume script parameters, the resume functions Get-PipelineRunState, Save-PipelineRunState, Get-BookExportTimestamp, Test-PipelineRunResumable, Get-ResumeProgress, and Read-ResumeChoice (with files under $TestDrive and a mocked Read-Host), source checks of the resume flow (export steps skipped, run state written before the LLM step, -Resume not combinable with ChangedWithinDays or FullContent), Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files. The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
+    Covers the ChangedWithinDays, FullContent, and Resume script parameters, the resume functions Get-PipelineRunState, Save-PipelineRunState, Get-BookExportTimestamp, Test-PipelineRunResumable, Get-ResumeProgress, and Read-ResumeChoice (with files under $TestDrive and a mocked Read-Host), source checks of the resume flow (export steps skipped, run state written before the LLM step, -Resume not combinable with ChangedWithinDays or FullContent), Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files, ends with the token total, and that a new run deletes the old token ledger. Add-TokenUsageCount and Get-RunTokenSummary are tested with result files and token ledgers under $TestDrive (ledger counts with the tokens of interrupted requests, fallback to the result files, total as prompt + tool use + completion). The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath 'Invoke-CalibreToolsPipeline.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter', 'Get-PipelineRunState', 'Save-PipelineRunState', 'Get-BookExportTimestamp', 'Test-PipelineRunResumable', 'Get-ResumeProgress', 'Read-ResumeChoice')) {
+foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter', 'Get-PipelineRunState', 'Save-PipelineRunState', 'Get-BookExportTimestamp', 'Test-PipelineRunResumable', 'Get-ResumeProgress', 'Read-ResumeChoice', 'Add-TokenUsageCount', 'Get-RunTokenSummary')) {
     $definition = $scriptAst.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -46,7 +46,85 @@ Describe 'Invoke-CalibreToolsPipeline.ps1 source' {
     }
 
     It 'prints the number of books without audit result in the summary' {
-        $scriptAst.Extent.Text | Should Match 'Books without audit result:\s+\$totalMissingBooks'
+        $scriptAst.Extent.Text | Should Match "'Books without audit result:', \`$runTokens\.MissingBookCount"
+    }
+
+    It 'prints the token total as the last line of the summary' {
+        $summaryLines = @([regex]::Matches($scriptAst.Extent.Text, "Write-ScriptLog[^\r\n]*\`$runTokens\.[A-Za-z]+") | ForEach-Object { $_.Value })
+        $summaryLines[-1] | Should Match "'Tokens total \(prompt \+ tool use \+ completion\):', \`$runTokens\.TotalTokens"
+    }
+
+    It 'deletes the token ledger of the old run when a new run starts' {
+        $scriptAst.Extent.Text | Should Match "(?s)if \(-not \`$resumeRun -and \(Test-Path -LiteralPath \`$tokenLedgerPath -PathType Leaf\)\) \{\s+Remove-Item -LiteralPath \`$tokenLedgerPath"
+    }
+}
+
+Describe 'Add-TokenUsageCount' {
+    It 'adds the counts of the hashtable keys and ignores missing and $null counts' {
+        $total = @{ prompt_tokens = [int64]1; cached_tokens = [int64]0; tool_use_tokens = [int64]0 }
+        Add-TokenUsageCount -Total $total -Record ([pscustomobject]@{ prompt_tokens = 10; cached_tokens = $null; other = 99 })
+        $total['prompt_tokens'] | Should Be 11
+        $total['cached_tokens'] | Should Be 0
+        $total['tool_use_tokens'] | Should Be 0
+        $total.ContainsKey('other') | Should Be $false
+    }
+
+    It 'leaves the total unchanged for a $null record' {
+        $total = @{ prompt_tokens = [int64]5 }
+        Add-TokenUsageCount -Total $total -Record $null
+        $total['prompt_tokens'] | Should Be 5
+    }
+}
+
+Describe 'Get-RunTokenSummary' {
+    $resultDirectory = Join-Path -Path $TestDrive -ChildPath 'token-results'
+    New-Item -Path $resultDirectory -ItemType Directory | Out-Null
+    $ledgerPath = Join-Path -Path $resultDirectory -ChildPath 'LLM-TokenUsage.json'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_01_2026-11-01_07-31-38.json') -Value '{ "status": "success", "missing_books": [ { "Title": "A" } ], "token_usage": { "prompt_tokens": 100, "cached_tokens": 40, "tool_use_tokens": 10, "completion_tokens": 50, "total_tokens": 160, "web_search_queries": 2 } }'
+    Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath 'LLM-Result_02_2026-11-01_07-31-38.json') -Value '{ "status": "success", "missing_books": [], "token_usage": { "prompt_tokens": 30, "completion_tokens": 20, "total_tokens": 50, "web_search_queries": 0 } }'
+
+    It 'sums the result files and warns through LedgerFound $false when there is no ledger' {
+        $summary = Get-RunTokenSummary -ResultDirectory $resultDirectory -LedgerPath $ledgerPath
+        $summary.LedgerFound | Should Be $false
+        $summary.PromptTokens | Should Be 130
+        $summary.CachedTokens | Should Be 40
+        $summary.ToolUseTokens | Should Be 10
+        $summary.CompletionTokens | Should Be 70
+        $summary.TotalTokens | Should Be 210
+        $summary.SearchQueryCount | Should Be 2
+        $summary.UnsavedTokens | Should Be 0
+        $summary.MissingBookCount | Should Be 1
+    }
+
+    It 'takes the counts from the ledger and reports the tokens no result file holds' {
+        Set-Content -LiteralPath $ledgerPath -Value '{ "prompt_tokens": 200, "cached_tokens": 60, "tool_use_tokens": 10, "completion_tokens": 90, "total_tokens": 300, "web_search_queries": 5, "requests": 6 }'
+        $summary = Get-RunTokenSummary -ResultDirectory $resultDirectory -LedgerPath $ledgerPath
+        $summary.LedgerFound | Should Be $true
+        $summary.PromptTokens | Should Be 200
+        $summary.CachedTokens | Should Be 60
+        $summary.CompletionTokens | Should Be 90
+        $summary.TotalTokens | Should Be 300
+        $summary.SearchQueryCount | Should Be 5
+        $summary.UnsavedTokens | Should Be 90
+        $summary.MissingBookCount | Should Be 1
+    }
+
+    It 'computes the total as prompt + tool use + completion, not from total_tokens' {
+        Set-Content -LiteralPath $ledgerPath -Value '{ "prompt_tokens": 200, "tool_use_tokens": 10, "completion_tokens": 90, "total_tokens": 1 }'
+        (Get-RunTokenSummary -ResultDirectory $resultDirectory -LedgerPath $ledgerPath).TotalTokens | Should Be 300
+    }
+
+    It 'falls back to the result files for a ledger that is not valid JSON' {
+        Set-Content -LiteralPath $ledgerPath -Value '{ "prompt_tokens": 2'
+        $summary = Get-RunTokenSummary -ResultDirectory $resultDirectory -LedgerPath $ledgerPath
+        $summary.LedgerFound | Should Be $false
+        $summary.TotalTokens | Should Be 210
+    }
+
+    It 'returns zero counts without result folder' {
+        $summary = Get-RunTokenSummary -ResultDirectory (Join-Path -Path $TestDrive -ChildPath 'missing') -LedgerPath (Join-Path -Path $TestDrive -ChildPath 'missing.json')
+        $summary.TotalTokens | Should Be 0
+        $summary.MissingBookCount | Should Be 0
     }
 }
 
