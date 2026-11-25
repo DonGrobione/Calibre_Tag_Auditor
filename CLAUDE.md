@@ -39,14 +39,15 @@ powershell.exe -NoProfile -Command "Import-Module Pester -RequiredVersion 3.4.0;
 - Scripts import the modules through their `.psd1` manifests.
 - **Tests/**: Pester tests, one file per module or script (`Tests/<Name>.Tests.ps1`). The Console tests replace DonGrobione.Logging with an in-memory stub module. Step scripts run their workflow when executed, so their tests parse the script with the PowerShell AST, dot-source only the function definitions under test, and stub `Write-ScriptLog`/`ConvertTo-DisplayPath`. Use `Assert-MockCalled -Scope It`, because Pester 3.4 otherwise counts calls across the whole Describe block.
 - **CHANGELOG.md**: release notes per module version and for script changes.
+- **docs/**: user documentation per topic, linked from the README section Documentation.
 - **Dependencies**: PowerShell module DonGrobione.Logging >= 2.2.0 (external, default module path, update with `Update-DonGrobioneLogging`), Calibre Portable (`calibredb.exe`, `calibre-debug.exe`, `ebook-convert.exe`), Google Gemini API, LibreOffice (`soffice.exe`).
 
 ## Rules
 
 ### 1. Documentation
-- Keep README.md current: project structure, purpose of every user-facing file and directory, prerequisites, configuration, and usage.
+- Keep README.md and `docs/` current. README.md holds the overview, requirements, and everything needed to run the scripts (quick start, resume, results, individual steps); the detailed topics live in one file per topic in `docs/` (project structure with the purpose of every user-facing file and directory, configuration, export fields, cache, content profiles, Gemini, token usage, logging, common issues, tests, data and copyright), each listed in the README section Documentation.
 - Write code, comments, comment-based help, output, log messages, and documentation in English.
-- Do not insert line breaks in the middle of a sentence in README.md, comment-based help, or regular comments. Start new lines only between complete sentences or list items.
+- Do not insert line breaks in the middle of a sentence in README.md, `docs/`, comment-based help, or regular comments. Start new lines only between complete sentences or list items.
 - Give every commit a clear message describing what changed and why.
 - After code changes, verify that examples, file structure, and guidelines match the codebase.
 

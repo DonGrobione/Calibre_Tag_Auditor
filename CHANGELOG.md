@@ -4,6 +4,7 @@ All notable changes to this project are documented in this file. The format is b
 ## 2026-11-25
 
 ### Documentation
+- README.md: moved the detailed sections (Project Structure, Calibre Configuration, Exported Calibre Fields, Book Export Cache, Content Profiles, Google Gemini, Token Usage, Logging, Common Issues, Tests, and Data, Privacy And Copyright) into one file each in the new folder `docs/`, so the README is easier to read. The README keeps the requirements and everything needed to run the scripts, now in front of the background sections, and the new section "Documentation" links all topic files. Quick Start now shows the API key file format and notes the duration and token cost of large runs.
 - README.md: new section "Data, Privacy And Copyright". It describes, independent of the LLM provider, what the tag audit and web profile requests send, how the provider's plan and terms affect data use, which local folders and logs hold book excerpts or metadata, the user's responsibility for copyright, and how to limit what is sent. The data note in "AI Usage" now points to this section, and the "Independent Project Notice" is shortened.
 
 ### Modules
