@@ -1,6 +1,13 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-11-25
+
+### Scripts
+- `ChangedWithinDays` now counts calendar days in local time instead of a rolling window of N × 24 hours, so the time of day a run starts no longer changes which books are exported: `0` = all books, `1` = today since 00:00, `2` = today and yesterday, and so on. With tests.
+  - `01-Export-CalibreBooks.ps1` 5.3: new function `Get-ChangedSinceDate` returns local midnight of (today − (N − 1)) as cutoff. The startup log line and the no-books warning show the cutoff date.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.22: help text for `-ChangedWithinDays` updated.
+
 ## 2026-11-05
 
 ### Scripts

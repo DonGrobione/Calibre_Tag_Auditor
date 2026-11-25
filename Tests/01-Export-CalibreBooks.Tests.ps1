@@ -3,7 +3,7 @@
     Pester tests for the book file functions in 01-Export-CalibreBooks.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays script parameter, Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText, and the sampled excerpt of Select-ExcerptText. The Debug book export tests check in the source that DebugBookExport selects the 10 most recently changed books and keeps the configured BooksPerFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as INFO (no DEBUG entries), and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
+    Covers the ChangedWithinDays script parameter, Get-ChangedSinceDate (calendar-day cutoff at local midnight), Get-BookFile (book file paths from the calibredb field formats), Get-PrimaryBookFile, ConvertTo-FormatDisplayText, Get-BookExportFileName, ConvertTo-JsonUtf8 (control characters stay escaped, literal backslash-u text survives), Write-JsonFile, and the book cache functions Test-CalibreUuid, Get-BookCachePath, Get-CachedBookExport, Write-BookCacheFile, and Remove-StaleBookCacheFile, and the content profile functions Get-ContentHash, Get-MetadataHash, and Get-CachedContentProfile (including web profiles and WebNotFound markers), and the functions for books without text, Get-WordCount and ConvertTo-PlainText, and the sampled excerpt of Select-ExcerptText. The Debug book export tests check in the source that DebugBookExport selects the 10 most recently changed books and keeps the configured BooksPerFile. The Incremental file writing tests check in the source that the export files are written inside the book loop. The Book cache workflow tests check in the source that calibredb exports the UUID, that the cache lives in 01-Cache, that every book except failed extractions is cached and the cache files carry the cache version, that every read, written, and removed cache file is logged as INFO (no DEBUG entries), and that the cache cleanup runs before the date filter. The Books without text tests check in the source that calibredb exports the description, that books below $MinimumContentWords or without a supported file get ContentStatus NoText, and that their ContentHash is the metadata hash. The Export record tests check in the source that the export record holds the Uuid, Description, ContentStatus, ContentHash, and content profile fields and that the cache record adds Uuid only once. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script. The book folders are created under $TestDrive; Calibre is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '01-Export-CalibreBooks.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-MetadataHash', 'Get-CachedContentProfile', 'Get-WordCount', 'ConvertTo-PlainText', 'Select-ExcerptText')
+$functionNames = @('Get-BookFile', 'Get-PrimaryBookFile', 'ConvertTo-FormatDisplayText', 'Get-BookExportFileName', 'ConvertTo-JsonUtf8', 'Write-JsonFile', 'Test-CalibreUuid', 'Get-BookCachePath', 'Get-CachedBookExport', 'Write-BookCacheFile', 'Remove-StaleBookCacheFile', 'Get-ContentHash', 'Get-MetadataHash', 'Get-CachedContentProfile', 'Get-WordCount', 'ConvertTo-PlainText', 'Select-ExcerptText', 'Get-ChangedSinceDate')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -56,6 +56,44 @@ Describe '01-Export-CalibreBooks.ps1 source' {
         $range.MinRange | Should Be 0
         $range.MaxRange | Should Be 36500
         @($parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count | Should Be 0
+    }
+}
+
+Describe 'Get-ChangedSinceDate' {
+    $now = New-Object -TypeName DateTimeOffset -ArgumentList (New-Object -TypeName DateTime -ArgumentList 2026, 11, 25, 14, 30, 0)
+
+    It 'returns local midnight of today for 1' {
+        (Get-ChangedSinceDate -ChangedWithinDays 1 -Now $now).LocalDateTime | Should Be (New-Object -TypeName DateTime -ArgumentList 2026, 11, 25)
+    }
+
+    It 'returns local midnight of yesterday for 2' {
+        (Get-ChangedSinceDate -ChangedWithinDays 2 -Now $now).LocalDateTime | Should Be (New-Object -TypeName DateTime -ArgumentList 2026, 11, 24)
+    }
+
+    It 'returns local midnight six days ago for 7' {
+        (Get-ChangedSinceDate -ChangedWithinDays 7 -Now $now).LocalDateTime | Should Be (New-Object -TypeName DateTime -ArgumentList 2026, 11, 19)
+    }
+
+    It 'does not depend on the time of day' {
+        $startOfDay = New-Object -TypeName DateTimeOffset -ArgumentList (New-Object -TypeName DateTime -ArgumentList 2026, 11, 25, 0, 0, 0)
+        $endOfDay = New-Object -TypeName DateTimeOffset -ArgumentList (New-Object -TypeName DateTime -ArgumentList 2026, 11, 25, 23, 59, 59)
+        (Get-ChangedSinceDate -ChangedWithinDays 2 -Now $startOfDay) | Should Be (Get-ChangedSinceDate -ChangedWithinDays 2 -Now $endOfDay)
+    }
+
+    It 'converts a UTC time to local time before taking the date' {
+        $result = Get-ChangedSinceDate -ChangedWithinDays 1 -Now $now.ToUniversalTime()
+        $result.LocalDateTime | Should Be (New-Object -TypeName DateTime -ArgumentList 2026, 11, 25)
+        $result.LocalDateTime.TimeOfDay | Should Be ([TimeSpan]::Zero)
+    }
+
+    It 'rejects 0, which means no filter' {
+        { Get-ChangedSinceDate -ChangedWithinDays 0 -Now $now } | Should Throw
+    }
+
+    It 'is used by the date filter instead of a rolling window' {
+        $scriptText = [System.IO.File]::ReadAllText($scriptPath, [System.Text.Encoding]::UTF8)
+        $scriptText | Should Match '\$CutoffDate = Get-ChangedSinceDate -ChangedWithinDays \$ChangedWithinDays'
+        $scriptText | Should Not Match 'DateTimeOffset\]::Now\.AddDays'
     }
 }
 

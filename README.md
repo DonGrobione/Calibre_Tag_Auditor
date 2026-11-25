@@ -37,7 +37,7 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 - `CalibrePaths`: Ordered list of Calibre Portable installation directories. The first existing path is used.
 - `LibraryName`: Name of the Calibre library directory inside the selected Calibre Portable directory. Default: `Calibre Library`.
 - `BooksPerFile`: Maximum number of books in each JSON export file. Set to `0` to export all books to one file. Default: `10`. Keep this number low to prevent timeouts or other LLM processing issues. Each file is written as soon as it is full, so the files finished before an interrupted export are kept.
-- `ChangedWithinDays`: Exports only books changed within this number of days. Set to `0` to export all books regardless of modification date. Default: `1`. The parameter `-ChangedWithinDays` of `Invoke-CalibreToolsPipeline.ps1` and `01-Export-CalibreBooks.ps1` overrides this value for a single run without changing the file (see [Quick Start](#quick-start)).
+- `ChangedWithinDays`: Exports only books changed within this number of calendar days (local time): `0` = all books, `1` = today since 00:00, `2` = today and yesterday, and so on. The cutoff is local midnight of (today − (N − 1)), so the time of day the run starts does not matter. Default: `1`. The parameter `-ChangedWithinDays` of `Invoke-CalibreToolsPipeline.ps1` and `01-Export-CalibreBooks.ps1` overrides this value for a single run without changing the file (see [Quick Start](#quick-start)).
 - `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export only the 10 most recently changed books, split into files of `BooksPerFile` books. Use it for small test runs. Books without a valid modification date are excluded. Default: `false`.
 
 Depending on the size of your library and number of tags, changing the value of `ChangedWithinDays` may use a lot more tokens. Books without text (e.g. comics) also cause Google Search queries the first time they are checked (see [Books Without Text](#books-without-text)).
@@ -159,7 +159,7 @@ The script exports books and tags, validates the data with Gemini, and then crea
 To export a different period for a single run without editing `01-CalibreExport.config.json`, pass `-ChangedWithinDays`. The value from the configuration file stays the default for all runs without the parameter.
 
 ```powershell
-# Books changed within the last 7 days
+# Books changed today or on the previous 6 calendar days
 .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 7
 
 # All books
@@ -249,7 +249,7 @@ The quick start is normally sufficient. For troubleshooting, run the steps indiv
 - **"Content profile of ... has only N words":** Gemini wrote a profile that is shorter than `$MinimumProfileWords`. The profile is stored anyway. If this happens often, check the profile facets in `01-Cache/<uuid>.json`.
 - **LibreOffice was not found:** Install LibreOffice in a default location or adjust detection paths.
 - **The module DonGrobione.Logging was not found or is too old:** Install version 2.2.0 or later in the default PowerShell module path, or run `Update-DonGrobioneLogging`.
-- **No new books appear in the export:** By default, only books changed within the last 24 hours are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the remaining steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
+- **No new books appear in the export:** By default, only books changed today (since 00:00 local time) are exported. Run again with a higher `-ChangedWithinDays` value, or adjust `ChangedWithinDays` in `01-CalibreExport.config.json`; `0` exports all books. When no book matches, the pipeline logs a warning, skips the remaining steps, and ends without an error. The results of the previous run in `02-LLM-Result/` and `03-ODS/` are kept.
 
 ## Tests
 The Pester tests in `Tests/` cover the modules and the helper functions of the step scripts. They mock all external calls and need neither Calibre nor Gemini nor LibreOffice. They use Pester v4-compatible syntax (`Should Be`), which Pester 5 no longer supports. Windows PowerShell 5.1 ships with Pester 3.4.0, which runs the tests:

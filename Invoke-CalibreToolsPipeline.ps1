@@ -11,7 +11,7 @@
     Resume: a run can be cancelled (Ctrl+C) or stopped by a crash or power outage during the LLM step or the ODS conversion and continued later. After both export steps succeeded, the pipeline writes the run state file 02-LLM-Result\Pipeline-RunState.json (run timestamp, start time, FullContent, ChangedWithinDays, Status Running, Step 02-Process); after the LLM step it sets Step to 03-Convert, and after the ODS conversion Status to Completed. A new run deletes the old state file first, so a run interrupted during the export is simply started again. When a run is resumable (Status Running, its book export files and the tag export file still in 01-Export) and the pipeline is started without -Resume, it shows the progress and asks: [R]esume, [N]ew run, or [A]bort (an empty answer aborts). A resumed run skips both export steps and, at Step 03-Convert, also the LLM step; the LLM step runs with -Resume and the FullContent setting of the original run, so it keeps the existing results and skips every export file that already has a complete result. At most the export file in progress when the run stopped is processed again. The LLM step continues the token ledger of the earlier sessions, so the token and search query totals of the summary cover the whole run.
 
 .PARAMETER ChangedWithinDays
-    Exports only books changed within this number of days; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
+    Exports only books changed within this number of calendar days (local time): 1 is today since 00:00, 2 is today and yesterday, and so on; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
 
 .PARAMETER FullContent
     Passed to 02-Process-CalibreDataWithLLM.ps1, which then sends the full book text for every book instead of stored content profiles. Use it after tag definitions with new concepts were added.
@@ -25,7 +25,7 @@
 
 .EXAMPLE
     .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 7
-    Runs all steps for the books changed within the last 7 days.
+    Runs all steps for the books changed today or on the previous 6 calendar days.
 
 .EXAMPLE
     .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 0 -FullContent
@@ -36,7 +36,7 @@
     Continues the last run where it was cancelled or stopped.
 
 .NOTES
-    Version: 1.21
+    Version: 1.22
 #>
 
 [CmdletBinding()]

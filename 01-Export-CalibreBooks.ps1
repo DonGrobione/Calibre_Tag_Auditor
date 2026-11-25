@@ -13,18 +13,18 @@
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
 
 .PARAMETER ChangedWithinDays
-    Exports only books changed within this number of days; 0 exports all books. Overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used. Ignored when DebugBookExport is enabled.
+    Exports only books changed within this number of calendar days (local time): 1 is today since 00:00, 2 is today and yesterday, and so on; 0 exports all books. The cutoff is local midnight of (today - (N - 1)), so the time of day the run starts does not matter. Overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used. Ignored when DebugBookExport is enabled.
 
 .EXAMPLE
     .\01-Export-CalibreBooks.ps1
-    Exports the books changed within the number of days configured in 01-CalibreExport.config.json.
+    Exports the books changed within the number of calendar days configured in 01-CalibreExport.config.json.
 
 .EXAMPLE
     .\01-Export-CalibreBooks.ps1 -ChangedWithinDays 7
-    Exports the books changed within the last 7 days.
+    Exports the books changed today or on the previous 6 calendar days.
 
 .NOTES
-    Version: 5.2
+    Version: 5.3
 #>
 
 [CmdletBinding()]
@@ -82,6 +82,29 @@ try {
         throw "Calibre configuration '.\\01-CalibreExport.config.json' must define CalibrePaths, LibraryName, BooksPerFile, and ChangedWithinDays."
     }
 
+    # Returns local midnight of the first calendar day in the ChangedWithinDays window: today for 1, yesterday for 2, and so on.
+    function Get-ChangedSinceDate {
+        [CmdletBinding()]
+        [OutputType([DateTimeOffset])]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(1, 36500)]
+            [int]$ChangedWithinDays,
+            [Parameter()]
+            [DateTimeOffset]$Now = [DateTimeOffset]::Now
+        )
+
+        # Date has Kind Unspecified, so the constructor applies the local UTC offset valid on that date (correct across DST changes).
+        $FirstDay = $Now.ToLocalTime().Date.AddDays(1 - $ChangedWithinDays)
+        return New-Object -TypeName DateTimeOffset -ArgumentList $FirstDay
+    }
+
+    # Compute the calendar-day cutoff once; it is used for the log line, the filter, and the no-books warning.
+    $CutoffDate = $null
+    if (-not $DebugBookExport -and $ChangedWithinDays -gt 0) {
+        $CutoffDate = Get-ChangedSinceDate -ChangedWithinDays $ChangedWithinDays
+    }
+
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # Create the export folder and remove older book export files.
     $ExportDir = Join-Path $ScriptDir "01-Export"
@@ -113,7 +136,11 @@ try {
     Write-ScriptLog "Output:     $(ConvertTo-DisplayPath -Path $ExportDir -BasePath $PSScriptRoot)"
     Write-ScriptLog "Cache:      $(ConvertTo-DisplayPath -Path $CacheDir -BasePath $PSScriptRoot)"
     Write-ScriptLog "Books/file: $BooksPerFile"
-    Write-ScriptLog "Changed:    $ChangedWithinDays day(s) ($ChangedWithinDaysSource)"
+    if ($null -ne $CutoffDate) {
+        Write-ScriptLog ("Changed:    {0} calendar day(s), since {1} ({2})" -f $ChangedWithinDays, $CutoffDate.ToString('yyyy-MM-dd HH:mm'), $ChangedWithinDaysSource)
+    } else {
+        Write-ScriptLog "Changed:    $ChangedWithinDays calendar day(s) ($ChangedWithinDaysSource)"
+    }
     if ($DebugBookExport) {
         Write-ScriptLog "Debug:      10 books"
     }
@@ -426,7 +453,6 @@ try {
     } elseif ($ChangedWithinDays -eq 0) {
         $Books = @($BooksWithDates | Sort-Object LastModified -Descending | ForEach-Object Book)
     } else {
-        $CutoffDate = [DateTimeOffset]::Now.AddDays(-$ChangedWithinDays)
         $Books = @($BooksWithDates |
             Where-Object { $_.HasValidDate -and $_.LastModified -ge $CutoffDate } |
             Sort-Object LastModified -Descending |
@@ -441,7 +467,7 @@ try {
             Write-ScriptLog -Level WARN -Message "No books were found in the library. No book export file was written."
         }
         else {
-            Write-ScriptLog -Level WARN -Message "No books changed within the last $ChangedWithinDays day(s). No book export file was written. Run again with a higher -ChangedWithinDays value (0 exports all books), or change ChangedWithinDays in 01-CalibreExport.config.json."
+            Write-ScriptLog -Level WARN -Message "No books changed since $($CutoffDate.ToString('yyyy-MM-dd HH:mm')) ($ChangedWithinDays calendar day(s)). No book export file was written. Run again with a higher -ChangedWithinDays value (0 exports all books), or change ChangedWithinDays in 01-CalibreExport.config.json."
         }
         return
     }
