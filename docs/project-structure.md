@@ -1,0 +1,19 @@
+# Project Structure
+- `Invoke-CalibreToolsPipeline.ps1`: runs the complete workflow.
+- `01-Export-CalibreBooks.ps1`, `01-Export-CalibreTags.ps1`, `02-Process-CalibreDataWithLLM.ps1`, `03-Convert-LLMResults2ODS.ps1`: the individual workflow steps (see [Run Individual Steps](../README.md#run-individual-steps)).
+- `01-CalibreExport.config.json`: Calibre export configuration (see [Calibre Configuration](calibre-configuration.md)).
+- `02-CalibreDataLLM-Prompt.txt`: prompt for Gemini, sent as system instruction with every tag audit request.
+- `02-CalibreWebProfile-Prompt.txt`: prompt for the web profile requests of books without text (see [Books Without Text](../README.md#books-without-text)).
+- `02-CalibreContentProfile-Checklist.txt`: the fixed facets of a content profile, inserted into both prompts at the placeholder `{{CONTENT_PROFILE_CHECKLIST}}` (see [Content Profiles](content-profiles.md)).
+- `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
+  - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
+  - `Calibre.Console`: writes terminal and log output, converts paths into project-relative display paths, and formats run durations.
+  - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet, extracts the JSON from Gemini responses, writes JSON with readable `&`, `'`, `<`, and `>`, and checks Calibre UUIDs.
+  - `Calibre.Storage`: writes result and state files safely (temporary file, then replace), checks whether a result file is complete for `-Resume`, and reads the run timestamp from export and result file names.
+- `Tests/`: Pester tests for the modules and the step scripts.
+- `Secrets/`: Gemini API key file (not tracked by Git).
+- `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](../README.md#results)). `02-LLM-Result/` also holds the run state file `Pipeline-RunState.json` (see [Cancel And Resume A Run](../README.md#cancel-and-resume-a-run)) and the token ledger `LLM-TokenUsage.json` (see [Token Usage](token-usage.md)).
+- `01-Cache/`: one cached book export per book, reused by `01-Export-CalibreBooks.ps1` (see [Book Export Cache](book-export-cache.md)), including the book's content profile written by `02-Process-CalibreDataWithLLM.ps1` (see [Content Profiles](content-profiles.md)). Not tracked by Git.
+- `README.md`: overview, requirements, and usage.
+- `docs/`: detailed documentation, one file per topic.
+- `CHANGELOG.md`: notable changes and module versions.

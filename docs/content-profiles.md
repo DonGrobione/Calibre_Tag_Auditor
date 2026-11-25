@@ -1,0 +1,21 @@
+# Content Profiles
+The book text is about 95% of the input tokens that are sent to Gemini (about 40,000 tokens per book). To avoid sending the same text again on every re-check, Gemini writes a content profile for each book it receives with the full text. The profile is a factual English description of 400 to 700 words, structured in the fixed facets of `02-CalibreContentProfile-Checklist.txt`: form, fiction or non-fiction, franchise, genre, setting, magic and supernatural, science and technology, premise devices (e.g. isekai, reincarnation, time travel), progression and game mechanics, protagonists, relationships, romance and sexual content, conflict, violence, themes, tone, narrative perspective, target audience, and other notable elements. Each facet states the finding, `absent` (the source clearly shows the concept does not occur), or `unknown` (the source does not say).
+
+The facets do not depend on the tag definitions. A profile therefore stays useful when you add or change tags, and Gemini can tell a concept that was checked and found absent from one that the excerpt did not cover. The script logs a warning when a stored profile has fewer than 300 words (`$MinimumProfileWords`).
+
+- `02-Process-CalibreDataWithLLM.ps1` stores the profile in the book's cache file `01-Cache/<uuid>.json`, together with the `ContentHash` of the text it was written from. A profile is stored only when the cache file still holds the same text.
+- On the next export of the book, `01-Export-CalibreBooks.ps1` adds the profile to the export as long as the book text has the same `ContentHash`. This also applies when the book was changed in Calibre (e.g. after you applied tag corrections), because the text is extracted again and compared by hash.
+- `02-Process-CalibreDataWithLLM.ps1` then sends the profile instead of the full text, which costs about a thousand tokens instead of about 40,000. The log shows per file how many books were sent with full text or with a profile, and how many profiles were stored.
+- When the book file changes (the text has a different hash), the full text is sent again and a new profile is written.
+- `$ContentProfileVersion` near the top of `02-Process-CalibreDataWithLLM.ps1` is increased whenever the checklist or the profile instructions in a prompt change. Profiles with an older version are ignored and rebuilt. To rebuild all profiles of the exported books at once, use `-FullContent`.
+- A change of the excerpt or of the profile version is a one-time cost: every book is extracted again and sent once with its full text (and every book without text is searched once more) the next time it is exported. Afterwards, the profiles are used again.
+
+## Profile Gaps
+A profile can still miss a detail that a new or changed tag definition depends on. For each book sent with its profile, Gemini therefore lists every tag whose decision the profile cannot settle: the profile hints that the tag may apply, or that an existing tag may be wrong, but does not say enough to decide. Gemini still decides such a tag as well as the profile allows, so a decision is never dropped only because the tag is a gap, and the script refreshes the book in the same run:
+
+- A book with text is audited again with its full excerpt from the cache. Its results replace the first ones, and its new profile is stored.
+- A book without text gets a new web search with the definitions of the open tags as focus questions, and is then audited again with the new web profile. When the search finds nothing new, the existing profile and the first results are kept.
+
+Each profile stores fingerprints of the tag definitions that were already checked against the book's source in `ContentProfileTagHashes`. A profile written from the text records all tags. A web profile records only the tags its targeted searches covered. A gap leads to a refresh only for a tag that is new or whose definition changed since then, so the same gap never costs a second request. The log shows the profile gaps and refreshes per file and in the run summary, and each result file stores them in `profile_gaps` and `profile_refresh`.
+
+The book data and the tag definitions are also sent as compact JSON without indentation, which saves some more tokens.
