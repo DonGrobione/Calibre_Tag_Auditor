@@ -11,7 +11,7 @@
     Resume: a run can be cancelled (Ctrl+C) or stopped by a crash or power outage during the LLM step or the ODS conversion and continued later. After both export steps succeeded, the pipeline writes the run state file 02-LLM-Result\Pipeline-RunState.json (run timestamp, start time, FullContent, ChangedWithinDays, Status Running, Step 02-Process); after the LLM step it sets Step to 03-Convert, and after the ODS conversion Status to Completed. A new run deletes the old state file first, so a run interrupted during the export is simply started again. When a run is resumable (Status Running, its book export files and the tag export file still in 01-Export) and the pipeline is started without -Resume, it shows the progress and asks: [R]esume, [N]ew run, or [A]bort (an empty answer aborts). A resumed run skips both export steps and, at Step 03-Convert, also the LLM step; the LLM step runs with -Resume and the FullContent setting of the original run, so it keeps the existing results and skips every export file that already has a complete result. At most the export file in progress when the run stopped is processed again. The LLM step continues the token ledger of the earlier sessions, so the token and search query totals of the summary cover the whole run.
 
 .PARAMETER ChangedWithinDays
-    Exports only books changed within this number of days; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
+    Exports only books changed within this number of calendar days (local time): 1 is today since 00:00, 2 is today and yesterday, and so on; 0 exports all books. Passed to 01-Export-CalibreBooks.ps1, where it overrides ChangedWithinDays from 01-CalibreExport.config.json for this run without changing the file. When omitted, the value from the configuration is used.
 
 .PARAMETER FullContent
     Passed to 02-Process-CalibreDataWithLLM.ps1, which then sends the full book text for every book instead of stored content profiles. Use it after tag definitions with new concepts were added.
@@ -25,7 +25,7 @@
 
 .EXAMPLE
     .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 7
-    Runs all steps for the books changed within the last 7 days.
+    Runs all steps for the books changed today or on the previous 6 calendar days.
 
 .EXAMPLE
     .\Invoke-CalibreToolsPipeline.ps1 -ChangedWithinDays 0 -FullContent
@@ -36,7 +36,7 @@
     Continues the last run where it was cancelled or stopped.
 
 .NOTES
-    Version: 1.21
+    Version: 1.23
 #>
 
 [CmdletBinding()]
@@ -60,6 +60,14 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
+
+# Calibre.Storage provides the atomic file write, the result file check, and the export timestamp shared with the step scripts.
+$CalibreStorageModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Storage.psd1"
+if (-not (Test-Path -LiteralPath $CalibreStorageModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Storage.psd1'"
+}
+
+Import-Module -Name $CalibreStorageModulePath -Force
 
 # Clear the console to keep the output readable for each run.
 Clear-Host
@@ -147,7 +155,7 @@ function Get-PipelineRunState {
     return $state
 }
 
-# Writes the run state as UTF-8 JSON. The content goes to a temporary file first, which then replaces the state file, so an interruption never leaves a truncated state file.
+# Writes the run state as UTF-8 JSON through Save-AtomicTextFile (temporary file, then replace), so an interruption never leaves a truncated state file.
 function Save-PipelineRunState {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
@@ -163,16 +171,7 @@ function Save-PipelineRunState {
         return
     }
 
-    $temporaryPath = "$Path.tmp"
-    $json = $State | ConvertTo-Json -Depth 5
-    [System.IO.File]::WriteAllText($temporaryPath, $json, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        # [NullString]::Value passes a real null for the backup file; PowerShell would turn $null into an empty, invalid path.
-        [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
-    }
-    else {
-        [System.IO.File]::Move($temporaryPath, $Path)
-    }
+    Save-AtomicTextFile -Path $Path -Content ($State | ConvertTo-Json -Depth 5) -Confirm:$false
 }
 
 # Returns the timestamp of the book export files (the part yyyy-MM-dd_HH-mm-ss of 01-Export-CalibreBooks_<nn>_<timestamp>.json), or $null when there is no book export file.
@@ -190,8 +189,9 @@ function Get-BookExportTimestamp {
     }
 
     foreach ($exportFile in @(Get-ChildItem -LiteralPath $ExportDirectory -Filter '01-Export-CalibreBooks_*.json' -File | Sort-Object -Property Name)) {
-        if ($exportFile.Name -match '_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.json$') {
-            return $Matches[1]
+        $timestamp = Get-ExportTimestamp -FileName $exportFile.Name
+        if ($null -ne $timestamp) {
+            return $timestamp
         }
     }
 
@@ -247,18 +247,7 @@ function Get-ResumeProgress {
     $doneCount = 0
     foreach ($exportFile in $exportFiles) {
         $resultPath = Join-Path -Path $ResultDirectory -ChildPath ($exportFile.Name -replace '^01-Export-CalibreBooks_', 'LLM-Result_')
-        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            continue
-        }
-
-        try {
-            $result = [System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            continue
-        }
-
-        if ($null -ne $result -and $null -ne $result.PSObject.Properties['status'] -and [string]$result.status -ne 'error') {
+        if (Test-ResultFileComplete -Path $resultPath) {
             $doneCount++
         }
     }

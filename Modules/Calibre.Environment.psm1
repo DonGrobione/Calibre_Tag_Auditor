@@ -82,9 +82,10 @@ function Get-CalibreConfiguration {
         $PSCmdlet.ThrowTerminatingError((Get-CalibreErrorRecord -Exception $exception -ErrorId 'CalibreConfigurationIncomplete' -Category InvalidData))
     }
 
+    # ChangedWithinDays has the same range as the -ChangedWithinDays parameter of the scripts.
     if (-not $hasBooksPerFile -or $booksPerFile -lt 0 -or
-        -not $hasChangedWithinDays -or $changedWithinDays -lt 0) {
-        $exception = New-Object -TypeName System.IO.InvalidDataException -ArgumentList "Calibre configuration '$ConfigurationPath' must define BooksPerFile and ChangedWithinDays as values greater than or equal to zero."
+        -not $hasChangedWithinDays -or $changedWithinDays -lt 0 -or $changedWithinDays -gt 36500) {
+        $exception = New-Object -TypeName System.IO.InvalidDataException -ArgumentList "Calibre configuration '$ConfigurationPath' must define BooksPerFile as a value greater than or equal to zero and ChangedWithinDays as a value from 0 to 36500."
         $PSCmdlet.ThrowTerminatingError((Get-CalibreErrorRecord -Exception $exception -ErrorId 'CalibreConfigurationInvalidValue' -Category InvalidData))
     }
 
@@ -134,7 +135,7 @@ function Get-CalibreEnvironment {
     }
 }
 
-# Finds a named executable file (such as calibredb.exe or calibre-debug.exe) within the Calibre installation path.
+# Finds a named executable file (such as calibredb.exe or calibre-debug.exe) within the Calibre installation path: first in <CalibrePath>\Calibre (the Calibre Portable layout) and <CalibrePath>, then recursively in the other subfolders. Folders that contain a metadata.db are Calibre libraries and are never searched, so a large library does not slow the search down and no file from it is used.
 function Get-CalibreExecutable {
     [CmdletBinding()]
     [OutputType([System.IO.FileInfo])]
@@ -148,8 +149,26 @@ function Get-CalibreExecutable {
         [string]$Name
     )
 
-    $executable = Get-ChildItem -LiteralPath $CalibrePath -Filter $Name -File -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+    $executable = $null
+    foreach ($candidateFolder in @((Join-Path -Path $CalibrePath -ChildPath 'Calibre'), $CalibrePath)) {
+        $candidatePath = Join-Path -Path $candidateFolder -ChildPath $Name
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            $executable = Get-Item -LiteralPath $candidatePath
+            break
+        }
+    }
+
+    if (-not $executable -and (Test-Path -LiteralPath $CalibrePath -PathType Container)) {
+        $searchFolders = @(Get-ChildItem -LiteralPath $CalibrePath -Directory -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-Path -LiteralPath (Join-Path -Path $_.FullName -ChildPath 'metadata.db') -PathType Leaf) })
+        foreach ($searchFolder in $searchFolders) {
+            $executable = Get-ChildItem -LiteralPath $searchFolder.FullName -Filter $Name -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($executable) {
+                break
+            }
+        }
+    }
 
     if (-not $executable) {
         $exception = New-Object -TypeName System.IO.FileNotFoundException -ArgumentList "$Name was not found in '$CalibrePath'."

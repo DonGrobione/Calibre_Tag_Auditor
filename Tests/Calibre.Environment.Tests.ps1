@@ -150,6 +150,18 @@ Describe 'Get-CalibreConfiguration' {
             $caught.FullyQualifiedErrorId | Should Be 'CalibreConfigurationInvalidValue,Get-CalibreConfiguration'
         }
 
+        It 'raises CalibreConfigurationInvalidValue for a ChangedWithinDays above 36500' {
+            Set-Content -LiteralPath $configPath -Value '{ "CalibrePaths": ["C:\\A"], "LibraryName": "Lib", "BooksPerFile": 1, "ChangedWithinDays": 36501 }'
+            $caught = $null
+            try { Get-CalibreConfiguration -ConfigurationPath $configPath } catch { $caught = $_ }
+            $caught.FullyQualifiedErrorId | Should Be 'CalibreConfigurationInvalidValue,Get-CalibreConfiguration'
+        }
+
+        It 'accepts ChangedWithinDays 36500, the upper limit of the script parameter' {
+            Set-Content -LiteralPath $configPath -Value '{ "CalibrePaths": ["C:\\A"], "LibraryName": "Lib", "BooksPerFile": 1, "ChangedWithinDays": 36500 }'
+            (Get-CalibreConfiguration -ConfigurationPath $configPath).ChangedWithinDays | Should Be 36500
+        }
+
         It 'rejects an empty path' {
             { Get-CalibreConfiguration -ConfigurationPath '' } | Should Throw
         }
@@ -206,6 +218,33 @@ Describe 'Get-CalibreExecutable' {
         $executable = Get-CalibreExecutable -CalibrePath $installationPath -Name 'calibredb.exe'
         $executable -is [System.IO.FileInfo] | Should Be $true
         $executable.FullName | Should Be (Join-Path -Path $executableFolder -ChildPath 'calibredb.exe')
+    }
+
+    It 'finds an executable directly in the installation folder' {
+        $rootInstallation = Join-Path -Path $TestDrive -ChildPath 'Root Install'
+        New-Item -Path $rootInstallation -ItemType Directory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path -Path $rootInstallation -ChildPath 'calibre-debug.exe') -Value ''
+        (Get-CalibreExecutable -CalibrePath $rootInstallation -Name 'calibre-debug.exe').FullName | Should Be (Join-Path -Path $rootInstallation -ChildPath 'calibre-debug.exe')
+    }
+
+    It 'searches other subfolders recursively when the standard folders hold no executable' {
+        $otherInstallation = Join-Path -Path $TestDrive -ChildPath 'Other Install'
+        $nestedFolder = Join-Path -Path $otherInstallation -ChildPath 'App\bin'
+        New-Item -Path $nestedFolder -ItemType Directory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path -Path $nestedFolder -ChildPath 'ebook-convert.exe') -Value ''
+        (Get-CalibreExecutable -CalibrePath $otherInstallation -Name 'ebook-convert.exe').FullName | Should Be (Join-Path -Path $nestedFolder -ChildPath 'ebook-convert.exe')
+    }
+
+    It 'never searches a Calibre library folder (a folder with metadata.db)' {
+        $libraryInstallation = Join-Path -Path $TestDrive -ChildPath 'Library Install'
+        $libraryFolder = Join-Path -Path $libraryInstallation -ChildPath 'Calibre Library'
+        $bookFolder = Join-Path -Path $libraryFolder -ChildPath 'Author\Book'
+        New-Item -Path $bookFolder -ItemType Directory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path -Path $libraryFolder -ChildPath 'metadata.db') -Value ''
+        Set-Content -LiteralPath (Join-Path -Path $bookFolder -ChildPath 'calibredb.exe') -Value ''
+        $caught = $null
+        try { Get-CalibreExecutable -CalibrePath $libraryInstallation -Name 'calibredb.exe' } catch { $caught = $_ }
+        $caught.FullyQualifiedErrorId | Should Be 'CalibreExecutableNotFound,Get-CalibreExecutable'
     }
 
     It 'raises CalibreExecutableNotFound for a missing executable' {

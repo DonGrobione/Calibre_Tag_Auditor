@@ -1,6 +1,25 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-11-25
+
+### Modules
+- `Calibre.Storage` 1.0.0: new module with `Save-AtomicTextFile` (write through a temporary file, then replace), `Test-ResultFileComplete`, and `Get-ExportTimestamp`. It replaces `Save-ResultFile` and `Test-ResultFileComplete` of `02-Process-CalibreDataWithLLM.ps1`, the write logic of `Save-PipelineRunState` and the result check of `Get-ResumeProgress` in `Invoke-CalibreToolsPipeline.ps1`, and the timestamp regex of the pipeline and `03-Convert-LLMResults2ODS.ps1`. Result files and the token ledger are now written as UTF-8 without BOM; all readers accept both. With tests.
+- `Calibre.Text` 1.1.0: `Get-JsonText` moved here (it was duplicated in `02-Process-CalibreDataWithLLM.ps1` and `03-Convert-LLMResults2ODS.ps1`), `Test-CalibreUuid` moved here from `01-Export-CalibreBooks.ps1` (`Update-BookCacheProfile` had its own copy of the regex), and the new `Restore-JsonEscapedCharacter` replaces the identical regex in `ConvertTo-JsonUtf8` and `ConvertTo-CompactJson`. `Repair-MojibakeText` is an advanced function. With tests.
+- `Calibre.Environment` 1.4.0: `Get-CalibreExecutable` looks in `<CalibrePath>\Calibre` and `<CalibrePath>` first and never searches a Calibre library (a folder with `metadata.db`); before, it walked recursively through every book folder, three times per run. `Get-CalibreConfiguration` accepts `ChangedWithinDays` only from 0 to 36500, the range of the `-ChangedWithinDays` parameter. With tests.
+
+### Scripts
+- Fixes and cleanup after a code review. With tests.
+  - `02-Process-CalibreDataWithLLM.ps1` 7.6: the unique-book count of the input now uses Title and Author only, like the result records. Before, two books with the same title and author but a different series index gave "input=2, output=1", and the file was retried with full token cost every time. Requests no longer wait after the last failed attempt (up to 5 minutes after a 504); the setting is now called `$MaxRequestAttempts` (still 3 attempts in total) and `$MaxContentRetries` is `$MaxContentAttempts`. New function `Get-RetryWaitSecond`. An export file that is not valid JSON is no longer sent with an empty book list; it gets a result file with status error. No pause after the last file. A response without text is saved as an invalid response instead of as its own JSON. `Convert-ResponseTextToResultObject` takes the model from `$script:Model`; `Get-BookIdentityKey` and `Get-UniqueBookCount` take only the book or the items.
+  - `01-Export-CalibreTags.ps1` 3.8: an error before the temporary Python script was created (e.g. Calibre not found) is no longer replaced by an error of the cleanup in `finally`. The temporary script has a unique name.
+  - `03-Convert-LLMResults2ODS.ps1` 1.9: removed the fallbacks for the old German field names (`Titel`, `Autor`, `Aktion`, `Begründung`), `Action`, and bare result arrays, which the LLM step has not written for a long time. `Set-ConfigItemValue` (7 parameters, defined inside a loop) is replaced by `Set-OdsConfigItem`. Lists replace `+=` on arrays.
+  - `01-Export-CalibreBooks.ps1` 5.4: imports `Calibre.Text`; `Get-BookContent` collects the text lines in a list instead of copying an array for every line.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.23: uses `Calibre.Storage`.
+  - All functions are advanced functions (`[CmdletBinding()]`) with `[OutputType()]` where they return a value, and none has more than three parameters. Removed the test for the tag definition baseline that was removed earlier.
+- `ChangedWithinDays` now counts calendar days in local time instead of a rolling window of N × 24 hours, so the time of day a run starts no longer changes which books are exported: `0` = all books, `1` = today since 00:00, `2` = today and yesterday, and so on. With tests.
+  - `01-Export-CalibreBooks.ps1` 5.3: new function `Get-ChangedSinceDate` returns local midnight of (today − (N − 1)) as cutoff. The startup log line and the no-books warning show the cutoff date.
+  - `Invoke-CalibreToolsPipeline.ps1` 1.22: help text for `-ChangedWithinDays` updated.
+
 ## 2026-11-05
 
 ### Scripts

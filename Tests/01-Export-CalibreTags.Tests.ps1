@@ -3,7 +3,7 @@
     Pester tests for the source of 01-Export-CalibreTags.ps1.
 
 .DESCRIPTION
-    The script runs its whole workflow when it is executed (Calibre's calibre-debug.exe and a temporary Python script), so the tests only parse it. They check that it parses without errors, that the Python boundary is encoding-safe (script written as UTF-8 without BOM, JSON written as UTF-8, ASCII-only error output, database path bound as SQL parameter), and that it imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
+    The script runs its whole workflow when it is executed (Calibre's calibre-debug.exe and a temporary Python script), so the tests only parse it. They check that it parses without errors, that the temporary Python script has a unique name and its cleanup cannot mask an earlier error, that the Python boundary is encoding-safe (script written as UTF-8 without BOM, JSON written as UTF-8, ASCII-only error output, database path bound as SQL parameter), and that it imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
 .EXAMPLE
@@ -18,6 +18,21 @@ $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPa
 Describe '01-Export-CalibreTags.ps1 source' {
     It 'parses without errors' {
         @($parseErrors).Count | Should Be 0
+    }
+}
+
+Describe 'Temporary Python script cleanup' {
+    It 'sets $TempScript to $null before the try block, so an early error keeps its own message' {
+        $scriptAst.Extent.Text | Should Match '(?s)\$TempScript = \$null\s+try \{'
+    }
+
+    It 'removes the temporary script in finally only when it was set and exists' {
+        $scriptAst.Extent.Text | Should Match 'if \(\$TempScript -and \(Test-Path -LiteralPath \$TempScript -PathType Leaf\)\) \{'
+        $scriptAst.Extent.Text | Should Not Match 'Test-Path -Path \$TempScript\)'
+    }
+
+    It 'gives the temporary script a unique name in $env:TEMP' {
+        $scriptAst.Extent.Text | Should Match 'Join-Path -Path \$env:TEMP -ChildPath \("calibre_export_\{0\}\.py" -f \[Guid\]::NewGuid\(\)'
     }
 }
 

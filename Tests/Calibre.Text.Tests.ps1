@@ -3,7 +3,7 @@
     Pester tests for the Calibre.Text module.
 
 .DESCRIPTION
-    Covers Repair-MojibakeText: garbled umlauts and typographic characters from Windows-1252 and ISO-8859-1 are repaired, text garbled twice is repaired, and correct text (also next to garbled text and with characters outside ISO-8859-1) stays unchanged.
+    Covers the manifest and Repair-MojibakeText: garbled umlauts and typographic characters from Windows-1252 and ISO-8859-1 are repaired, text garbled twice is repaired, and correct text (also next to garbled text and with characters outside ISO-8859-1) stays unchanged. Covers Get-JsonText (JSON inside prose and code fences, brackets inside strings, unclosed brackets), Restore-JsonEscapedCharacter (only the &, apostrophe, <, and > escapes change), and Test-CalibreUuid.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
 .EXAMPLE
@@ -16,8 +16,8 @@ Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Te
 Describe 'Calibre.Text manifest' {
     $manifest = Test-ModuleManifest -Path (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Text.psd1')
 
-    It 'exports only Repair-MojibakeText' {
-        @($manifest.ExportedFunctions.Keys) -join ',' | Should Be 'Repair-MojibakeText'
+    It 'exports exactly the public functions' {
+        (@($manifest.ExportedFunctions.Keys) | Sort-Object) -join ',' | Should Be 'Get-JsonText,Repair-MojibakeText,Restore-JsonEscapedCharacter,Test-CalibreUuid'
     }
 
     It 'requires PowerShell 5.1 and names the author' {
@@ -87,5 +87,72 @@ Describe 'Repair-MojibakeText keeps characters outside ISO-8859-1' {
         $japanese = [string][char]0x3088 + [char]0x3046 + [char]0x3053 + [char]0x305D
         $text = "$japanese $([char]0x2013) M$([char]0xC3)$([char]0xBC)ller"
         Repair-MojibakeText -Text $text | Should BeExactly "$japanese $([char]0x2013) M$([char]0xFC)ller"
+    }
+}
+
+Describe 'Get-JsonText' {
+    It 'returns the first complete JSON object from text with prose and code fences around it' {
+        Get-JsonText -RawText 'Here you go: ```json {"Results":[{"Title":"A"}]} ``` Done.' | Should BeExactly '{"Results":[{"Title":"A"}]}'
+    }
+
+    It 'returns an array that starts before the first object' {
+        Get-JsonText -RawText 'x [{"a":1},{"b":2}] y' | Should BeExactly '[{"a":1},{"b":2}]'
+    }
+
+    It 'ignores brackets and escaped quotes inside strings' {
+        $text = '{"Reason":"uses [brackets] and \"quotes\" {here}"} trailing }'
+        Get-JsonText -RawText $text | Should BeExactly '{"Reason":"uses [brackets] and \"quotes\" {here}"}'
+    }
+
+    It 'returns the text up to the last closing bracket when the brackets never close' {
+        Get-JsonText -RawText '{"a":[1,2]' | Should BeExactly '{"a":[1,2]'
+    }
+
+    It 'returns $null for text without JSON and for empty text' {
+        Get-JsonText -RawText 'no json here' | Should Be $null
+        Get-JsonText -RawText '' | Should Be $null
+        Get-JsonText -RawText $null | Should Be $null
+    }
+}
+
+Describe 'Restore-JsonEscapedCharacter' {
+    It 'turns the escapes for &, apostrophe, <, and > back into the characters' {
+        $json = ConvertTo-Json -InputObject ([pscustomobject]@{ Text = "it's <b> & more" }) -Compress
+        $restored = Restore-JsonEscapedCharacter -Json $json
+        $restored | Should BeExactly '{"Text":"it''s <b> & more"}'
+        (ConvertFrom-Json -InputObject $restored).Text | Should BeExactly "it's <b> & more"
+    }
+
+    It 'keeps control character escapes' {
+        $json = ConvertTo-Json -InputObject ([pscustomobject]@{ Text = 'a' + [char]0x01 + 'b' }) -Compress
+        $restored = Restore-JsonEscapedCharacter -Json $json
+        $restored | Should Match '\\u0001'
+        (ConvertFrom-Json -InputObject $restored).Text | Should BeExactly ('a' + [char]0x01 + 'b')
+    }
+
+    It 'keeps literal backslash-u text whose backslash is escaped' {
+        # Built from parts, so no editor turns the escape sequences into characters.
+        $text = 'literal \' + 'u0026 stays'
+        $json = ConvertTo-Json -InputObject ([pscustomobject]@{ Text = $text }) -Compress
+        (ConvertFrom-Json -InputObject (Restore-JsonEscapedCharacter -Json $json)).Text | Should BeExactly $text
+    }
+
+    It 'returns empty text unchanged' {
+        Restore-JsonEscapedCharacter -Json '' | Should BeExactly ''
+    }
+}
+
+Describe 'Test-CalibreUuid' {
+    It 'accepts a canonical UUID in any case' {
+        Test-CalibreUuid -Uuid '0f8fad5b-d9cb-469f-a165-70867728950e' | Should Be $true
+        Test-CalibreUuid -Uuid '0F8FAD5B-D9CB-469F-A165-70867728950E' | Should Be $true
+    }
+
+    It 'rejects empty, braced, and path-like values' {
+        Test-CalibreUuid -Uuid '' | Should Be $false
+        Test-CalibreUuid -Uuid $null | Should Be $false
+        Test-CalibreUuid -Uuid '{0f8fad5b-d9cb-469f-a165-70867728950e}' | Should Be $false
+        Test-CalibreUuid -Uuid '..\0f8fad5b-d9cb-469f-a165-70867728950e' | Should Be $false
+        Test-CalibreUuid -Uuid "0f8fad5b-d9cb-469f-a165-70867728950e`n" | Should Be $false
     }
 }
