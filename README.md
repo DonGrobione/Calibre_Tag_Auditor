@@ -1,14 +1,13 @@
 # Calibre Tag Auditor
 Calibre Tag Auditor exports (updated) book data from Calibre, validates it with Google Gemini, and converts the results directly into an ODS review worksheet with LibreOffice. The generated ODS file serves as a review worksheet: use it to inspect the suggested tag corrections, identify missing or incorrect tags, and apply the corrections back in Calibre.
 
-I started this project because I have several thousand books and lost track of the consistency of my defined tags, especially as metadata downloads introduce new and undefined tags to my library.
+>I started this project because I have several thousand books and lost track of the consistency of my defined tags, especially as metadata downloads introduce new and undefined tags to my library.
 
 ## Requirements
 - Windows with PowerShell 5.1 or later
 - PowerShell module [DonGrobione.Logging](https://github.com/DonGrobione/Logging) version 2.2.0 or later, installed in the default PowerShell module path. This project does not install, bundle, or update it.
 - LibreOffice (current standard installation; headless conversion support required)
-- Calibre's embedded Python is used for the tag export step
-- No separate system Python installation is required for ODS conversion
+- Calibre's embedded Python is used for the tag export step. No separate system Python installation is required for ODS conversion
 - A Google Gemini API key with access to the configured model (`gemini-3.8-flash`), stored in `Secrets/Gemini_API.json.key` (see [Google Gemini](#google-gemini))
 - Calibre Portable or a fixed installation. I use the portable version and sync it across devices via cloud storage.
 - Every Calibre tag must have a definition in the tag notes.
@@ -42,6 +41,8 @@ Configure the Calibre export scripts centrally in `01-CalibreExport.config.json`
 - `DebugBookExport`: Set to `true` to ignore `ChangedWithinDays` and export only the 10 most recently changed books, split into files of `BooksPerFile` books. Use it for small test runs. Books without a valid modification date are excluded. Default: `false`.
 
 Depending on the size of your library and number of tags, changing the value of `ChangedWithinDays` may use a lot more tokens. Books without text (e.g. comics) also cause Google Search queries the first time they are checked (see [Books Without Text](#books-without-text)).
+
+>A full run on my library (~2300 books), including the creation of all content profiles, took about 37 hours and cost a considerable amount in tokens.
 
 ## Exported Calibre Fields
 The book export contains the following fields from Calibre:
