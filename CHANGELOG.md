@@ -3,6 +3,9 @@ All notable changes to this project are documented in this file. The format is b
 
 ## 2026-11-25
 
+### Documentation
+- README.md: new section "Data, Privacy And Copyright". It describes, independent of the LLM provider, what the tag audit and web profile requests send, how the provider's plan and terms affect data use, which local folders and logs hold book excerpts or metadata, the user's responsibility for copyright, and how to limit what is sent. The data note in "AI Usage" now points to this section, and the "Independent Project Notice" is shortened.
+
 ### Modules
 - `Calibre.Storage` 1.0.0: new module with `Save-AtomicTextFile` (write through a temporary file, then replace), `Test-ResultFileComplete`, and `Get-ExportTimestamp`. It replaces `Save-ResultFile` and `Test-ResultFileComplete` of `02-Process-CalibreDataWithLLM.ps1`, the write logic of `Save-PipelineRunState` and the result check of `Get-ResumeProgress` in `Invoke-CalibreToolsPipeline.ps1`, and the timestamp regex of the pipeline and `03-Convert-LLMResults2ODS.ps1`. Result files and the token ledger are now written as UTF-8 without BOM; all readers accept both. With tests.
 - `Calibre.Text` 1.1.0: `Get-JsonText` moved here (it was duplicated in `02-Process-CalibreDataWithLLM.ps1` and `03-Convert-LLMResults2ODS.ps1`), `Test-CalibreUuid` moved here from `01-Export-CalibreBooks.ps1` (`Update-BookCacheProfile` had its own copy of the regex), and the new `Restore-JsonEscapedCharacter` replaces the identical regex in `ConvertTo-JsonUtf8` and `ConvertTo-CompactJson`. `Repair-MojibakeText` is an advanced function. With tests.
