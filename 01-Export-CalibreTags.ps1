@@ -11,7 +11,7 @@
     Optional custom output file path. If omitted, a timestamped file is created in the 01-Export folder.
 
 .NOTES
-    Version: 3.7
+    Version: 3.8
 #>
 
 [CmdletBinding()]
@@ -41,6 +41,9 @@ $ownsLogSession = -not (Test-LogSession)
 if ($ownsLogSession) {
     Start-Log -LogDirectory 'Calibre_Tag_Auditor' -MaxFileSizeMB 0
 }
+
+# Set before try, so the cleanup in finally can tell whether the temporary script was created; an error before that point keeps its own message.
+$TempScript = $null
 
 try {
     # Enable strict error handling for the tag export workflow.
@@ -84,8 +87,8 @@ try {
 
     # Prepare the target path and a temporary Python script for the data export.
     $FullOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
-    $TempDir = $env:TEMP
-    $TempScript = Join-Path $TempDir "calibre_export_temp.py"
+    # A unique name, so two runs at the same time cannot overwrite each other's script.
+    $TempScript = Join-Path -Path $env:TEMP -ChildPath ("calibre_export_{0}.py" -f [Guid]::NewGuid().ToString('N'))
 
     Write-ScriptLog "Found:      $(ConvertTo-DisplayPath -Path $CalibrePortablePath -BasePath $PSScriptRoot)"
     Write-ScriptLog "Tool:       $(ConvertTo-DisplayPath -Path $CalibreDebugExe.FullName -BasePath $PSScriptRoot)"
@@ -182,7 +185,7 @@ finally {
     if ($ownsLogSession) {
         Stop-Log
     }
-    if (Test-Path -Path $TempScript) {
-        Remove-Item -Path $TempScript -Force -ErrorAction SilentlyContinue
+    if ($TempScript -and (Test-Path -LiteralPath $TempScript -PathType Leaf)) {
+        Remove-Item -LiteralPath $TempScript -Force -ErrorAction SilentlyContinue
     }
 }
