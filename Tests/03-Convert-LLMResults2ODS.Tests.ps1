@@ -3,7 +3,7 @@
     Pester tests for the JSON, CSV, and LibreOffice functions in 03-Convert-LLMResults2ODS.ps1.
 
 .DESCRIPTION
-    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile (with NOT_AUDITED records from missing_books via ConvertTo-NotAuditedRecord), ConvertTo-CsvRow, the input file filter (only LLM-Result_*.json), Invoke-LibreOfficeConversion, and Set-ConfigItemValue. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
+    Covers Test-JsonText, Repair-JsonText, Convert-JsonValue (with the strict mojibake repair of the Calibre.Text module, which keeps characters outside ISO-8859-1), Get-BookRecordFromJsonFile (with NOT_AUDITED records from missing_books via ConvertTo-NotAuditedRecord), ConvertTo-CsvRow (English field names only), the input file filter (only LLM-Result_*.json), Invoke-LibreOfficeConversion, and Set-OdsConfigItem. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Start-Process is mocked; LibreOffice is not started.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -15,7 +15,7 @@ $projectRoot = Split-Path -Path $PSScriptRoot -Parent
 $scriptPath = Join-Path -Path $projectRoot -ChildPath '03-Convert-LLMResults2ODS.ps1'
 $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
-$functionNames = @('Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-JsonText', 'Get-ParsedJsonObjectFromFile', 'ConvertTo-NotAuditedRecord', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-ConfigItemValue')
+$functionNames = @('Test-JsonText', 'Repair-JsonText', 'Convert-JsonValue', 'Get-ParsedJsonObjectFromFile', 'ConvertTo-NotAuditedRecord', 'Get-BookRecordFromJsonFile', 'ConvertTo-CsvRow', 'Invoke-LibreOfficeConversion', 'Set-OdsConfigItem')
 foreach ($functionName in $functionNames) {
     $definition = $scriptAst.Find({
             param($node)
@@ -24,7 +24,7 @@ foreach ($functionName in $functionNames) {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
 
-# Repair-MojibakeText comes from the Calibre.Text module, as in the script.
+# Repair-MojibakeText and Get-JsonText come from the Calibre.Text module, as in the script.
 Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Text.psd1') -Force
 
 # Stands in for the Calibre.Console logging helper so the tests write no log file.
@@ -128,16 +128,23 @@ Describe 'Get-BookRecordFromJsonFile' {
     Set-Content -LiteralPath $arrayFile -Encoding UTF8 -Value 'Response: [ { "Title": "C" } ] trailing text'
     Set-Content -LiteralPath $brokenFile -Encoding UTF8 -Value 'no json here'
 
-    It 'returns the records of wrapped results and bare arrays' {
+    It 'returns the records of result objects' {
+        $records = Get-BookRecordFromJsonFile -Files @(Get-Item -LiteralPath $wrappedFile)
+        (@($records) | ForEach-Object { $_.Title }) -join ',' | Should Be 'A,B'
+    }
+
+    It 'skips a bare array, which the LLM step never writes, with a warning' {
+        Mock Write-ScriptLog { }
         $records = Get-BookRecordFromJsonFile -Files @((Get-Item -LiteralPath $wrappedFile), (Get-Item -LiteralPath $arrayFile))
-        (@($records) | ForEach-Object { $_.Title }) -join ',' | Should Be 'A,B,C'
+        (@($records) | ForEach-Object { $_.Title }) -join ',' | Should Be 'A,B'
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'no records property' }
     }
 
     It 'skips unreadable files with a warning' {
         Mock Write-ScriptLog { }
-        $records = Get-BookRecordFromJsonFile -Files @((Get-Item -LiteralPath $brokenFile), (Get-Item -LiteralPath $arrayFile))
-        @($records).Count | Should Be 1
-        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' }
+        $records = Get-BookRecordFromJsonFile -Files @((Get-Item -LiteralPath $brokenFile), (Get-Item -LiteralPath $wrappedFile))
+        @($records).Count | Should Be 2
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'Failed to process' }
     }
 
     It 'adds a NOT_AUDITED record for every book in missing_books' {
@@ -192,20 +199,15 @@ Describe 'ConvertTo-CsvRow' {
         $row.Reason | Should Be 'R'
     }
 
-    It 'maps the German property names' {
-        $reasonName = 'Begr' + [char]0x00FC + 'ndung'
-        $item = [pscustomobject]@{ Titel = 'T'; Autor = 'A'; Aktion = 'REMOVE' }
-        $item | Add-Member -NotePropertyName $reasonName -NotePropertyValue 'Grund'
-        $row = ConvertTo-CsvRow -Objects @($item)
-        $row.Title | Should Be 'T'
-        $row.Author | Should Be 'A'
-        $row.ProposedAction | Should Be 'REMOVE'
-        $row.Reason | Should Be 'Grund'
+    It 'keeps the column order Title, Author, ProposedAction, Tag, Reason' {
+        $row = ConvertTo-CsvRow -Objects @([pscustomobject]@{ Reason = 'R'; Tag = 'X'; Title = 'T'; ProposedAction = 'ADD'; Author = 'A' })
+        @($row.PSObject.Properties.Name) -join ',' | Should Be 'Title,Author,ProposedAction,Tag,Reason'
     }
 
-    It 'falls back to the Action property when ProposedAction is missing' {
-        $row = ConvertTo-CsvRow -Objects @([pscustomobject]@{ Title = 'T'; Action = 'NO_CHANGES' })
-        $row.ProposedAction | Should Be 'NO_CHANGES'
+    It 'no longer reads the legacy German or Action field names' {
+        $row = @(ConvertTo-CsvRow -Objects @([pscustomobject]@{ Title = 'T'; Titel = 'Old'; Action = 'NO_CHANGES'; Aktion = 'REMOVE' }))[0]
+        $row.Title | Should Be 'T'
+        $row.ProposedAction | Should Be $null
     }
 
     It 'skips records without title, author, action, and reason' {
@@ -236,28 +238,31 @@ Describe 'Invoke-LibreOfficeConversion' {
     }
 }
 
-Describe 'Set-ConfigItemValue' {
+Describe 'Set-OdsConfigItem' {
     $configNamespace = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
     $document = New-Object -TypeName System.Xml.XmlDocument
-    $document.LoadXml("<config:config-item-map-entry xmlns:config=`"$configNamespace`"><config:config-item config:name=`"ZoomValue`" config:type=`"int`">80</config:config-item></config:config-item-map-entry>")
+    $document.LoadXml("<config:config-item-map-entry xmlns:config=`"$configNamespace`"><config:config-item config:name=`"ZoomValue`" config:type=`"short`">80</config:config-item></config:config-item-map-entry>")
     $namespaceManager = New-Object -TypeName System.Xml.XmlNamespaceManager -ArgumentList $document.NameTable
     $namespaceManager.AddNamespace('config', $configNamespace)
     $parent = $document.DocumentElement
 
-    It 'updates an existing config item' {
-        Set-ConfigItemValue -Parent $parent -Document $document -NamespaceManager $namespaceManager -ConfigNamespace $configNamespace -Name 'ZoomValue' -Type 'int' -Value '100'
-        $parent.SelectSingleNode("config:config-item[@config:name='ZoomValue']", $namespaceManager).InnerText | Should Be '100'
+    It 'updates the type and value of an existing config item' {
+        Set-OdsConfigItem -Parent $parent -Item ([ordered]@{ ZoomValue = @('int', '100') })
+        $node = $parent.SelectSingleNode("config:config-item[@config:name='ZoomValue']", $namespaceManager)
+        $node.InnerText | Should Be '100'
+        $node.GetAttribute('type', $configNamespace) | Should Be 'int'
     }
 
-    It 'adds a missing config item with name and type' {
-        Set-ConfigItemValue -Parent $parent -Document $document -NamespaceManager $namespaceManager -ConfigNamespace $configNamespace -Name 'ShowGrid' -Type 'boolean' -Value 'true'
+    It 'adds missing config items with name and type in the given order' {
+        Set-OdsConfigItem -Parent $parent -Item ([ordered]@{ ShowGrid = @('boolean', 'true'); PositionTop = @('int', '0') })
         $node = $parent.SelectSingleNode("config:config-item[@config:name='ShowGrid']", $namespaceManager)
         $node.InnerText | Should Be 'true'
         $node.GetAttribute('type', $configNamespace) | Should Be 'boolean'
+        @($parent.SelectNodes('config:config-item', $namespaceManager) | ForEach-Object { $_.GetAttribute('name', $configNamespace) }) -join ',' | Should Be 'ZoomValue,ShowGrid,PositionTop'
     }
 
     It 'changes nothing with -WhatIf' {
-        Set-ConfigItemValue -Parent $parent -Document $document -NamespaceManager $namespaceManager -ConfigNamespace $configNamespace -Name 'ZoomValue' -Type 'int' -Value '50' -WhatIf
+        Set-OdsConfigItem -Parent $parent -Item ([ordered]@{ ZoomValue = @('int', '50') }) -WhatIf
         $parent.SelectSingleNode("config:config-item[@config:name='ZoomValue']", $namespaceManager).InnerText | Should Be '100'
     }
 }

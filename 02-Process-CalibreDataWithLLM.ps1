@@ -4,13 +4,14 @@
 
 .DESCRIPTION
     Reads the latest Calibre book export and tag-definition JSON files, sends each book's extracted content (or its stored content profile, see below) and existing tags together with the tag definitions to the Gemini Interactions API (prompt as system instruction), and writes the LLM responses to the 02-LLM-Result folder as individual JSON files.
-    It validates unique-book counts per file, repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
+    It validates unique-book counts per file (books are counted by Title and Author, the only identity fields of a result record), repairs mojibake in LLM responses, and stores the validation outcome in the output metadata.
     Before contacting the API, the script verifies that the export folder exists and that at least one book export and one tag export JSON file are present; otherwise it stops with an error.
-    If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is retried up to $MaxContentRetries times before the result is saved.
-    API requests are retried on HTTP 429, 500, 502, 503, and 504 and on connection failures without HTTP response (DNS lookup, connect, send/receive, timeout).
+    If a response is invalid or incomplete (e.g. a wrong unique-book count or a parse error), the request for that file is sent up to $MaxContentAttempts times in total before the result is saved.
+    API requests are retried on HTTP 429, 500, 502, 503, and 504 and on connection failures without HTTP response (DNS lookup, connect, send/receive, timeout), with up to $MaxRequestAttempts attempts in total; there is no wait after the last failed attempt.
+    An export file that is not valid JSON is not sent; it gets a result file with status error, so a resumed run tries it again.
     When Gemini blocks the request of a file with several books for prohibited content (HTTP 400), the books of that file are sent again one at a time, so only the book that triggers the block stays without audit. The file is then saved with a validation warning that names the books without result. A block is not retried, because Gemini blocks the same input again.
     Every input book without a record in the result (blocked, failed request, unparsable response, or simply left out by the LLM) is written to the result file as missing_books with Title, Author, and Reason, logged by title, and listed in the run summary under "Books without audit result". 03-Convert-LLMResults2ODS.ps1 turns these entries into rows with ProposedAction NOT_AUDITED, so their tags can be checked manually.
-    Result files are written to LLM-Result_<nn>_<timestamp>.tmp first and then renamed to .json, so a crash or power outage never leaves a truncated result file that a resumed run (-Resume) would count as done.
+    Result files are written to LLM-Result_<nn>_<timestamp>.tmp first and then renamed to .json (Save-AtomicTextFile from Modules\Calibre.Storage.psm1), so a crash or power outage never leaves a truncated result file that a resumed run (-Resume) would count as done.
     A per-file validation check, per-file token usage, and a final run summary (start/end time, duration, retry statistics, and total token usage) are printed after processing.
     Token usage: every count has prompt tokens (input, including the cached part), cached tokens (the part of the prompt served from Gemini's cache at a lower rate), tool use tokens (search results the google_search tool added to the input), completion tokens (output plus thinking), and the total (prompt + tool use + completion). Besides the per-file token_usage in the result files, the script keeps the token ledger 02-LLM-Result\LLM-TokenUsage.json, which it updates after every Gemini response. The ledger therefore also counts the tokens of an export file whose processing was interrupted (Ctrl+C, crash) or repeated, which no result file holds. A new run starts a new ledger; a run with -Resume continues it. Invoke-CalibreToolsPipeline.ps1 reads the ledger for its summary.
     Script output (info, warnings, and errors) is written both to terminal and to the log file of DonGrobione.Logging (>= 2.2.0) via Write-ScriptLog from Modules\Calibre.Console.psm1. When no log session is running, the script starts its own session and stops it again in a finally block; when called by Invoke-CalibreToolsPipeline.ps1 it uses the pipeline's session.
@@ -39,10 +40,10 @@
     Continues an interrupted run and skips the export files that already have a complete result.
 
 .NOTES
-    Version: 7.5
+    Version: 7.6
     Requires a JSON file Secrets/Gemini_API.json.key with the API key in the property APIKey and the prompt files 02-CalibreDataLLM-Prompt.txt, 02-CalibreWebProfile-Prompt.txt, and 02-CalibreContentProfile-Checklist.txt in the script folder.
     Each output file is written as a valid JSON object with metadata, records, missing books, content profiles, profile gaps, the profile refresh summary, token usage, the raw response text, parse errors, and validation details for unique-book counts.
-    All retry counts and wait intervals (API retries on HTTP errors and connection failures, content-validation retries, inter-file delay) are configured via $script: variables near the top of the script.
+    All attempt counts and wait intervals (API attempts on HTTP errors and connection failures, content-validation attempts, inter-file delay) are configured via $script: variables near the top of the script.
 #>
 
 [CmdletBinding()]
@@ -69,6 +70,13 @@ if (-not (Test-Path -LiteralPath $CalibreTextModulePath -PathType Leaf)) {
 }
 
 Import-Module -Name $CalibreTextModulePath -Force
+
+$CalibreStorageModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Storage.psd1"
+if (-not (Test-Path -LiteralPath $CalibreStorageModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Storage.psd1'"
+}
+
+Import-Module -Name $CalibreStorageModulePath -Force
 
 # Start an own log session only when the script is not running inside the pipeline's session. -MaxFileSizeMB 0 turns off size-based rotation, so each run stays in one log file.
 $ownsLogSession = -not (Test-LogSession)
@@ -103,16 +111,16 @@ try {
     $ApiTimeoutSec = 300
 
     # Retry/backoff configuration for all retry activities in this script.
-    $script:MaxRequestRetries = 3                       # Max retries per API request on 429/500/502/503/504 errors and connection failures.
+    $script:MaxRequestAttempts = 3                      # Attempts per API request in total on 429/500/502/503/504 errors and connection failures.
     $script:RateLimitRetryBaseSeconds = 30               # 429: base seconds for exponential backoff (wait = base * 2^attempt).
     $script:ServiceUnavailableRetryBaseSeconds = 5        # 500/502/503: base seconds for exponential backoff.
     $script:ServiceUnavailableRetryMaxSeconds = 60        # 500/502/503: cap (seconds) for exponential backoff.
     $script:GatewayTimeoutRetryIntervalSeconds = 300      # 504: fixed wait interval (seconds) between retries.
     $script:ConnectionRetryBaseSeconds = 15               # Connection failures without HTTP response (DNS, connect, timeout): base seconds for exponential backoff.
     $script:ConnectionRetryMaxSeconds = 120               # Connection failures: cap (seconds) for exponential backoff.
-    $script:MaxContentRetries = 3                         # Max retries per file for invalid/incomplete LLM responses.
+    $script:MaxContentAttempts = 3                        # Attempts per file in total for invalid/incomplete LLM responses.
     $script:ContentRetryDelaySeconds = 15                 # Wait (seconds) between content-validation retries.
-    $script:InterFileDelaySeconds = 15                    # Wait (seconds) between processing each book file.
+    $script:InterFileDelaySeconds = 15                    # Wait (seconds) between two book files that were sent; none after the last file.
 
     $script:LastApiErrorMessage = $null
     $script:LastApiErrorBody = $null
@@ -168,6 +176,7 @@ try {
 
     # Returns the prompt text with the placeholder {{CONTENT_PROFILE_CHECKLIST}} replaced by the checklist text; throws when the prompt has no placeholder, so a prompt is never sent without the checklist.
     function Merge-ContentProfileChecklist {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -224,6 +233,8 @@ try {
 
     # Extracts a human-readable error message string from an ErrorRecord object.
     function Get-ErrorMessageFromException {
+        [CmdletBinding()]
+        [OutputType([string])]
         param([System.Management.Automation.ErrorRecord]$ErrorRecord)
 
         if ($null -eq $ErrorRecord) {
@@ -243,6 +254,7 @@ try {
 
     # Reads the HTTP error response body stream from an ErrorRecord object.
     function Get-ErrorBodyTextFromException {
+        [CmdletBinding()]
         param([System.Management.Automation.ErrorRecord]$ErrorRecord)
 
         if ($null -eq $ErrorRecord -or $null -eq $ErrorRecord.Exception -or $null -eq $ErrorRecord.Exception.Response) {
@@ -260,6 +272,8 @@ try {
 
     # Returns the WebExceptionStatus name (e.g. NameResolutionFailure, ConnectFailure, Timeout) when the error is a transient connection failure without HTTP response, which is worth a retry; returns $null for every other error.
     function Get-ConnectionFailureStatus {
+        [CmdletBinding()]
+        [OutputType([string])]
         param([System.Management.Automation.ErrorRecord]$ErrorRecord)
 
         if ($null -eq $ErrorRecord) {
@@ -290,6 +304,8 @@ try {
 
     # Returns $true when the API rejected the request with HTTP 400 because its content violates Google's prohibited use policy (the response body mentions prohibited content).
     function Test-ProhibitedContentError {
+        [CmdletBinding()]
+        [OutputType([bool])]
         param(
             [AllowNull()]
             [object]$StatusCode,
@@ -306,6 +322,7 @@ try {
 
     # Extracts the token usage of a Gemini interaction response: prompt (input, including the cached part), cached (the part of the prompt served from the cache at a lower rate), tool use (search results the google_search tool added to the input), completion (output plus thinking), and total (prompt + tool use + completion; the API's total_tokens only when none of the parts is reported).
     function Get-TokenUsageFromResponse {
+        [CmdletBinding()]
         param($Response)
 
         if ($null -eq $Response -or $null -eq $Response.PSObject.Properties['usage'] -or $null -eq $Response.usage) {
@@ -363,6 +380,8 @@ try {
 
     # Joins the text items of all model output steps of a Gemini interaction response and logs the raw response when it contains no text.
     function Get-GeminiResponseText {
+        [CmdletBinding()]
+        [OutputType([string])]
         param($Response)
 
         if ($null -eq $Response) {
@@ -397,11 +416,13 @@ try {
         Write-ScriptLog -Message ($Response | ConvertTo-Json -Depth 10)
         Write-ScriptLog "--- End response ---"
         Write-ScriptLog -Level WARN -Message "Response could not be parsed. See raw output above."
-        return $Response | ConvertTo-Json -Depth 3
+        # An empty text counts as an invalid response (retried, then saved with a parse error); the response JSON itself is no answer.
+        return ''
     }
 
     # Returns the number of Google Search queries (google_search_call steps, arguments.queries) and the unique cited web sources (url_citation annotations of the model output, as Title and Url) of a Gemini interaction response.
     function Get-GeminiSearchSummary {
+        [CmdletBinding()]
         param($Response)
 
         $queryCount = 0
@@ -451,6 +472,8 @@ try {
 
     # Removes markdown code block delimiters and repairs missing comma separators between JSON objects in array text.
     function Repair-JsonArrayFormatting {
+        [CmdletBinding()]
+        [OutputType([string])]
         param([string]$Text)
 
         if ([string]::IsNullOrWhiteSpace($Text)) {
@@ -471,134 +494,50 @@ try {
         return $repaired
     }
 
-    # Extracts the first valid JSON array or object substring from a raw text payload.
-    function Get-JsonText {
-        param([string]$RawText)
-
-        if ([string]::IsNullOrWhiteSpace($RawText)) {
-            return $null
-        }
-
-        $firstArray = $RawText.IndexOf('[')
-        $firstObject = $RawText.IndexOf('{')
-        if ($firstArray -eq -1 -and $firstObject -eq -1) {
-            return $null
-        }
-
-        if ($firstArray -ge 0 -and ($firstArray -le $firstObject -or $firstObject -eq -1)) {
-            $start = $firstArray
-        }
-        else {
-            $start = $firstObject
-        }
-
-        $depth = 0
-        $inString = $false
-        $escape = $false
-
-        for ($i = $start; $i -lt $RawText.Length; $i++) {
-            $character = $RawText[$i]
-
-            if ($escape) {
-                $escape = $false
-                continue
-            }
-
-            if ($character -eq '\') {
-                $escape = $true
-                continue
-            }
-
-            if ($character -eq '"') {
-                $inString = -not $inString
-                continue
-            }
-
-            if (-not $inString) {
-                if ($character -eq '[' -or $character -eq '{') {
-                    $depth++
-                }
-                elseif ($character -eq ']' -or $character -eq '}') {
-                    $depth--
-                    if ($depth -eq 0) {
-                        return $RawText.Substring($start, $i - $start + 1)
-                    }
-                }
-            }
-        }
-
-        $lastClose = [Math]::Max($RawText.LastIndexOf(']'), $RawText.LastIndexOf('}'))
-        if ($lastClose -gt $start) {
-            return $RawText.Substring($start, $lastClose - $start + 1)
-        }
-
-        return $null
-    }
-
-    # Generates a normalized identity key string for a book object using its title, author, and series metadata.
+    # Returns the normalized identity key of a book (title and author in lower case with collapsed whitespace, joined with |). Input books and result records are compared by this key only, because a result record holds no other identity field; an empty key means the book has neither title nor author.
     function Get-BookIdentityKey {
+        [CmdletBinding()]
+        [OutputType([string])]
         param(
-            [object]$Book,
-            [string]$TitlePropertyName,
-            [string]$AuthorPropertyName,
-            [string]$SeriesPropertyName = '',
-            [string]$SeriesIndexPropertyName = ''
+            [AllowNull()]
+            [object]$Book
         )
 
         if ($null -eq $Book) {
             return ''
         }
 
-        $title = ''
-        $author = ''
-        $series = ''
-        $seriesIndex = ''
-
-        if ($Book.PSObject.Properties.Name -contains $TitlePropertyName) {
-            $title = [string]$Book.$TitlePropertyName
-        }
-        if ($Book.PSObject.Properties.Name -contains $AuthorPropertyName) {
-            $author = [string]$Book.$AuthorPropertyName
-        }
-        if (-not [string]::IsNullOrWhiteSpace($SeriesPropertyName) -and $Book.PSObject.Properties.Name -contains $SeriesPropertyName) {
-            $series = [string]$Book.$SeriesPropertyName
-        }
-        if (-not [string]::IsNullOrWhiteSpace($SeriesIndexPropertyName) -and $Book.PSObject.Properties.Name -contains $SeriesIndexPropertyName) {
-            $seriesIndex = [string]$Book.$SeriesIndexPropertyName
+        $normalizedParts = foreach ($propertyName in @('Title', 'Author')) {
+            $value = ''
+            if ($null -ne $Book.PSObject.Properties[$propertyName]) {
+                $value = [string]$Book.$propertyName
+            }
+            $normalizedValue = ([regex]::Replace($value, '\s+', ' ').Trim()).ToLowerInvariant()
+            if (-not [string]::IsNullOrWhiteSpace($normalizedValue)) {
+                $normalizedValue
+            }
         }
 
-        $normalizedParts = @(
-            ([regex]::Replace($title, '\s+', ' ').Trim()).ToLowerInvariant(),
-            ([regex]::Replace($author, '\s+', ' ').Trim()).ToLowerInvariant(),
-            ([regex]::Replace($series, '\s+', ' ').Trim()).ToLowerInvariant(),
-            ([regex]::Replace($seriesIndex, '\s+', ' ').Trim()).ToLowerInvariant()
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-        return ($normalizedParts -join '|')
+        return (@($normalizedParts) -join '|')
     }
 
-    # Counts the number of unique book records in an array by computing normalized identity keys.
+    # Returns the number of different books (by Get-BookIdentityKey) in the items; items without title and author are not counted.
     function Get-UniqueBookCount {
+        [CmdletBinding()]
+        [OutputType([int])]
         param(
-            [object[]]$Items,
-            [string]$TitlePropertyName,
-            [string]$AuthorPropertyName,
-            [string]$SeriesPropertyName = '',
-            [string]$SeriesIndexPropertyName = ''
+            [AllowNull()]
+            [AllowEmptyCollection()]
+            [object[]]$Items
         )
 
         if ($null -eq $Items) {
             return 0
         }
 
-        $itemList = @($Items)
-        if ($itemList.Count -eq 0) {
-            return 0
-        }
-
         $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($item in $itemList) {
-            $key = Get-BookIdentityKey -Book $item -TitlePropertyName $TitlePropertyName -AuthorPropertyName $AuthorPropertyName -SeriesPropertyName $SeriesPropertyName -SeriesIndexPropertyName $SeriesIndexPropertyName
+        foreach ($item in @($Items)) {
+            $key = Get-BookIdentityKey -Book $item
             if (-not [string]::IsNullOrWhiteSpace($key)) {
                 [void]$keys.Add($key)
             }
@@ -607,18 +546,18 @@ try {
         return $keys.Count
     }
 
-    # Parses raw LLM text response into a structured result object with book records and validation metadata.
+    # Parses raw LLM text response into a structured result object with book records and validation metadata; the model name comes from $script:Model.
     function Convert-ResponseTextToResultObject {
+        [CmdletBinding()]
         param(
             [string]$RawText,
             [string]$SourceFile,
-            [string]$Model,
             [int]$ExpectedUniqueBookCount = -1
         )
 
         $result = [ordered]@{
             source_file             = $SourceFile
-            model                   = $Model
+            model                   = $script:Model
             status                  = 'success'
             input_unique_book_count = $null
             output_unique_book_count = 0
@@ -685,7 +624,7 @@ try {
             $result.records = @($parsed)
         }
 
-        $result.output_unique_book_count = Get-UniqueBookCount -Items $result.records -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+        $result.output_unique_book_count = Get-UniqueBookCount -Items $result.records
 
         $validationMessages = @()
 
@@ -706,6 +645,7 @@ try {
 
     # Decodes the raw bytes of a web response as UTF-8 and parses them as JSON, independent of the charset in the server's Content-Type header (Windows PowerShell 5.1 falls back to ISO-8859-1 without one).
     function ConvertFrom-Utf8JsonResponse {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$WebResponse
@@ -722,6 +662,7 @@ try {
 
     # Converts an object to JSON without indentation and turns the \u00XX escapes that Windows PowerShell 5.1 writes for &, ', <, and > back into the characters, because every escape costs several tokens. An escaped backslash before such a sequence is kept, so literal backslash-u text in the content stays unchanged.
     function ConvertTo-CompactJson {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
@@ -731,14 +672,13 @@ try {
         )
 
         $json = ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress
-        return [System.Text.RegularExpressions.Regex]::Replace($json, '(?<!\\)((?:\\\\)*)\\u00(26|27|3[cCeE])', {
-            param($match)
-            return $match.Groups[1].Value + [char][Convert]::ToInt32($match.Groups[2].Value, 16)
-        })
+        return (Restore-JsonEscapedCharacter -Json $json)
     }
 
     # Returns $true when the book export record holds a non-empty content profile of the current $script:ContentProfileVersion.
     function Test-ContentProfile {
+        [CmdletBinding()]
+        [OutputType([bool])]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book
@@ -757,6 +697,7 @@ try {
 
     # Returns $true when the export record is a book without text (ContentStatus NoText).
     function Test-NoTextBook {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book
@@ -767,6 +708,8 @@ try {
 
     # Returns $true when a book without text needs a new web content profile: it has a UUID and ContentHash to store the profile under, and FullContent is set or it has neither a current profile nor a current WebNotFound marker.
     function Test-WebProfileRequired {
+        [CmdletBinding()]
+        [OutputType([bool])]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
@@ -796,6 +739,7 @@ try {
 
     # Builds the web profile input record of a book without text: the identity metadata and the plain-text Calibre description that help to identify the exact work.
     function ConvertTo-WebProfileRecord {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book
@@ -815,6 +759,7 @@ try {
 
     # Parses the web profile response text into an object with the trimmed ContentProfile (empty when the work could not be identified reliably), or returns $null when the text holds no JSON object with a ContentProfile key.
     function ConvertFrom-WebProfileResponse {
+        [CmdletBinding()]
         param([string]$RawText)
 
         $jsonText = Repair-JsonArrayFormatting -Text (Repair-MojibakeText -Text (Get-JsonText -RawText $RawText))
@@ -843,11 +788,15 @@ try {
 
     # Returns an empty token usage counter (Available $false, all token counts 0).
     function Get-TokenUsageCounter {
+        [CmdletBinding()]
+        param()
+
         return [pscustomobject]@{ Available = $false; PromptTokens = [int64]0; CachedTokens = [int64]0; ToolUseTokens = [int64]0; CompletionTokens = [int64]0; TotalTokens = [int64]0 }
     }
 
     # Adds the prompt, cached, tool use, completion, and total tokens of one request (or of another counter) to a usage counter from Get-TokenUsageCounter; a $null token usage leaves the counter unchanged, a missing or $null count adds nothing.
     function Add-TokenUsage {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Counter,
@@ -869,6 +818,7 @@ try {
 
     # Returns the token_usage object of a result file or of the token ledger: the counts of a usage counter (all $null when the counter is not Available) and the number of web search queries.
     function ConvertTo-TokenUsageRecord {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Counter,
@@ -887,6 +837,8 @@ try {
 
     # Formats the counts of a usage counter for the log, with the total last: prompt (with its cached part), tool use, completion, total.
     function Format-TokenUsage {
+        [CmdletBinding()]
+        [OutputType([string])]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Counter
@@ -897,6 +849,8 @@ try {
 
     # Adds the token_usage object of a result file or of the token ledger to a usage counter and returns its web_search_queries (0 when missing). Files written before cached and tool use tokens were recorded add only the counts they hold; a missing total is computed as prompt + tool use + completion.
     function Add-TokenUsageRecord {
+        [CmdletBinding()]
+        [OutputType([int], [long])]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Counter,
@@ -931,6 +885,7 @@ try {
 
     # Prepares the token ledger of the run in $script:TokenLedger, which counts the tokens and search queries of every Gemini response, including the requests of export files that never got a result file (interrupted run, Ctrl+C, crash). A resumed run continues the existing ledger file; otherwise, or when the ledger file is missing or invalid, the ledger starts from the token_usage of the result files in the folder (none after the cleanup of a new run). The ledger is written to the file right away.
     function Initialize-TokenLedger {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -980,15 +935,19 @@ try {
         Save-TokenLedger
     }
 
-    # Writes $script:TokenLedger to $script:TokenLedgerPath through a temporary file (Save-ResultFile), so an interruption never leaves a truncated ledger.
+    # Writes $script:TokenLedger to $script:TokenLedgerPath through a temporary file (Save-AtomicTextFile), so an interruption never leaves a truncated ledger.
     function Save-TokenLedger {
+        [CmdletBinding()]
+        param()
+
         $record = ConvertTo-TokenUsageRecord -Counter $script:TokenLedger -SearchQueryCount $script:TokenLedger.SearchQueryCount
         $record['requests'] = $script:TokenLedger.RequestCount
-        Save-ResultFile -Path $script:TokenLedgerPath -Content (ConvertTo-Json -InputObject $record)
+        Save-AtomicTextFile -Path $script:TokenLedgerPath -Content (ConvertTo-Json -InputObject $record)
     }
 
     # Adds the token usage and search queries of one Gemini response to the token ledger and writes it at once, so the tokens stay counted even when the run is interrupted before the result file of the export file is written. Does nothing while no ledger is initialized; a failed write is logged as a warning and does not stop the run.
     function Add-TokenLedgerUsage {
+        [CmdletBinding()]
         param(
             [AllowNull()]
             [object]$TokenUsage,
@@ -1010,8 +969,9 @@ try {
         }
     }
 
-    # Requests a web content profile for one book without text: sends the book metadata (and, for a targeted search, the focus tag definitions as JSON) with the web profile prompt and the google_search tool, retries invalid responses up to $MaxContentRetries times, and adds the token usage to the counter. Returns ContentProfile ($null when the request failed, empty when the work was not identified), the cited Sources, and the SearchQueryCount of all attempts.
+    # Requests a web content profile for one book without text: sends the book metadata (and, for a targeted search, the focus tag definitions as JSON) with the web profile prompt and the google_search tool, retries invalid responses up to $MaxContentAttempts attempts, and adds the token usage to the counter. Returns ContentProfile ($null when the request failed, empty when the work was not identified), the cited Sources, and the SearchQueryCount of all attempts.
     function Request-WebContentProfile {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
@@ -1040,7 +1000,7 @@ $FocusTagDefinitions
         }
 
         $searchQueryCount = 0
-        for ($attempt = 1; $attempt -le $script:MaxContentRetries; $attempt++) {
+        for ($attempt = 1; $attempt -le $script:MaxContentAttempts; $attempt++) {
             $requestResult = Invoke-GeminiRequest -PayloadText $payload -SystemInstruction $script:WebProfilePromptSystem -UseGoogleSearch
             if ($null -eq $requestResult) {
                 break
@@ -1058,8 +1018,8 @@ $FocusTagDefinitions
                 }
             }
 
-            if ($attempt -lt $script:MaxContentRetries) {
-                Write-ScriptLog -Level WARN -Message "Invalid web profile response for '$($Book.Title)' (attempt $attempt/$($script:MaxContentRetries)). Retrying..."
+            if ($attempt -lt $script:MaxContentAttempts) {
+                Write-ScriptLog -Level WARN -Message "Invalid web profile response for '$($Book.Title)' (attempt $attempt/$($script:MaxContentAttempts)). Retrying..."
                 Start-Sleep -Seconds $script:ContentRetryDelaySeconds
             }
         }
@@ -1073,6 +1033,7 @@ $FocusTagDefinitions
 
     # Adds the content profile fields (ContentProfile, current ContentProfileVersion, ContentProfileSource, ContentProfileSources, ContentProfileTagHashes) to the export record in memory, so the tag audit of this run uses the new profile.
     function Add-BookContentProfile {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
@@ -1094,6 +1055,7 @@ $FocusTagDefinitions
 
     # Returns an ordered dictionary from tag name to the fingerprint of its definition (the first 16 hex characters of the SHA256 hash of NoteText), sorted by tag name. Content profiles store these fingerprints, so a later run can tell which tag definitions are new or changed since the profile was written. Entries without a tag name are skipped.
     function Get-TagDefinitionHashTable {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [AllowEmptyCollection()]
@@ -1123,6 +1085,7 @@ $FocusTagDefinitions
 
     # Converts stored tag definition fingerprints (a JSON object read from an export or cache file, or a dictionary) into a hashtable from tag name to fingerprint; $null or any other value gives an empty hashtable.
     function ConvertTo-TagHashTable {
+        [CmdletBinding()]
         param(
             [AllowNull()]
             [object]$InputObject
@@ -1151,6 +1114,7 @@ $FocusTagDefinitions
 
     # Returns a copy of the stored fingerprints in which the given tags get their current fingerprint; names that are not in the current fingerprints are ignored. Used for a web profile, which records only the tags of its targeted searches.
     function Merge-TagHashTable {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [System.Collections.IDictionary]$StoredTagHashes,
@@ -1177,6 +1141,8 @@ $FocusTagDefinitions
 
     # Returns the tag definitions whose Tag name is in TagNames (case-insensitive), in the order of the definitions.
     function Select-TagDefinition {
+        [CmdletBinding()]
+        [OutputType([object[]])]
         param(
             [Parameter(Mandatory = $true)]
             [AllowEmptyCollection()]
@@ -1196,6 +1162,7 @@ $FocusTagDefinitions
 
     # Returns the books of a tag audit response whose profile gaps justify a refresh. Each candidate holds the BookId, the export record (Book), the Kind (Text: audit again with the full excerpt; Web: new targeted web search), and the gap Tags that exist in the current tag definitions and whose fingerprint differs from the one stored with the book's profile (new or changed definitions). Gaps of unknown BookIds, repeated gap objects of a book, gaps of books whose profile cannot be refreshed (a text profile without BookContent, a web profile without UUID or ContentHash), and gaps without such tags are skipped.
     function Get-ProfileRefreshCandidate {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
@@ -1259,6 +1226,8 @@ $FocusTagDefinitions
 
     # Replaces the results of the books that were audited again in a profile refresh: for every refresh input book with at least one record in the refresh response (matched by Title and Author), the records of the first audit are removed and the refresh records are added; the refresh content profiles are appended. Refresh records of books that were not in the refresh request are ignored, and a book without refresh record keeps its first result. Returns the number of replaced books.
     function Merge-RefreshedAuditRecord {
+        [CmdletBinding()]
+        [OutputType([int])]
         param(
             [Parameter(Mandatory = $true)]
             [object]$ResultObject,
@@ -1270,20 +1239,20 @@ $FocusTagDefinitions
 
         $requestedKeys = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($bookRecord in $BookRecords) {
-            [void]$requestedKeys.Add((Get-BookIdentityKey -Book ([pscustomobject]$bookRecord) -TitlePropertyName 'Title' -AuthorPropertyName 'Author'))
+            [void]$requestedKeys.Add((Get-BookIdentityKey -Book ([pscustomobject]$bookRecord)))
         }
 
-        $refreshRecords = @($RefreshResultObject.records | Where-Object { $null -ne $_ -and $requestedKeys.Contains((Get-BookIdentityKey -Book $_ -TitlePropertyName 'Title' -AuthorPropertyName 'Author')) })
+        $refreshRecords = @($RefreshResultObject.records | Where-Object { $null -ne $_ -and $requestedKeys.Contains((Get-BookIdentityKey -Book $_)) })
         $replacedKeys = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($refreshRecord in $refreshRecords) {
-            [void]$replacedKeys.Add((Get-BookIdentityKey -Book $refreshRecord -TitlePropertyName 'Title' -AuthorPropertyName 'Author'))
+            [void]$replacedKeys.Add((Get-BookIdentityKey -Book $refreshRecord))
         }
 
         if ($replacedKeys.Count -eq 0) {
             return 0
         }
 
-        $keptRecords = @($ResultObject.records | Where-Object { $null -ne $_ -and -not $replacedKeys.Contains((Get-BookIdentityKey -Book $_ -TitlePropertyName 'Title' -AuthorPropertyName 'Author')) })
+        $keptRecords = @($ResultObject.records | Where-Object { $null -ne $_ -and -not $replacedKeys.Contains((Get-BookIdentityKey -Book $_)) })
         $ResultObject.records = @($keptRecords) + @($refreshRecords)
         $ResultObject.content_profiles = @($ResultObject.content_profiles) + @($RefreshResultObject.content_profiles | Where-Object { $null -ne $_ })
         return $replacedKeys.Count
@@ -1291,6 +1260,7 @@ $FocusTagDefinitions
 
     # Builds the LLM input record of one book with a request-local BookId: the identity fields, the current tags, and either the stored content profile (when it is valid and FullContent is not set, or always for a book without text) or the extracted BookContent. A web profile is marked with ContentProfileSource Web.
     function ConvertTo-BookAnalysisRecord {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
@@ -1357,8 +1327,7 @@ $FocusTagDefinitions
         if ($null -ne $Book.PSObject.Properties['Uuid']) { $uuid = [string]$Book.Uuid }
         if ($null -ne $Book.PSObject.Properties['ContentHash']) { $contentHash = [string]$Book.ContentHash }
 
-        # \z instead of $, because $ also matches before a trailing line break.
-        if ($uuid -notmatch '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\z' -or [string]::IsNullOrEmpty($contentHash)) {
+        if (-not (Test-CalibreUuid -Uuid $uuid) -or [string]::IsNullOrEmpty($contentHash)) {
             return $false
         }
 
@@ -1451,8 +1420,41 @@ $FocusTagDefinitions
         return $savedCount
     }
 
+    # Returns the seconds to wait before the next attempt of a failed request, or $null when the error is not worth a retry. Connection failures without HTTP response and HTTP 500/502/503 use a capped exponential backoff, HTTP 429 an uncapped exponential backoff, and HTTP 504 a fixed interval; RetryNumber is the number of the failed attempt (1 for the first).
+    function Get-RetryWaitSecond {
+        [CmdletBinding()]
+        [OutputType([double])]
+        param(
+            [AllowNull()]
+            [object]$StatusCode,
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string]$ConnectionFailure,
+            [Parameter(Mandatory = $true)]
+            [ValidateRange(1, 100)]
+            [int]$RetryNumber
+        )
+
+        if (-not [string]::IsNullOrEmpty($ConnectionFailure)) {
+            return [math]::Min($script:ConnectionRetryMaxSeconds, [math]::Pow(2, $RetryNumber) * $script:ConnectionRetryBaseSeconds)
+        }
+
+        if ($null -eq $StatusCode) {
+            return $null
+        }
+
+        switch ([int]$StatusCode) {
+            429 { return [math]::Pow(2, $RetryNumber) * $script:RateLimitRetryBaseSeconds }
+            { $_ -in @(500, 502, 503) } { return [math]::Min($script:ServiceUnavailableRetryMaxSeconds, [math]::Pow(2, $RetryNumber) * $script:ServiceUnavailableRetryBaseSeconds) }
+            504 { return $script:GatewayTimeoutRetryIntervalSeconds }
+        }
+
+        return $null
+    }
+
     # Sends the payload with a system instruction (by default the tag audit prompt) to the Gemini Interactions API with automatic retry on rate limits, HTTP server errors (500/502/503/504), and connection failures without HTTP response, and returns the response text, token usage, search query count, and cited sources. -UseGoogleSearch enables the google_search tool. The request body is sent as UTF-8 bytes and the response is decoded as UTF-8, so umlauts and typographic characters do not depend on PowerShell's encoding defaults.
     function Invoke-GeminiRequest {
+        [CmdletBinding()]
         param(
             [string]$PayloadText,
             [string]$SystemInstruction = $script:PromptSystem,
@@ -1477,10 +1479,11 @@ $FocusTagDefinitions
         $body = $requestBody | ConvertTo-Json -Depth 10
         $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
 
-        $maxRetries = $script:MaxRequestRetries
-        $retryCount = 0
+        $maxAttempts = $script:MaxRequestAttempts
+        $attempt = 0
 
-        while ($retryCount -lt $maxRetries) {
+        while ($attempt -lt $maxAttempts) {
+            $attempt++
             try {
                 $webResponse = Invoke-WebRequest -Uri $script:InteractionsUrl -Method Post -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec $script:ApiTimeoutSec -UseBasicParsing
                 $response = ConvertFrom-Utf8JsonResponse -WebResponse $webResponse
@@ -1506,34 +1509,15 @@ $FocusTagDefinitions
                     $connectionFailure = Get-ConnectionFailureStatus -ErrorRecord $_
                 }
 
-                if ($null -ne $connectionFailure) {
-                    $retryCount++
-                    $waitTime = [math]::Min($script:ConnectionRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ConnectionRetryBaseSeconds)
-                    Write-ScriptLog -Level WARN -Message "Connection failure ($connectionFailure). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
-                    Start-Sleep -Seconds $waitTime
-                }
-                elseif ($statusCode -eq 500 -or $statusCode -eq 502) {
-                    $retryCount++
-                    $waitTime = [math]::Min($script:ServiceUnavailableRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ServiceUnavailableRetryBaseSeconds)
-                    Write-ScriptLog -Level WARN -Message "Server error ($statusCode). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
-                    Start-Sleep -Seconds $waitTime
-                }
-                elseif ($statusCode -eq 429) {
-                    $retryCount++
-                    $waitTime = [math]::Pow(2, $retryCount) * $script:RateLimitRetryBaseSeconds
-                    Write-ScriptLog -Level WARN -Message "Rate limit (429). Waiting $waitTime seconds... ($retryCount/$maxRetries)"
-                    Start-Sleep -Seconds $waitTime
-                }
-                elseif ($statusCode -eq 503) {
-                    $retryCount++
-                    $waitTime = [math]::Min($script:ServiceUnavailableRetryMaxSeconds, [math]::Pow(2, $retryCount) * $script:ServiceUnavailableRetryBaseSeconds)
-                    Write-ScriptLog -Level WARN -Message "Service unavailable (503). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries, exponential backoff)"
-                    Start-Sleep -Seconds $waitTime
-                }
-                elseif ($statusCode -eq 504) {
-                    $retryCount++
-                    $waitTime = $script:GatewayTimeoutRetryIntervalSeconds
-                    Write-ScriptLog -Level WARN -Message "Gateway timeout (504). Waiting $waitTime seconds before retry... ($retryCount/$maxRetries)"
+                $waitTime = Get-RetryWaitSecond -StatusCode $statusCode -ConnectionFailure $connectionFailure -RetryNumber $attempt
+                if ($null -ne $waitTime) {
+                    $failureText = if ($null -ne $connectionFailure) { "Connection failure ($connectionFailure)" } else { "HTTP $statusCode" }
+                    if ($attempt -ge $maxAttempts) {
+                        Write-ScriptLog -Level WARN -Message "$failureText on attempt $attempt/$maxAttempts. No attempts left."
+                        break
+                    }
+
+                    Write-ScriptLog -Level WARN -Message "$failureText on attempt $attempt/$maxAttempts. Waiting $waitTime seconds before the next attempt..."
                     Start-Sleep -Seconds $waitTime
                 }
                 else {
@@ -1569,13 +1553,15 @@ $FocusTagDefinitions
             }
         }
 
-        $script:LastApiErrorMessage = "API request aborted after $maxRetries attempts."
-        Write-ScriptLog -Level ERROR -Message "API request aborted after $maxRetries attempts."
+        $script:LastApiErrorMessage = "API request aborted after $maxAttempts attempts."
+        Write-ScriptLog -Level ERROR -Message "API request aborted after $maxAttempts attempts."
         return $null
     }
 
     # Builds the tag audit input from the prepared tag definition section and the given book analysis records as compact JSON array, labeled with the name of the book export file.
     function ConvertTo-BookAuditPayload {
+        [CmdletBinding()]
+        [OutputType([string])]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -1599,8 +1585,9 @@ $bookAnalysisInput
 "@
     }
 
-    # Sends one tag audit payload and retries invalid or incomplete responses (e.g. a wrong unique-book count or text that is not JSON) up to $MaxContentRetries times. Returns the parsed ResultObject and the RawText of the last response (both $null when no response arrived), the number of Attempts, and the token Usage counter of all attempts.
+    # Sends one tag audit payload and retries invalid or incomplete responses (e.g. a wrong unique-book count or text that is not JSON) up to $MaxContentAttempts attempts. Returns the parsed ResultObject and the RawText of the last response (both $null when no response arrived), the number of Attempts, and the token Usage counter of all attempts.
     function Invoke-BookAuditRequest {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -1616,7 +1603,7 @@ $bookAnalysisInput
         $resultObject = $null
         $attempt = 0
 
-        while ($attempt -lt $script:MaxContentRetries) {
+        while ($attempt -lt $script:MaxContentAttempts) {
             $attempt++
             $requestResult = Invoke-GeminiRequest -PayloadText $PayloadText
 
@@ -1627,19 +1614,19 @@ $bookAnalysisInput
             $rawText = $requestResult.Text
             Add-TokenUsage -Counter $usage -TokenUsage $requestResult.TokenUsage
 
-            $resultObject = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile $SourceFile -Model $script:Model -ExpectedUniqueBookCount $ExpectedUniqueBookCount
+            $resultObject = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile $SourceFile -ExpectedUniqueBookCount $ExpectedUniqueBookCount
 
             if ($resultObject.status -eq 'success') {
                 break
             }
 
             $retryReason = if (-not [string]::IsNullOrWhiteSpace($resultObject.validation_error)) { $resultObject.validation_error } else { $resultObject.parse_error }
-            if ($attempt -lt $script:MaxContentRetries) {
-                Write-ScriptLog -Level WARN -Message "Invalid/incomplete response for '$SourceFile' (attempt $attempt/$($script:MaxContentRetries)): $retryReason. Retrying..."
+            if ($attempt -lt $script:MaxContentAttempts) {
+                Write-ScriptLog -Level WARN -Message "Invalid/incomplete response for '$SourceFile' (attempt $attempt/$($script:MaxContentAttempts)): $retryReason. Retrying..."
                 Start-Sleep -Seconds $script:ContentRetryDelaySeconds
             }
             else {
-                Write-ScriptLog -Level WARN -Message "All $($script:MaxContentRetries) attempt(s) for '$SourceFile' failed validation. Last reason: $retryReason"
+                Write-ScriptLog -Level WARN -Message "All $($script:MaxContentAttempts) attempt(s) for '$SourceFile' failed validation. Last reason: $retryReason"
             }
         }
 
@@ -1653,6 +1640,7 @@ $bookAnalysisInput
 
     # Audits the books of a file one at a time after Gemini blocked the request of the whole file for prohibited content: sends each book analysis record in its own request (with its original BookId, so content profiles still match) and merges the parsed responses into one result object for the file. A book that is blocked again, whose request fails, or whose response stays unparsable gets no record and is named in validation_error, and the status becomes warning. Returns the merged ResultObject ($null when no book got a response), the MissingBooks (Title, Author, Reason) without result, and the token Usage of all requests.
     function Invoke-SingleBookAudit {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object[]]$BookRecords,
@@ -1711,8 +1699,8 @@ $bookAnalysisInput
             return [pscustomobject]@{ ResultObject = $null; MissingBooks = $missingBookRecords.ToArray(); Usage = $usage }
         }
 
-        $expectedCount = Get-UniqueBookCount -Items @($BookRecords | ForEach-Object { [pscustomobject]$_ }) -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
-        $outputCount = Get-UniqueBookCount -Items $records.ToArray() -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+        $expectedCount = Get-UniqueBookCount -Items @($BookRecords | ForEach-Object { [pscustomobject]$_ })
+        $outputCount = Get-UniqueBookCount -Items $records.ToArray()
         $validationMessages = @()
         if ($missingBooks.Count -gt 0) {
             $validationMessages += "No audit result for $($missingBooks.Count) of $(@($BookRecords).Count) book(s) after the file was blocked for prohibited content and sent book by book: $($missingBooks -join ', ')."
@@ -1740,57 +1728,9 @@ $bookAnalysisInput
         return [pscustomobject]@{ ResultObject = $mergedResult; MissingBooks = $missingBookRecords.ToArray(); Usage = $usage }
     }
 
-    # Writes a result file as UTF-8 with BOM in two steps: the content goes to <name>.tmp first, which then replaces <name>.json. An interruption therefore leaves either the complete previous state or an orphaned .tmp file, never a truncated .json that a resumed run would count as done.
-    function Save-ResultFile {
-        [CmdletBinding(SupportsShouldProcess = $true)]
-        param(
-            [Parameter(Mandatory = $true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$Path,
-            [Parameter(Mandatory = $true)]
-            [AllowEmptyString()]
-            [string]$Content
-        )
-
-        if (-not $PSCmdlet.ShouldProcess($Path, 'Write LLM result file')) {
-            return
-        }
-
-        $temporaryPath = [System.IO.Path]::ChangeExtension($Path, '.tmp')
-        [System.IO.File]::WriteAllText($temporaryPath, $Content, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $true))
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            # [NullString]::Value passes a real null for the backup file; PowerShell would turn $null into an empty, invalid path.
-            [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
-        }
-        else {
-            [System.IO.File]::Move($temporaryPath, $Path)
-        }
-    }
-
-    # Returns $true when a result file exists, is valid JSON, and has a status other than error, so a resumed run can skip its export file. Files with status error (e.g. a failed request) are processed again.
-    function Test-ResultFileComplete {
-        param(
-            [Parameter(Mandatory = $true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$Path
-        )
-
-        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-            return $false
-        }
-
-        try {
-            $result = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            return $false
-        }
-
-        return ($null -ne $result -and $null -ne $result.PSObject.Properties['status'] -and -not [string]::IsNullOrWhiteSpace([string]$result.status) -and [string]$result.status -ne 'error')
-    }
-
     # Returns the input books of a file that have no record in the audit result, compared by title and author (case and whitespace are ignored, like the unique-book count). Each missing book is returned with Title, Author, and the given Reason.
     function Get-MissingBookRecord {
+        [CmdletBinding()]
         param(
             [AllowNull()]
             [object[]]$Books,
@@ -1803,12 +1743,12 @@ $bookAnalysisInput
 
         $recordKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($record in @($Records | Where-Object { $null -ne $_ })) {
-            [void]$recordKeys.Add((Get-BookIdentityKey -Book $record -TitlePropertyName 'Title' -AuthorPropertyName 'Author'))
+            [void]$recordKeys.Add((Get-BookIdentityKey -Book $record))
         }
 
         $missingBooks = New-Object -TypeName 'System.Collections.Generic.List[object]'
         foreach ($book in @($Books | Where-Object { $null -ne $_ })) {
-            $bookKey = Get-BookIdentityKey -Book $book -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+            $bookKey = Get-BookIdentityKey -Book $book
             if ([string]::IsNullOrWhiteSpace($bookKey) -or $recordKeys.Contains($bookKey)) {
                 continue
             }
@@ -1890,19 +1830,50 @@ $tagContent
         $inputUniqueBookCount = -1
         $parsedInputBooks = $null
 
-        # Count the number of unique books in the input file for output validation.
+        # Parse the input books; an export file that is not valid JSON is not sent (the request would hold no books), but gets a result file with status error, so a resumed run tries it again.
+        $inputParseError = $null
         try {
             $parsedInputBooks = ConvertFrom-Json -InputObject $bookContent -ErrorAction Stop
-            if ($parsedInputBooks -is [System.Collections.IEnumerable] -and -not ($parsedInputBooks -is [string])) {
-                $inputUniqueBookCount = Get-UniqueBookCount -Items $parsedInputBooks -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
-            }
-            else {
-                $inputUniqueBookCount = 1
-            }
         }
         catch {
-            $validationWarningText = "Validation warning in '$($bookFile.Name)': Could not parse input book JSON for count validation. $($_.Exception.Message)"
-            Write-ScriptLog -Level WARN -Message $validationWarningText
+            $inputParseError = $_.Exception.Message
+        }
+        if ($null -eq $inputParseError -and $null -eq $parsedInputBooks) {
+            $inputParseError = 'The file holds no book records.'
+        }
+
+        if ($null -ne $inputParseError) {
+            $inputErrorText = "The book export file '$($bookFile.Name)' is not valid JSON and was not sent: $inputParseError"
+            Write-ScriptLog -Level ERROR -Message $inputErrorText
+            $inputErrorResult = [pscustomobject][ordered]@{
+                source_file              = $bookFile.Name
+                model                    = $Model
+                status                   = 'error'
+                input_unique_book_count  = $null
+                output_unique_book_count = 0
+                unique_book_count_match  = $null
+                validation_error         = $null
+                records                  = @()
+                missing_books            = @()
+                content_profiles         = @()
+                profile_gaps             = @()
+                profile_refresh          = $null
+                token_usage              = ConvertTo-TokenUsageRecord -Counter (Get-TokenUsageCounter)
+                raw_response             = $null
+                parse_error              = $inputErrorText
+            }
+            Save-AtomicTextFile -Path $outPath -Content ($inputErrorResult | ConvertTo-Json -Depth 20)
+            $savedCount++
+            Write-ScriptLog "  -> Saved with input error: $outName"
+            continue
+        }
+
+        # Count the number of unique books in the input file for output validation.
+        if ($parsedInputBooks -is [System.Collections.IEnumerable] -and -not ($parsedInputBooks -is [string])) {
+            $inputUniqueBookCount = Get-UniqueBookCount -Items $parsedInputBooks
+        }
+        else {
+            $inputUniqueBookCount = 1
         }
 
         $fileUsage = Get-TokenUsageCounter
@@ -2015,7 +1986,7 @@ $tagContent
             $retriedFileCount++
             if ($null -ne $resultObject -and $resultObject.status -eq 'success') {
                 $retriedFileSuccessCount++
-                Write-ScriptLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentRetries)."
+                Write-ScriptLog "  -> Retry succeeded for '$($bookFile.Name)' on attempt $contentAttempt/$($script:MaxContentAttempts)."
             }
         }
 
@@ -2085,7 +2056,7 @@ $tagContent
             $savedRefreshProfileCount = 0
             if ($refreshRecords.Count -gt 0) {
                 $refreshPayload = ConvertTo-BookAuditPayload -TagSection $tagPayloadSection -BookFileName $bookFile.Name -BookRecords $refreshRecords.ToArray()
-                $refreshExpectedCount = Get-UniqueBookCount -Items @($refreshRecords | ForEach-Object { [pscustomobject]$_ }) -TitlePropertyName 'Title' -AuthorPropertyName 'Author' -SeriesPropertyName 'Series' -SeriesIndexPropertyName 'SeriesIndex'
+                $refreshExpectedCount = Get-UniqueBookCount -Items @($refreshRecords | ForEach-Object { [pscustomobject]$_ })
                 $refreshAudit = Invoke-BookAuditRequest -PayloadText $refreshPayload -SourceFile "$($bookFile.Name) (profile refresh)" -ExpectedUniqueBookCount $refreshExpectedCount
                 if ($refreshAudit.Usage.Available) {
                     Add-TokenUsage -Counter $fileUsage -TokenUsage $refreshAudit.Usage
@@ -2154,12 +2125,12 @@ $tagContent
 
         $knownMissingReasons = @{}
         foreach ($knownMissingBook in $singleBookMissingBooks) {
-            $knownMissingReasons[(Get-BookIdentityKey -Book $knownMissingBook -TitlePropertyName 'Title' -AuthorPropertyName 'Author')] = $knownMissingBook.Reason
+            $knownMissingReasons[(Get-BookIdentityKey -Book $knownMissingBook)] = $knownMissingBook.Reason
         }
 
         $fileMissingBooks = @(Get-MissingBookRecord -Books @($parsedInputBooks) -Records $fileRecords -Reason $missingBookReason)
         foreach ($missingBook in $fileMissingBooks) {
-            $missingBookKey = Get-BookIdentityKey -Book $missingBook -TitlePropertyName 'Title' -AuthorPropertyName 'Author'
+            $missingBookKey = Get-BookIdentityKey -Book $missingBook
             if ($knownMissingReasons.ContainsKey($missingBookKey)) {
                 $missingBook.Reason = $knownMissingReasons[$missingBookKey]
             }
@@ -2176,7 +2147,7 @@ $tagContent
 
             # Store a valid JSON wrapper so parse errors and raw API output are preserved.
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
-            Save-ResultFile -Path $outPath -Content $jsonOutput
+            Save-AtomicTextFile -Path $outPath -Content $jsonOutput
 
             $inputCountText = if ($null -ne $resultObject.input_unique_book_count) { $resultObject.input_unique_book_count } else { 'n/a' }
             Write-ScriptLog "  -> Validation check: input=$inputCountText, output=$($resultObject.output_unique_book_count)"
@@ -2226,14 +2197,17 @@ $tagContent
             }
 
             $jsonOutput = $resultObject | ConvertTo-Json -Depth 20
-            Save-ResultFile -Path $outPath -Content $jsonOutput
+            Save-AtomicTextFile -Path $outPath -Content $jsonOutput
 
             Write-ScriptLog "  -> Saved with API error: $outName"
             $validationErrorText = "Validation error in '$($bookFile.Name)': $apiDetail"
             Write-ScriptLog -Level ERROR -Message $validationErrorText
         }
 
-        Start-Sleep -Seconds $script:InterFileDelaySeconds
+        # Pause between two requests to stay below the rate limit; after the last file there is nothing left to send.
+        if ($counter -lt $total) {
+            Start-Sleep -Seconds $script:InterFileDelaySeconds
+        }
     }
 
     # Final summary for the completed run.

@@ -36,7 +36,7 @@
     Continues the last run where it was cancelled or stopped.
 
 .NOTES
-    Version: 1.22
+    Version: 1.23
 #>
 
 [CmdletBinding()]
@@ -60,6 +60,14 @@ if (-not (Test-Path -LiteralPath $CalibreConsoleModulePath -PathType Leaf)) {
 }
 
 Import-Module -Name $CalibreConsoleModulePath -Force
+
+# Calibre.Storage provides the atomic file write, the result file check, and the export timestamp shared with the step scripts.
+$CalibreStorageModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Storage.psd1"
+if (-not (Test-Path -LiteralPath $CalibreStorageModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Storage.psd1'"
+}
+
+Import-Module -Name $CalibreStorageModulePath -Force
 
 # Clear the console to keep the output readable for each run.
 Clear-Host
@@ -147,7 +155,7 @@ function Get-PipelineRunState {
     return $state
 }
 
-# Writes the run state as UTF-8 JSON. The content goes to a temporary file first, which then replaces the state file, so an interruption never leaves a truncated state file.
+# Writes the run state as UTF-8 JSON through Save-AtomicTextFile (temporary file, then replace), so an interruption never leaves a truncated state file.
 function Save-PipelineRunState {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
@@ -163,16 +171,7 @@ function Save-PipelineRunState {
         return
     }
 
-    $temporaryPath = "$Path.tmp"
-    $json = $State | ConvertTo-Json -Depth 5
-    [System.IO.File]::WriteAllText($temporaryPath, $json, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        # [NullString]::Value passes a real null for the backup file; PowerShell would turn $null into an empty, invalid path.
-        [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
-    }
-    else {
-        [System.IO.File]::Move($temporaryPath, $Path)
-    }
+    Save-AtomicTextFile -Path $Path -Content ($State | ConvertTo-Json -Depth 5) -Confirm:$false
 }
 
 # Returns the timestamp of the book export files (the part yyyy-MM-dd_HH-mm-ss of 01-Export-CalibreBooks_<nn>_<timestamp>.json), or $null when there is no book export file.
@@ -190,8 +189,9 @@ function Get-BookExportTimestamp {
     }
 
     foreach ($exportFile in @(Get-ChildItem -LiteralPath $ExportDirectory -Filter '01-Export-CalibreBooks_*.json' -File | Sort-Object -Property Name)) {
-        if ($exportFile.Name -match '_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.json$') {
-            return $Matches[1]
+        $timestamp = Get-ExportTimestamp -FileName $exportFile.Name
+        if ($null -ne $timestamp) {
+            return $timestamp
         }
     }
 
@@ -247,18 +247,7 @@ function Get-ResumeProgress {
     $doneCount = 0
     foreach ($exportFile in $exportFiles) {
         $resultPath = Join-Path -Path $ResultDirectory -ChildPath ($exportFile.Name -replace '^01-Export-CalibreBooks_', 'LLM-Result_')
-        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            continue
-        }
-
-        try {
-            $result = [System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            continue
-        }
-
-        if ($null -ne $result -and $null -ne $result.PSObject.Properties['status'] -and [string]$result.status -ne 'error') {
+        if (Test-ResultFileComplete -Path $resultPath) {
             $doneCount++
         }
     }

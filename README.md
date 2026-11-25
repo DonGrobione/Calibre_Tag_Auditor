@@ -24,7 +24,8 @@ I started this project because I have several thousand books and lost track of t
 - `Modules/`: helper modules used by the scripts. Each module has a manifest (`.psd1`) that holds its version and its exported functions.
   - `Calibre.Environment`: loads the configuration and resolves the Calibre installation, library, and executables.
   - `Calibre.Console`: writes terminal and log output, converts paths into project-relative display paths, and formats run durations.
-  - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet.
+  - `Calibre.Text`: repairs mojibake (UTF-8 text that was decoded with the wrong code page) in the Gemini responses and the review sheet, extracts the JSON from Gemini responses, writes JSON with readable `&`, `'`, `<`, and `>`, and checks Calibre UUIDs.
+  - `Calibre.Storage`: writes result and state files safely (temporary file, then replace), checks whether a result file is complete for `-Resume`, and reads the run timestamp from export and result file names.
 - `Tests/`: Pester tests for the modules and the step scripts.
 - `Secrets/`: Gemini API key file (not tracked by Git).
 - `01-Export/`, `02-LLM-Result/`, `03-ODS/`: generated files (see [Results](#results)). `02-LLM-Result/` also holds the run state file `Pipeline-RunState.json` (see [Cancel And Resume A Run](#cancel-and-resume-a-run)) and the token ledger `LLM-TokenUsage.json` (see [Token Usage](#token-usage)).

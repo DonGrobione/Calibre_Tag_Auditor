@@ -24,7 +24,7 @@
     Exports the books changed today or on the previous 6 calendar days.
 
 .NOTES
-    Version: 5.3
+    Version: 5.4
 #>
 
 [CmdletBinding()]
@@ -46,6 +46,14 @@ if (-not (Test-Path -LiteralPath $CalibreEnvironmentModulePath -PathType Leaf)) 
 }
 
 Import-Module -Name $CalibreEnvironmentModulePath -Force
+
+# Calibre.Text provides Test-CalibreUuid and Restore-JsonEscapedCharacter.
+$CalibreTextModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Text.psd1"
+if (-not (Test-Path -LiteralPath $CalibreTextModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Text.psd1'"
+}
+
+Import-Module -Name $CalibreTextModulePath -Force
 
 # Import the central logging module and the console/log output helpers.
 Import-Module DonGrobione.Logging -MinimumVersion 2.2.0 -ErrorAction Stop
@@ -150,6 +158,7 @@ try {
 
     # Converts an input object to JSON and turns the &, ', <, and > escapes that Windows PowerShell 5.1 writes for &, ', <, and > back into the characters (PowerShell 5.1 writes non-ASCII characters unescaped). Control character escapes stay escaped, because raw control characters are not valid in JSON strings, and an escaped backslash before such a sequence is kept, so literal backslash-u text in the content stays unchanged.
     function ConvertTo-JsonUtf8 {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$InputObject,
@@ -157,14 +166,12 @@ try {
         )
 
         $json = $InputObject | ConvertTo-Json -Depth $Depth
-        return [System.Text.RegularExpressions.Regex]::Replace($json, '(?<!\\)((?:\\\\)*)\\u00(26|27|3[cCeE])', {
-            param($match)
-            return $match.Groups[1].Value + [char][Convert]::ToInt32($match.Groups[2].Value, 16)
-        })
+        return (Restore-JsonEscapedCharacter -Json $json)
     }
 
     # Writes an object to a JSON file using UTF-8 encoding without BOM.
     function Write-JsonFile {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path,
@@ -178,21 +185,9 @@ try {
         [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
     }
 
-    # Returns $true when the value is a Calibre UUID in the canonical form 8-4-4-4-12 hex digits, so it can safely be used as a file name.
-    function Test-CalibreUuid {
-        param(
-            [Parameter(Mandatory = $true)]
-            [AllowNull()]
-            [AllowEmptyString()]
-            [string]$Uuid
-        )
-
-        # \z instead of $, because $ also matches before a trailing line break.
-        return ($Uuid -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\z')
-    }
-
     # Returns the path of the cache file <uuid>.json in the cache directory, or $null when the UUID is not valid.
     function Get-BookCachePath {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -212,6 +207,7 @@ try {
 
     # Returns the cached book record when the cache file exists, can be parsed, has the given cache format version, has non-empty BookContent or ContentStatus NoText, and was written for the given last_modified value; otherwise $null.
     function Get-CachedBookExport {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -256,6 +252,7 @@ try {
 
     # Returns the SHA256 hash of the UTF-8 text as a lower-case hex string, or $null for null or empty text.
     function Get-ContentHash {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
@@ -279,6 +276,7 @@ try {
 
     # Returns the SHA256 hash of the identity metadata (Title, Author, Series, SeriesIndex, IDs, Description) of an export record, used as ContentHash of a book without text, so a changed title, identifier, or description leads to a new web profile.
     function Get-MetadataHash {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Record
@@ -294,6 +292,7 @@ try {
 
     # Returns the content profile (ContentProfile, ContentProfileVersion, ContentProfileSource, ContentProfileSources, ContentProfileTagHashes) that 02-Process-CalibreDataWithLLM.ps1 stored in the cache file, when the file was written for the same ContentHash, regardless of last_modified; otherwise $null. A profile without source counts as Text; an empty profile is returned only as a WebNotFound marker (no reliable web information found).
     function Get-CachedContentProfile {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateNotNullOrEmpty()]
@@ -493,6 +492,8 @@ try {
 
     # Returns the number of whitespace-separated words in the text, or 0 for null or empty text.
     function Get-WordCount {
+        [CmdletBinding()]
+        [OutputType([int])]
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
@@ -509,6 +510,7 @@ try {
 
     # Converts the HTML of a Calibre description (field comments) to plain text: block ends become line breaks, tags are removed, HTML entities are decoded, and whitespace is normalized. Returns $null for empty input.
     function ConvertTo-PlainText {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
@@ -540,6 +542,7 @@ try {
 
     # Removes invisible formatting characters and soft hyphens from a string.
     function Clear-ExportText {
+        [CmdletBinding()]
         param([object]$Value)
 
         if ($null -eq $Value) {
@@ -555,6 +558,7 @@ try {
 
     # Extracts the publication year from a date string if valid.
     function Get-ExportYear {
+        [CmdletBinding()]
         param([object]$PubDate)
 
         $Parsed = [DateTimeOffset]::MinValue
@@ -573,6 +577,8 @@ try {
 
     # Returns the book files that Calibre lists in the formats field of the book and that exist inside the library folder; paths outside the library are ignored. PowerShell unrolls an empty array into no output, so callers must wrap the call in @() to get an array.
     function Get-BookFile {
+        [CmdletBinding()]
+        [OutputType([object[]])]
         param(
             [Parameter(Mandatory = $true)]
             [object]$Book,
@@ -611,6 +617,7 @@ try {
 
     # Returns the first file whose extension appears earliest in the supported extension list, or $null when none matches or no files are given.
     function Get-PrimaryBookFile {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
@@ -632,6 +639,8 @@ try {
 
     # Converts file extensions into a unique, upper-case list without dots in input order (e.g. "EPUB, AZW3"), or "none" when the list is empty.
     function ConvertTo-FormatDisplayText {
+        [CmdletBinding()]
+        [OutputType([string])]
         param(
             [Parameter(Mandatory = $true)]
             [AllowEmptyCollection()]
@@ -654,6 +663,7 @@ try {
 
     # Returns the file name of a book export file; the file number is zero-padded to at least two digits or to the digit count of the file count.
     function Get-BookExportFileName {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [ValidateRange(1, [int]::MaxValue)]
@@ -672,6 +682,8 @@ try {
 
     # Returns the excerpt of a normalized book text: the whole text when it has at most as many words as the three SectionWordCounts together, otherwise the start, middle, and late sections with these word counts, joined with [...] markers. The middle section is centered at 50 % of the words and the late section ends at 92 %, so back matter such as afterwords, ads, and previews of other books is skipped.
     function Select-ExcerptText {
+        [CmdletBinding()]
+        [OutputType([string])]
         param(
             [Parameter(Mandatory = $true)]
             [AllowEmptyString()]
@@ -706,6 +718,7 @@ try {
 
     # Converts a book to text, normalizes whitespace, and returns the excerpt from Select-ExcerptText with the given section word counts.
     function Get-BookContent {
+        [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
             [System.IO.FileInfo]$SourceFile,
@@ -728,17 +741,18 @@ try {
             }
 
             $RawText = [System.IO.File]::ReadAllText($TempTextFile, [System.Text.Encoding]::UTF8)
-            $NormalizedLines = @()
+            # A list instead of += on an array, which copies the whole array for every line of a long book.
+            $NormalizedLines = New-Object -TypeName 'System.Collections.Generic.List[string]'
             foreach ($Line in ($RawText -split "`r?`n")) {
                 $NormalizedLine = ($Line -replace '\s+', ' ').Trim()
                 if ($NormalizedLine) {
-                    $NormalizedLines += $NormalizedLine
-                } elseif ($NormalizedLines.Count -gt 0 -and $NormalizedLines[-1] -ne '') {
-                    $NormalizedLines += ''
+                    $NormalizedLines.Add($NormalizedLine)
+                } elseif ($NormalizedLines.Count -gt 0 -and $NormalizedLines[$NormalizedLines.Count - 1] -ne '') {
+                    $NormalizedLines.Add('')
                 }
             }
 
-            $NormalizedText = ($NormalizedLines -join "`n").Trim()
+            $NormalizedText = ($NormalizedLines.ToArray() -join "`n").Trim()
             return (Select-ExcerptText -Text $NormalizedText -SectionWordCounts $SectionWordCounts)
         } finally {
             if (Test-Path -LiteralPath $TempDirectory -PathType Container) {

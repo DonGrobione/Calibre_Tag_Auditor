@@ -3,7 +3,7 @@
     Convert LLM JSON result files directly into a formatted ODS review sheet.
 
 .DESCRIPTION
-    Reads all LLM result files (LLM-Result_*.json) from the input folder, unwraps the JSON result payloads written by the LLM step, repairs mojibake from malformed input text, preserves German umlauts and special characters, and merges the extracted book records.
+    Reads all LLM result files (LLM-Result_*.json) from the input folder, unwraps the JSON result objects written by the LLM step (the book records in their records property, with the English field names Title, Author, ProposedAction, Tag, and Reason), repairs mojibake from malformed input text, preserves German umlauts and special characters, and merges the extracted book records.
     The merged records are written to a temporary pipe-delimited UTF-8 CSV file in $env:TEMP, converted to ODS with a headless LibreOffice instance, and then formatted: automatic line breaks in all cells and the column widths listed below.
     Column A: Title,          width 9 cm
     Column B: Author,         width 6 cm
@@ -23,7 +23,7 @@
     Folder where the converted ODS file is written. Defaults to .\03-ODS.
 
 .NOTES
-    Version: 1.8
+    Version: 1.9
 #>
 
 [CmdletBinding()]
@@ -49,10 +49,20 @@ if (-not (Test-Path -LiteralPath $CalibreTextModulePath -PathType Leaf)) {
 
 Import-Module -Name $CalibreTextModulePath -Force
 
+# Get-ExportTimestamp reads the run timestamp from the result file name.
+$CalibreStorageModulePath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\Calibre.Storage.psd1"
+if (-not (Test-Path -LiteralPath $CalibreStorageModulePath -PathType Leaf)) {
+    throw "Required module not found: '.\Modules\Calibre.Storage.psd1'"
+}
+
+Import-Module -Name $CalibreStorageModulePath -Force
+
 #region JSON parsing and record extraction
 
 # Returns $true when the text parses as JSON and $false otherwise.
 function Test-JsonText {
+    [CmdletBinding()]
+    [OutputType([bool])]
     param([string]$Text)
 
     try {
@@ -66,6 +76,8 @@ function Test-JsonText {
 
 # Returns JSON text unchanged when it parses; otherwise repairs mojibake sequences and returns the repaired text when it parses, or the original text.
 function Repair-JsonText {
+    [CmdletBinding()]
+    [OutputType([string])]
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
 
@@ -87,6 +99,8 @@ function Repair-JsonText {
 
 # Recursively process JSON values so strings are cleaned and nested structures are preserved.
 function Convert-JsonValue {
+    [CmdletBinding()]
+    [OutputType([hashtable], [object[]])]
     param([object]$Item)
     if ($null -eq $Item) { return $null }
 
@@ -104,73 +118,19 @@ function Convert-JsonValue {
     }
 
     if ($Item -is [System.Collections.IEnumerable] -and -not ($Item -is [string])) {
-        $list = @()
+        $list = New-Object -TypeName 'System.Collections.Generic.List[object]'
         foreach ($element in $Item) {
-            $list += Convert-JsonValue -Item $element
+            $list.Add((Convert-JsonValue -Item $element))
         }
-        return ,$list
+        return ,$list.ToArray()
     }
 
     return $Item
 }
 
-# Extract the first valid JSON block from raw text even if extra text surrounds it.
-function Get-JsonText {
-    param([string]$RawText)
-
-    $firstArray = $RawText.IndexOf('[')
-    $firstObj = $RawText.IndexOf('{')
-    if ($firstArray -eq -1 -and $firstObj -eq -1) { return $null }
-
-    if ($firstArray -ge 0 -and ($firstArray -le $firstObj -or $firstObj -eq -1)) {
-        $start = $firstArray
-    } else {
-        $start = $firstObj
-    }
-
-    $depth = 0
-    $inString = $false
-    $escape = $false
-
-    for ($i = $start; $i -lt $RawText.Length; $i++) {
-        $c = $RawText[$i]
-        if ($escape) {
-            $escape = $false
-            continue
-        }
-
-        if ($c -eq '\') {
-            $escape = $true
-            continue
-        }
-
-        if ($c -eq '"') {
-            $inString = -not $inString
-            continue
-        }
-
-        if (-not $inString) {
-            if ($c -eq '[' -or $c -eq '{') {
-                $depth++
-            } elseif ($c -eq ']' -or $c -eq '}') {
-                $depth--
-                if ($depth -eq 0) {
-                    return $RawText.Substring($start, $i - $start + 1)
-                }
-            }
-        }
-    }
-
-    $lastClose = [Math]::Max($RawText.LastIndexOf(']'), $RawText.LastIndexOf('}'))
-    if ($lastClose -gt $start) {
-        return $RawText.Substring($start, $lastClose - $start + 1)
-    }
-
-    return $null
-}
-
 # Reads a file as UTF-8 text and parses its extracted JSON structure into an object.
 function Get-ParsedJsonObjectFromFile {
+    [CmdletBinding()]
     param([string]$FilePath)
 
     $rawBytes = [System.IO.File]::ReadAllBytes($FilePath)
@@ -190,6 +150,7 @@ function Get-ParsedJsonObjectFromFile {
 
 # Converts the missing_books entries of an LLM result file into review rows with ProposedAction NOT_AUDITED and the reason why the book has no audit result; returns nothing for files without missing_books.
 function ConvertTo-NotAuditedRecord {
+    [CmdletBinding()]
     param([object]$ParsedResult)
 
     if ($null -eq $ParsedResult -or $null -eq $ParsedResult.PSObject.Properties['missing_books']) {
@@ -207,11 +168,12 @@ function ConvertTo-NotAuditedRecord {
     }
 }
 
-# Read all JSON result files and return the flattened list of book result records, plus a NOT_AUDITED record for every book listed in missing_books.
+# Read all JSON result files and return the flattened list of book result records (the records property of each result object), plus a NOT_AUDITED record for every book listed in missing_books.
 function Get-BookRecordFromJsonFile {
+    [CmdletBinding()]
     param([System.IO.FileInfo[]]$Files)
 
-    $allObjects = @()
+    $allObjects = New-Object -TypeName 'System.Collections.Generic.List[object]'
     foreach ($file in $Files) {
         Write-ScriptLog "Processing: $($file.Name)"
 
@@ -224,62 +186,54 @@ function Get-BookRecordFromJsonFile {
         }
 
         foreach ($notAuditedRecord in @(ConvertTo-NotAuditedRecord -ParsedResult $parsed)) {
-            $allObjects += $notAuditedRecord
+            $allObjects.Add($notAuditedRecord)
         }
 
-        if ($null -ne $parsed.records) {
-            $records = $parsed.records
-            if ($records -is [System.Collections.IEnumerable] -and -not ($records -is [string])) {
-                foreach ($item in $records) { $allObjects += $item }
-            }
-            elseif ($null -ne $records) {
-                $allObjects += $records
-            }
+        if ($null -eq $parsed -or $null -eq $parsed.PSObject.Properties['records']) {
+            Write-ScriptLog -Level WARN -Message "$($file.Name) is no LLM result object (no records property) and was skipped."
             continue
         }
 
-        if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
-            foreach ($item in $parsed) { $allObjects += $item }
-        } else {
-            $allObjects += $parsed
+        foreach ($record in @($parsed.records | Where-Object { $null -ne $_ })) {
+            $allObjects.Add($record)
         }
     }
 
-    return $allObjects
+    return $allObjects.ToArray()
 }
 
 # Normalize raw JSON objects into the five business columns required by the ODS review sheet.
 function ConvertTo-CsvRow {
+    [CmdletBinding()]
     param([object[]]$Objects)
 
-    $csvRows = @()
+    $csvRows = New-Object -TypeName 'System.Collections.Generic.List[object]'
     foreach ($item in $Objects) {
         $cleanItem = Convert-JsonValue -Item $item
 
         # The property indexer returns $null for a missing property; Properties.Match() returns an empty collection that still counts as $true.
-        $title = if ($cleanItem.PSObject.Properties['Title']) { $cleanItem.Title } elseif ($cleanItem.PSObject.Properties['Titel']) { $cleanItem.Titel } else { $null }
-        $author = if ($cleanItem.PSObject.Properties['Author']) { $cleanItem.Author } elseif ($cleanItem.PSObject.Properties['Autor']) { $cleanItem.Autor } else { $null }
-        $proposedAction = if ($cleanItem.PSObject.Properties['ProposedAction']) { $cleanItem.ProposedAction } elseif ($cleanItem.PSObject.Properties['Action']) { $cleanItem.Action } elseif ($cleanItem.PSObject.Properties['Aktion']) { $cleanItem.Aktion } else { $null }
-        $tag = if ($cleanItem.PSObject.Properties['Tag']) { $cleanItem.Tag } else { $null }
-        $reason = if ($cleanItem.PSObject.Properties['Reason']) { $cleanItem.Reason } elseif ($cleanItem.PSObject.Properties['Begründung']) { $cleanItem.Begründung } else { $null }
+        $values = @{}
+        foreach ($columnName in @('Title', 'Author', 'ProposedAction', 'Tag', 'Reason')) {
+            $values[$columnName] = if ($null -ne $cleanItem.PSObject.Properties[$columnName]) { $cleanItem.$columnName } else { $null }
+        }
 
-        if ([string]::IsNullOrWhiteSpace([string]$title) -and
-            [string]::IsNullOrWhiteSpace([string]$author) -and
-            [string]::IsNullOrWhiteSpace([string]$proposedAction) -and
-            [string]::IsNullOrWhiteSpace([string]$reason)) {
+        if ([string]::IsNullOrWhiteSpace([string]$values.Title) -and
+            [string]::IsNullOrWhiteSpace([string]$values.Author) -and
+            [string]::IsNullOrWhiteSpace([string]$values.ProposedAction) -and
+            [string]::IsNullOrWhiteSpace([string]$values.Reason)) {
             continue
         }
 
-        $csvRows += [pscustomobject]@{
-            Title          = $title
-            Author         = $author
-            ProposedAction = $proposedAction
-            Tag            = $tag
-            Reason         = $reason
-        }
+        $csvRows.Add([pscustomobject][ordered]@{
+                Title          = $values.Title
+                Author         = $values.Author
+                ProposedAction = $values.ProposedAction
+                Tag            = $values.Tag
+                Reason         = $values.Reason
+            })
     }
 
-    return $csvRows
+    return $csvRows.ToArray()
 }
 
 #endregion
@@ -288,6 +242,9 @@ function ConvertTo-CsvRow {
 
 # Locate the installed soffice.exe via well-known install paths, falling back to the registry.
 function Get-LibreOfficePath {
+    [CmdletBinding()]
+    param()
+
     $candidatePaths = @(
         "$env:ProgramFiles\LibreOffice\program\soffice.exe",
         "${env:ProgramFiles(x86)}\LibreOffice\program\soffice.exe",
@@ -324,6 +281,7 @@ function Get-LibreOfficePath {
 
 # Run LibreOffice headless to convert one CSV file to ODS and wait until the output file appears.
 function Invoke-LibreOfficeConversion {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$LibreOfficeExe,
@@ -406,8 +364,43 @@ function Invoke-LibreOfficeConversion {
     }
 }
 
+# Sets or updates the named config:config-item children of an ODS settings.xml element; Item maps each item name to its type and value (e.g. ZoomValue = @('int', '100')). Missing items are created with their type, existing items get the new type and value. Document and namespace come from the parent element.
+function Set-OdsConfigItem {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Xml.XmlElement]$Parent,
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$Item
+    )
+
+    $document = $Parent.OwnerDocument
+    $configNamespace = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+    $namespaceManager = New-Object -TypeName System.Xml.XmlNamespaceManager -ArgumentList $document.NameTable
+    $namespaceManager.AddNamespace('config', $configNamespace)
+
+    foreach ($name in $Item.Keys) {
+        $type = [string]$Item[$name][0]
+        $value = [string]$Item[$name][1]
+        if (-not $PSCmdlet.ShouldProcess("settings.xml config item '$name'", "Set value '$value'")) {
+            continue
+        }
+
+        $node = $Parent.SelectSingleNode("config:config-item[@config:name='$name']", $namespaceManager)
+        if ($null -eq $node) {
+            $node = $document.CreateElement('config', 'config-item', $configNamespace)
+            [void]$node.SetAttribute('name', $configNamespace, [string]$name)
+            [void]$Parent.AppendChild($node)
+        }
+
+        [void]$node.SetAttribute('type', $configNamespace, $type)
+        $node.InnerText = $value
+    }
+}
+
 # Patch the generated ODS file with PowerShell/.NET only: enable cell wrap, set column widths, freeze the header row, and add an AutoFilter.
 function Format-OdsDocument {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$OdsFilePath
@@ -622,44 +615,6 @@ function Format-OdsDocument {
                     $sheetNameForFreeze = 'Sheet1'
                 }
 
-                # Sets or updates a named configuration item node in the ODS settings.xml document.
-                function Set-ConfigItemValue {
-                    [CmdletBinding(SupportsShouldProcess = $true)]
-                    param(
-                        [Parameter(Mandatory = $true)]
-                        [System.Xml.XmlElement]$Parent,
-                        [Parameter(Mandatory = $true)]
-                        [System.Xml.XmlDocument]$Document,
-                        [Parameter(Mandatory = $true)]
-                        [System.Xml.XmlNamespaceManager]$NamespaceManager,
-                        [Parameter(Mandatory = $true)]
-                        [string]$ConfigNamespace,
-                        [Parameter(Mandatory = $true)]
-                        [string]$Name,
-                        [Parameter(Mandatory = $true)]
-                        [string]$Type,
-                        [Parameter(Mandatory = $true)]
-                        [string]$Value
-                    )
-
-                    if (-not $PSCmdlet.ShouldProcess("settings.xml config item '$Name'", "Set value '$Value'")) {
-                        return
-                    }
-
-                    $node = $Parent.SelectSingleNode("config:config-item[@config:name='$Name']", $NamespaceManager)
-                    if ($null -eq $node) {
-                        $node = $Document.CreateElement('config', 'config-item', $ConfigNamespace)
-                        [void]$node.SetAttribute('name', $ConfigNamespace, $Name)
-                        [void]$node.SetAttribute('type', $ConfigNamespace, $Type)
-                        [void]$Parent.AppendChild($node)
-                    }
-                    else {
-                        [void]$node.SetAttribute('type', $ConfigNamespace, $Type)
-                    }
-
-                    $node.InnerText = $Value
-                }
-
                 $viewSettingsSet = $xmlDoc.SelectSingleNode("//office:settings/config:config-item-set[@config:name='ooo:view-settings']", $nsManager)
                 if ($null -ne $viewSettingsSet) {
                     $viewsNode = $viewSettingsSet.SelectSingleNode("config:config-item-map-indexed[@config:name='Views']", $nsManager)
@@ -675,8 +630,10 @@ function Format-OdsDocument {
                         [void]$viewsNode.AppendChild($viewEntry)
                     }
 
-                    Set-ConfigItemValue -Parent $viewEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ViewId' -Type 'string' -Value 'view1'
-                    Set-ConfigItemValue -Parent $viewEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ActiveTable' -Type 'string' -Value $sheetNameForFreeze
+                    Set-OdsConfigItem -Parent $viewEntry -Item ([ordered]@{
+                            ViewId      = @('string', 'view1')
+                            ActiveTable = @('string', $sheetNameForFreeze)
+                        })
 
                     $tablesNode = $viewEntry.SelectSingleNode("config:config-item-map-named[@config:name='Tables']", $nsManager)
                     if ($null -eq $tablesNode) {
@@ -692,21 +649,24 @@ function Format-OdsDocument {
                         [void]$tablesNode.AppendChild($tableEntry)
                     }
 
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'CursorPositionX' -Type 'int' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'CursorPositionY' -Type 'int' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'HorizontalSplitMode' -Type 'short' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'VerticalSplitMode' -Type 'short' -Value '2'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'HorizontalSplitPosition' -Type 'int' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'VerticalSplitPosition' -Type 'int' -Value '1'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ActiveSplitRange' -Type 'short' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionLeft' -Type 'int' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionRight' -Type 'int' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionTop' -Type 'int' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PositionBottom' -Type 'int' -Value '1'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ZoomType' -Type 'short' -Value '0'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ZoomValue' -Type 'int' -Value '100'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'PageViewZoomValue' -Type 'int' -Value '60'
-                    Set-ConfigItemValue -Parent $tableEntry -Document $xmlDoc -NamespaceManager $nsManager -ConfigNamespace $configNs -Name 'ShowGrid' -Type 'boolean' -Value 'true'
+                    # Freeze the header row (vertical split after row 1) and reset cursor, scroll position, and zoom.
+                    Set-OdsConfigItem -Parent $tableEntry -Item ([ordered]@{
+                            CursorPositionX         = @('int', '0')
+                            CursorPositionY         = @('int', '0')
+                            HorizontalSplitMode     = @('short', '0')
+                            VerticalSplitMode       = @('short', '2')
+                            HorizontalSplitPosition = @('int', '0')
+                            VerticalSplitPosition   = @('int', '1')
+                            ActiveSplitRange        = @('short', '0')
+                            PositionLeft            = @('int', '0')
+                            PositionRight           = @('int', '0')
+                            PositionTop             = @('int', '0')
+                            PositionBottom          = @('int', '1')
+                            ZoomType                = @('short', '0')
+                            ZoomValue               = @('int', '100')
+                            PageViewZoomValue       = @('int', '60')
+                            ShowGrid                = @('boolean', 'true')
+                        })
                 }
             }
 
@@ -833,7 +793,7 @@ try {
     }
 
     $firstFile = $files[0]
-    $timestamp = if ($firstFile.Name -match '_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})\.json$') { $matches[1] } else { $null }
+    $timestamp = Get-ExportTimestamp -FileName $firstFile.Name
     if (-not $timestamp) {
         throw "Could not determine a timestamp from input file name: $($firstFile.Name)"
     }

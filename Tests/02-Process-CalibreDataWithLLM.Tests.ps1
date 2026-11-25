@@ -3,7 +3,7 @@
     Pester tests for the Gemini API functions in 02-Process-CalibreDataWithLLM.ps1.
 
 .DESCRIPTION
-    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), the resume functions Save-ResultFile (write through a .tmp file) and Test-ResultFileComplete, source checks of the resume cleanup and skip,Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, the token usage functions Get-TokenUsageCounter, Add-TokenUsage, Format-TokenUsage, ConvertTo-TokenUsageRecord, and Add-TokenUsageRecord (prompt, cached, tool use, completion, and total tokens), the token ledger functions Initialize-TokenLedger, Save-TokenLedger, and Add-TokenLedgerUsage (a ledger file under $TestDrive that counts every response, continued with -Resume), the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
+    Covers Get-GeminiApiKey, Get-TokenUsageFromResponse, Get-GeminiResponseText, Get-GeminiSearchSummary (search queries and cited sources), ConvertFrom-Utf8JsonResponse, Invoke-GeminiRequest (UTF-8 request and response bytes, optional google_search tool and system instruction, retries on HTTP 500/502 and connection failures), Get-ConnectionFailureStatus, Test-ProhibitedContentError, the tag audit functions ConvertTo-BookAuditPayload, Invoke-BookAuditRequest, and Invoke-SingleBookAudit (book-by-book audit of a file blocked for prohibited content, with the blocked books as MissingBooks), Get-MissingBookRecord (input books without result record), Get-RetryWaitSecond (wait before the next attempt, none after the last), Get-BookIdentityKey and Get-UniqueBookCount (books counted by Title and Author), source checks of the resume cleanup and skip, of the error result for an unparsable export file, and of the missing delay after the last file, Convert-ResponseTextToResultObject (object form with Results and ContentProfiles, and the plain array), ConvertTo-CompactJson, the token usage functions Get-TokenUsageCounter, Add-TokenUsage, Format-TokenUsage, ConvertTo-TokenUsageRecord, and Add-TokenUsageRecord (prompt, cached, tool use, completion, and total tokens), the token ledger functions Initialize-TokenLedger, Save-TokenLedger, and Add-TokenLedgerUsage (a ledger file under $TestDrive that counts every response, continued with -Resume), the content profile functions Test-ContentProfile, ConvertTo-BookAnalysisRecord, Update-BookCacheProfile, and Save-ContentProfile, the web profile functions for books without text Test-NoTextBook, Test-WebProfileRequired, ConvertTo-WebProfileRecord, ConvertFrom-WebProfileResponse, Request-WebContentProfile (with and without focus questions), and Add-BookContentProfile, the content profile checklist (Merge-ContentProfileChecklist and the placeholder in both prompt files), and the profile gap functions Get-TagDefinitionHashTable, ConvertTo-TagHashTable, Merge-TagHashTable, Select-TagDefinition, Get-ProfileRefreshCandidate, and Merge-RefreshedAuditRecord. The Profile refresh workflow tests check in the source that text books are refreshed with their full excerpt, that web books get a targeted search, and that the refresh summary is stored in the result file. The Web profile workflow tests check in the source that only the web profile request uses the google_search tool. The cache files are created under $TestDrive. The script runs its whole workflow when it is executed, so the tests parse it and load only the function definitions under test. Invoke-WebRequest and Start-Sleep are mocked; no request reaches the Gemini API.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -17,9 +17,9 @@ $parseErrors = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors)
 $functionNames = @(
     'Get-GeminiApiKey', 'Get-ErrorMessageFromException', 'Get-ErrorBodyTextFromException', 'Get-ConnectionFailureStatus', 'Test-ProhibitedContentError',
-    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit', 'Get-MissingBookRecord', 'Save-ResultFile', 'Test-ResultFileComplete',
-    'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Invoke-GeminiRequest',
-    'Repair-JsonArrayFormatting', 'Get-JsonText', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
+    'ConvertTo-BookAuditPayload', 'Invoke-BookAuditRequest', 'Invoke-SingleBookAudit', 'Get-MissingBookRecord',
+    'Get-TokenUsageFromResponse', 'Get-GeminiResponseText', 'Get-GeminiSearchSummary', 'Get-RetryWaitSecond', 'Invoke-GeminiRequest',
+    'Repair-JsonArrayFormatting', 'ConvertFrom-Utf8JsonResponse', 'Get-BookIdentityKey', 'Get-UniqueBookCount', 'Convert-ResponseTextToResultObject',
     'ConvertTo-CompactJson', 'Test-ContentProfile', 'Test-NoTextBook', 'Test-WebProfileRequired', 'ConvertTo-WebProfileRecord', 'ConvertFrom-WebProfileResponse',
     'Get-TokenUsageCounter', 'Add-TokenUsage', 'Format-TokenUsage', 'ConvertTo-TokenUsageRecord', 'Add-TokenUsageRecord', 'Initialize-TokenLedger', 'Save-TokenLedger', 'Add-TokenLedgerUsage', 'Request-WebContentProfile', 'Add-BookContentProfile', 'ConvertTo-BookAnalysisRecord', 'Update-BookCacheProfile', 'Save-ContentProfile',
     'Merge-ContentProfileChecklist', 'Get-TagDefinitionHashTable', 'ConvertTo-TagHashTable', 'Merge-TagHashTable', 'Select-TagDefinition', 'Get-ProfileRefreshCandidate', 'Merge-RefreshedAuditRecord'
@@ -32,8 +32,9 @@ foreach ($functionName in $functionNames) {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
 
-# Repair-MojibakeText comes from the Calibre.Text module, as in the script.
+# Repair-MojibakeText, Get-JsonText, Restore-JsonEscapedCharacter, and Test-CalibreUuid come from the Calibre.Text module, Save-AtomicTextFile from Calibre.Storage, as in the script.
 Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Text.psd1') -Force
+Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Storage.psd1') -Force
 
 # Stands in for the Calibre.Console logging helper so the tests write no log file.
 function Write-ScriptLog {
@@ -69,10 +70,10 @@ $script:Model = 'test-model'
 $script:ThinkingLevel = 'medium'
 $script:PromptSystem = 'Test prompt'
 $script:WebProfilePromptSystem = 'Web profile prompt'
-$script:MaxContentRetries = 3
+$script:MaxContentAttempts = 3
 $script:ContentRetryDelaySeconds = 0
 $script:ApiTimeoutSec = 5
-$script:MaxRequestRetries = 3
+$script:MaxRequestAttempts = 3
 $script:RateLimitRetryBaseSeconds = 1
 $script:ServiceUnavailableRetryBaseSeconds = 1
 $script:ServiceUnavailableRetryMaxSeconds = 1
@@ -177,10 +178,11 @@ Describe 'Get-GeminiResponseText' {
         Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Level -eq 'WARN' -and $Message -match 'incomplete' }
     }
 
-    It 'returns the raw response as JSON when it contains no text' {
+    It 'returns an empty text and logs the raw response when it contains no text' {
         Mock Write-ScriptLog { }
         $text = Get-GeminiResponseText -Response ([pscustomobject]@{ status = 'failed'; steps = @() })
-        ($text | ConvertFrom-Json).status | Should Be 'failed'
+        $text | Should BeExactly ''
+        Assert-MockCalled Write-ScriptLog -Scope It -Times 1 -Exactly -ParameterFilter { $Message -match '"status":\s*"failed"' }
     }
 }
 
@@ -365,6 +367,15 @@ Describe 'Invoke-GeminiRequest' {
         Invoke-GeminiRequest -PayloadText 'book data' | Should Be $null
         $script:LastApiErrorMessage | Should Match 'aborted after 3 attempts'
         Assert-MockCalled Invoke-WebRequest -Scope It -Times 3 -Exactly
+        # Waits only between the attempts, not after the last one.
+        Assert-MockCalled Start-Sleep -Scope It -Times 2 -Exactly
+    }
+
+    It 'does not wait after the last failed attempt of a gateway timeout' {
+        Mock Invoke-WebRequest { throw (Get-TestHttpException -StatusCode 504 -Body 'timeout') }
+        Invoke-GeminiRequest -PayloadText 'book data' | Should Be $null
+        Assert-MockCalled Invoke-WebRequest -Scope It -Times 3 -Exactly
+        Assert-MockCalled Start-Sleep -Scope It -Times 2 -Exactly
     }
 
     It 'retries after an HTTP 500 or 502 server error' {
@@ -416,6 +427,49 @@ Describe 'Invoke-GeminiRequest' {
         finally {
             $script:TokenLedger = $null
         }
+    }
+}
+
+Describe 'Get-RetryWaitSecond' {
+    $script:ConnectionRetryBaseSeconds = 15
+    $script:ConnectionRetryMaxSeconds = 120
+    $script:ServiceUnavailableRetryBaseSeconds = 5
+    $script:ServiceUnavailableRetryMaxSeconds = 60
+    $script:RateLimitRetryBaseSeconds = 30
+    $script:GatewayTimeoutRetryIntervalSeconds = 300
+
+    try {
+        It 'uses a capped exponential backoff for connection failures' {
+            Get-RetryWaitSecond -StatusCode $null -ConnectionFailure 'ConnectFailure' -RetryNumber 1 | Should Be 30
+            Get-RetryWaitSecond -StatusCode $null -ConnectionFailure 'ConnectFailure' -RetryNumber 3 | Should Be 120
+        }
+
+        It 'uses a capped exponential backoff for HTTP 500, 502, and 503' {
+            foreach ($statusCode in @(500, 502, 503)) {
+                Get-RetryWaitSecond -StatusCode $statusCode -ConnectionFailure $null -RetryNumber 1 | Should Be 10
+                Get-RetryWaitSecond -StatusCode $statusCode -ConnectionFailure $null -RetryNumber 5 | Should Be 60
+            }
+        }
+
+        It 'uses an uncapped exponential backoff for HTTP 429 and a fixed interval for HTTP 504' {
+            Get-RetryWaitSecond -StatusCode 429 -ConnectionFailure $null -RetryNumber 2 | Should Be 120
+            Get-RetryWaitSecond -StatusCode 504 -ConnectionFailure $null -RetryNumber 2 | Should Be 300
+        }
+
+        It 'returns $null for errors that are not worth a retry' {
+            foreach ($statusCode in @(400, 401, 403, 404)) {
+                Get-RetryWaitSecond -StatusCode $statusCode -ConnectionFailure $null -RetryNumber 1 | Should Be $null
+            }
+            Get-RetryWaitSecond -StatusCode $null -ConnectionFailure $null -RetryNumber 1 | Should Be $null
+        }
+    }
+    finally {
+        $script:ConnectionRetryBaseSeconds = 1
+        $script:ConnectionRetryMaxSeconds = 1
+        $script:ServiceUnavailableRetryBaseSeconds = 1
+        $script:ServiceUnavailableRetryMaxSeconds = 1
+        $script:RateLimitRetryBaseSeconds = 1
+        $script:GatewayTimeoutRetryIntervalSeconds = 1
     }
 }
 
@@ -623,54 +677,46 @@ Describe 'Get-MissingBookRecord' {
     }
 }
 
-Describe 'Save-ResultFile' {
-    $resultPath = Join-Path -Path $TestDrive -ChildPath 'LLM-Result_01_2026-11-01_07-31-38.json'
-
-    It 'writes the content as UTF-8 with BOM and leaves no temporary file' {
-        Save-ResultFile -Path $resultPath -Content '{ "status": "success", "Title": "Begründung" }'
-        $bytes = [System.IO.File]::ReadAllBytes($resultPath)
-        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should Be $true
-        [System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8) | Should Match 'Begründung'
-        Test-Path -LiteralPath ([System.IO.Path]::ChangeExtension($resultPath, '.tmp')) | Should Be $false
+Describe 'Get-BookIdentityKey and Get-UniqueBookCount' {
+    It 'builds the key from title and author only, ignoring case and extra whitespace' {
+        Get-BookIdentityKey -Book ([pscustomobject]@{ Title = ' Book  A '; Author = 'AUTHOR'; Series = 'S'; SeriesIndex = 1 }) | Should Be 'book a|author'
     }
 
-    It 'replaces an existing result file' {
-        Save-ResultFile -Path $resultPath -Content '{ "status": "warning" }'
-        [System.IO.File]::ReadAllText($resultPath, [System.Text.Encoding]::UTF8) | Should Match 'warning'
-        Test-Path -LiteralPath ([System.IO.Path]::ChangeExtension($resultPath, '.tmp')) | Should Be $false
+    It 'returns an empty key for a book without title and author' {
+        Get-BookIdentityKey -Book ([pscustomobject]@{ Series = 'S' }) | Should Be ''
+        Get-BookIdentityKey -Book $null | Should Be ''
+    }
+
+    It 'counts books with the same title and author but another series index once, like the result records' {
+        $inputBooks = @(
+            [pscustomobject]@{ Title = 'Wolf Pack'; Author = 'R. Charrette'; Series = 'BattleTech'; SeriesIndex = 1 },
+            [pscustomobject]@{ Title = 'Wolf Pack'; Author = 'R. Charrette'; Series = 'BattleTech'; SeriesIndex = 2 },
+            [pscustomobject]@{ Title = 'Other'; Author = 'R. Charrette'; Series = $null; SeriesIndex = $null }
+        )
+        $records = @(
+            [pscustomobject]@{ Title = 'Wolf Pack'; Author = 'R. Charrette'; ProposedAction = 'NO_CHANGES' },
+            [pscustomobject]@{ Title = 'Other'; Author = 'R. Charrette'; ProposedAction = 'NO_CHANGES' }
+        )
+        Get-UniqueBookCount -Items $inputBooks | Should Be 2
+        Get-UniqueBookCount -Items $records | Should Be (Get-UniqueBookCount -Items $inputBooks)
+    }
+
+    It 'returns 0 for no items and skips items without title and author' {
+        Get-UniqueBookCount -Items $null | Should Be 0
+        Get-UniqueBookCount -Items @() | Should Be 0
+        Get-UniqueBookCount -Items @([pscustomobject]@{ Series = 'S' }) | Should Be 0
     }
 }
 
-Describe 'Test-ResultFileComplete' {
-    It 'returns $false for a missing file' {
-        Test-ResultFileComplete -Path (Join-Path -Path $TestDrive -ChildPath 'missing.json') | Should Be $false
+Describe 'Input file and delay workflow' {
+    $scriptText = $scriptAst.Extent.Text
+
+    It 'does not send an export file that is not valid JSON, but saves an error result for it' {
+        $scriptText | Should Match '(?s)if \(\$null -ne \$inputParseError\) \{.*?status\s+= ''error''.*?Save-AtomicTextFile -Path \$outPath.*?continue\s+\}'
     }
 
-    It 'returns $false for a truncated file' {
-        $path = Join-Path -Path $TestDrive -ChildPath 'truncated.json'
-        Set-Content -LiteralPath $path -Value '{ "status": "success", "records": [ {'
-        Test-ResultFileComplete -Path $path | Should Be $false
-    }
-
-    It 'returns $false for a result with status error' {
-        $path = Join-Path -Path $TestDrive -ChildPath 'error.json'
-        Set-Content -LiteralPath $path -Value '{ "status": "error", "records": [] }'
-        Test-ResultFileComplete -Path $path | Should Be $false
-    }
-
-    It 'returns $false for JSON without status' {
-        $path = Join-Path -Path $TestDrive -ChildPath 'nostatus.json'
-        Set-Content -LiteralPath $path -Value '{ "records": [] }'
-        Test-ResultFileComplete -Path $path | Should Be $false
-    }
-
-    It 'returns $true for results with status success or warning' {
-        $successPath = Join-Path -Path $TestDrive -ChildPath 'success.json'
-        $warningPath = Join-Path -Path $TestDrive -ChildPath 'warning.json'
-        Set-Content -LiteralPath $successPath -Value '{ "status": "success", "records": [] }'
-        Set-Content -LiteralPath $warningPath -Value '{ "status": "warning", "records": [] }'
-        Test-ResultFileComplete -Path $successPath | Should Be $true
-        Test-ResultFileComplete -Path $warningPath | Should Be $true
+    It 'waits between two files but not after the last file' {
+        $scriptText | Should Match '(?s)if \(\$counter -lt \$total\) \{\s+Start-Sleep -Seconds \$script:InterFileDelaySeconds\s+\}'
     }
 }
 
@@ -687,9 +733,9 @@ Describe 'Resume workflow' {
         $scriptText | Should Match '(?s)if \(\$Resume -and \(Test-ResultFileComplete -Path \$outPath\)\) \{\s+\$skippedFileCount\+\+.*?continue\s+\}\s+Write-ScriptLog "\[\$counter/\$total\] Processing'
     }
 
-    It 'writes every result file through Save-ResultFile' {
+    It 'writes every result file through Save-AtomicTextFile' {
         $scriptText | Should Not Match 'WriteAllText\(\$outPath'
-        ([regex]::Matches($scriptText, 'Save-ResultFile -Path \$outPath -Content \$jsonOutput')).Count | Should Be 2
+        ([regex]::Matches($scriptText, 'Save-AtomicTextFile -Path \$outPath -Content \$jsonOutput')).Count | Should Be 2
     }
 }
 
@@ -714,21 +760,21 @@ Describe 'Prohibited content fallback workflow' {
 
 Describe 'Convert-ResponseTextToResultObject' {
     It 'stores the model and validates the unique-book count' {
-        $result = Convert-ResponseTextToResultObject -RawText '```json [{"Title":"A","Author":"X"}] ```' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 1
+        $result = Convert-ResponseTextToResultObject -RawText '```json [{"Title":"A","Author":"X"}] ```' -SourceFile 'file.json' -ExpectedUniqueBookCount 1
         $result.model | Should Be 'test-model'
         $result.status | Should Be 'success'
         $result.output_unique_book_count | Should Be 1
     }
 
     It 'reports a parse error for text without JSON' {
-        $result = Convert-ResponseTextToResultObject -RawText 'no json here' -SourceFile 'file.json' -Model 'test-model'
+        $result = Convert-ResponseTextToResultObject -RawText 'no json here' -SourceFile 'file.json'
         $result.status | Should Be 'error'
         $result.parse_error | Should Match 'Gemini response'
     }
 
     It 'reads the records from Results and the profiles from ContentProfiles' {
         $rawText = '{"Results":[{"Title":"A","Author":"X","ProposedAction":"ADD","Tag":"T","Reason":"R"},{"Title":"B","Author":"Y","ProposedAction":"NO_CHANGES","Tag":null,"Reason":null}],"ContentProfiles":[{"BookId":1,"ContentProfile":"Profile A"}]}'
-        $result = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 2
+        $result = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile 'file.json' -ExpectedUniqueBookCount 2
         $result.status | Should Be 'success'
         @($result.records).Count | Should Be 2
         $result.records[0].Title | Should Be 'A'
@@ -737,7 +783,7 @@ Describe 'Convert-ResponseTextToResultObject' {
     }
 
     It 'accepts an object form without ContentProfiles' {
-        $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}]}' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 1
+        $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}]}' -SourceFile 'file.json' -ExpectedUniqueBookCount 1
         $result.status | Should Be 'success'
         @($result.content_profiles).Count | Should Be 0
         @($result.profile_gaps).Count | Should Be 0
@@ -745,7 +791,7 @@ Describe 'Convert-ResponseTextToResultObject' {
 
     It 'reads the profile gaps from ProfileGaps' {
         $rawText = '{"Results":[{"Title":"A","Author":"X","ProposedAction":"NO_CHANGES","Tag":null,"Reason":null}],"ContentProfiles":[],"ProfileGaps":[{"BookId":1,"Tags":["Found Family","Harem"]},null]}'
-        $result = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 1
+        $result = Convert-ResponseTextToResultObject -RawText $rawText -SourceFile 'file.json' -ExpectedUniqueBookCount 1
         $result.status | Should Be 'success'
         @($result.profile_gaps).Count | Should Be 1
         $result.profile_gaps[0].BookId | Should Be 1
@@ -753,12 +799,12 @@ Describe 'Convert-ResponseTextToResultObject' {
     }
 
     It 'reports a count mismatch in the object form' {
-        $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}],"ContentProfiles":[]}' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 2
+        $result = Convert-ResponseTextToResultObject -RawText '{"Results":[{"Title":"A","Author":"X"}],"ContentProfiles":[]}' -SourceFile 'file.json' -ExpectedUniqueBookCount 2
         $result.status | Should Be 'warning'
     }
 
     It 'still accepts a plain array without profiles' {
-        $result = Convert-ResponseTextToResultObject -RawText '[{"Title":"A","Author":"X"},{"Title":"B","Author":"Y"}]' -SourceFile 'file.json' -Model 'test-model' -ExpectedUniqueBookCount 2
+        $result = Convert-ResponseTextToResultObject -RawText '[{"Title":"A","Author":"X"},{"Title":"B","Author":"Y"}]' -SourceFile 'file.json' -ExpectedUniqueBookCount 2
         $result.status | Should Be 'success'
         @($result.records).Count | Should Be 2
         @($result.content_profiles).Count | Should Be 0

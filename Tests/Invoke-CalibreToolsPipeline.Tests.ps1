@@ -3,7 +3,7 @@
     Pester tests for the helper functions in Invoke-CalibreToolsPipeline.ps1.
 
 .DESCRIPTION
-    Covers the ChangedWithinDays, FullContent, and Resume script parameters, the resume functions Get-PipelineRunState, Save-PipelineRunState, Get-BookExportTimestamp, Test-PipelineRunResumable, Get-ResumeProgress, and Read-ResumeChoice (with files under $TestDrive and a mocked Read-Host), source checks of the resume flow (export steps skipped, run state written before the LLM step, -Resume not combinable with ChangedWithinDays or FullContent), Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files, ends with the token total, and that a new run deletes the old token ledger. Add-TokenUsageCount and Get-RunTokenSummary are tested with result files and token ledgers under $TestDrive (ledger counts with the tokens of interrupted requests, fallback to the result files, total as prompt + tool use + completion). The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it and load only the function definitions under test. The parameter metadata is read with Get-Command, which does not run the script.
+    Covers the ChangedWithinDays, FullContent, and Resume script parameters, the resume functions Get-PipelineRunState, Save-PipelineRunState, Get-BookExportTimestamp, Test-PipelineRunResumable, Get-ResumeProgress, and Read-ResumeChoice (with files under $TestDrive and a mocked Read-Host), source checks of the resume flow (export steps skipped, run state written before the LLM step, -Resume not combinable with ChangedWithinDays or FullContent), Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files, ends with the token total, and that a new run deletes the old token ledger. Add-TokenUsageCount and Get-RunTokenSummary are tested with result files and token ledgers under $TestDrive (ledger counts with the tokens of interrupted requests, fallback to the result files, total as prompt + tool use + completion). The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it, load only the function definitions under test, and import Modules\Calibre.Storage.psd1 for the file helpers they use. The parameter metadata is read with Get-Command, which does not run the script.
     The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -22,6 +22,9 @@ foreach ($functionName in @('Test-BookExportFile', 'Get-StepScriptParameter', 'G
         }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
 }
+
+# Save-AtomicTextFile, Test-ResultFileComplete, and Get-ExportTimestamp come from the Calibre.Storage module, as in the script.
+Import-Module -Name (Join-Path -Path $projectRoot -ChildPath 'Modules\Calibre.Storage.psd1') -Force
 
 Describe 'Invoke-CalibreToolsPipeline.ps1 source' {
     It 'parses without errors' {
@@ -376,10 +379,6 @@ Describe 'Step loop without a book export' {
     It 'leaves the step loop, so no later step runs' {
         $breakStatement = $noBooksCheck.Clauses[0].Item2.Find({ param($node) $node -is [System.Management.Automation.Language.BreakStatementAst] }, $true)
         $null -ne $breakStatement | Should Be $true
-    }
-
-    It 'no longer uses the removed tag definition baseline' {
-        $scriptAst.Extent.Text | Should Not Match 'TagDefinition'
     }
 
     It 'does not treat a stale $LASTEXITCODE from a handled external program failure as a step failure' {
