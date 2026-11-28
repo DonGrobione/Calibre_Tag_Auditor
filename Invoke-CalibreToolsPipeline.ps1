@@ -5,7 +5,7 @@
 .DESCRIPTION
     Executes the export, LLM processing, and ODS conversion scripts in order. Each script must complete successfully before the next one starts. A step fails only by throwing an error; exit codes of external programs that a step ran are not checked.
     On failure, the error is shown and the script waits for Enter before exit.
-    The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on failure the pipeline only prints the error to the terminal (never writes a second logfile entry) and exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
+    The pipeline starts one DonGrobione.Logging (>= 2.2.0) log session (log directory 'Calibre_Tag_Auditor') that all child scripts share, and stops it in a finally block. Script output (info, warnings, and errors) is written both to terminal and to that log file via Write-ScriptLog from Modules\Calibre.Console.psm1. Start-Log keeps the 5 newest log files per computer. Size-based rotation is turned off (-MaxFileSizeMB 0), so each run stays in one log file. Every child script already logs and rethrows its own errors, so on a step failure the pipeline only prints the error to the terminal (never writes a second logfile entry). An error of the pipeline itself, raised while no step script runs (for example when the run state file cannot be written), is written to the log file and the terminal once. In both cases the pipeline exits with code 1 instead of rethrowing, avoiding stray failure entries from the host's own error handling.
     On successful completion, the pipeline prints the number of books without audit result (missing_books, e.g. blocked by Gemini for prohibited content), which the ODS lists as NOT_AUDITED, the number of Google Search queries (billed per query, used for web content profiles of books without text), and the token usage of the run: the tokens of interrupted or repeated requests (already included in the following counts), prompt tokens with their cached part (billed at a lower rate), tool use tokens (search results added to the input), completion tokens (output including thinking), and as last line the total (prompt + tool use + completion). The counts come from the token ledger 02-LLM-Result\LLM-TokenUsage.json, which the LLM step updates after every Gemini response, so they include requests whose export file never got a result file. Without a ledger the counts come from the result files and a warning says so. A new run deletes the ledger of the old run.
     When 01-Export-CalibreBooks.ps1 writes no book export file (e.g. no book changed within ChangedWithinDays), there is nothing to validate: the pipeline skips the remaining steps, prints a short summary without token usage, and exits with code 0.
     Resume: a run can be cancelled (Ctrl+C) or stopped by a crash or power outage during the LLM step or the ODS conversion and continued later. After both export steps succeeded, the pipeline writes the run state file 02-LLM-Result\Pipeline-RunState.json (run timestamp, start time, FullContent, ChangedWithinDays, Status Running, Step 02-Process); after the LLM step it sets Step to 03-Convert, and after the ODS conversion Status to Completed. A new run deletes the old state file first, so a run interrupted during the export is simply started again. When a run is resumable (Status Running, its book export files and the tag export file still in 01-Export) and the pipeline is started without -Resume, it shows the progress and asks: [R]esume, [N]ew run, or [A]bort (an empty answer aborts). A resumed run skips both export steps and, at Step 03-Convert, also the LLM step; the LLM step runs with -Resume and the FullContent setting of the original run, so it keeps the existing results and skips every export file that already has a complete result. At most the export file in progress when the run stopped is processed again. The LLM step continues the token ledger of the earlier sessions, so the token and search query totals of the summary cover the whole run.
@@ -36,7 +36,7 @@
     Continues the last run where it was cancelled or stopped.
 
 .NOTES
-    Version: 1.23
+    Version: 1.24
 #>
 
 [CmdletBinding()]
@@ -383,6 +383,8 @@ $tokenLedgerPath = Join-Path -Path $resultDirectory -ChildPath 'LLM-TokenUsage.j
 $runState = $null
 $runStateWritten = $false
 $runFinished = $false
+# Name of the step script that is running, or $null while the pipeline itself works. The catch block uses it to log only the errors that no step script has logged.
+$runningStep = $null
 
 try {
     if ($Resume -and ($PSBoundParameters.ContainsKey('ChangedWithinDays') -or $FullContent)) {
@@ -471,7 +473,9 @@ try {
         $stepParameters = Get-StepScriptParameter -ScriptName $script -PipelineParameters $pipelineParameters
         Write-ScriptLog "=== Starting: $script ==="
         # A failed step rethrows its error, which ends the loop. $LASTEXITCODE is not checked, because it only holds the exit code of the last external program a step ran, including failures the step already handled.
+        $runningStep = $script
         & $scriptPath @stepParameters
+        $runningStep = $null
 
         Write-ScriptLog "=== Completed: $script ==="
         Write-Information -MessageData '' -InformationAction Continue
@@ -543,7 +547,7 @@ try {
     Write-ScriptLog ('{0,-50}{1}' -f 'Tokens total (prompt + tool use + completion):', $runTokens.TotalTokens.ToString('N0'))
 }
 catch {
-    # Report the error and stop execution. Every child script already logs and rethrows its own errors, so this catch block only prints to terminal and never writes a second logfile entry for the same failure.
+    # Report the error and stop execution. A step script has already logged its own error before rethrowing it, so that error is only printed to the terminal and never gets a second log entry. An error of the pipeline itself (for example writing the run state) is logged here once, which also shows it in the terminal.
     $errorMessage = $null
 
     if ($null -ne $_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
@@ -556,7 +560,12 @@ catch {
         $errorMessage = $_.ToString()
     }
 
-    Microsoft.PowerShell.Utility\Write-Error $errorMessage -ErrorAction Continue
+    if ($null -eq $runningStep) {
+        Write-ScriptLog -Level ERROR -Message "Pipeline error: $errorMessage" -ErrorRecord $_
+    }
+    else {
+        Microsoft.PowerShell.Utility\Write-Error $errorMessage -ErrorAction Continue
+    }
     Read-Host -Prompt 'Press Enter to close this window after reviewing the error' | Out-Null
     # Exit the orchestrator directly instead of rethrowing, so no uncaught exception reaches the host and triggers spurious failure log entries.
     exit 1

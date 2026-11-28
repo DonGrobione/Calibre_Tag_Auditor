@@ -3,7 +3,7 @@
     File helpers for the result and state files of the Calibre Tag Auditor scripts.
 
 .DESCRIPTION
-    Save-AtomicTextFile writes a text file through a temporary file that then replaces the target, so an interruption never leaves a truncated file. Test-ResultFileComplete tells whether an LLM result file is complete, so a resumed run can skip its export file. Get-ExportTimestamp reads the run timestamp from the name of an export or result file.
+    Save-AtomicTextFile writes a text file through a temporary file that then replaces the target, so an interruption never leaves a truncated file; it repeats the write for a few seconds while another program (a cloud sync client or a virus scanner) holds the file open. Test-ResultFileComplete tells whether an LLM result file is complete, so a resumed run can skip its export file. Get-ExportTimestamp reads the run timestamp from the name of an export or result file.
     The module neither logs nor reads configuration; errors are returned to the calling script as exceptions.
 
 .PARAMETER Path
@@ -20,7 +20,35 @@
     The module version is maintained in Modules\Calibre.Storage.psd1.
 #>
 
-# Writes the text as UTF-8 without BOM to <name>.tmp first, which then replaces the target file (or is renamed to it), so an interruption leaves either the complete previous file or an orphaned .tmp file, never a truncated file.
+# Waits in milliseconds before the second to sixth attempt of Save-AtomicTextFile (3.85 seconds in total). Cloud sync clients and virus scanners open a freshly written file for a moment without allowing it to be deleted, which makes File.Replace fail until they close it.
+$script:AtomicWriteRetryDelayMilliseconds = @(100, 250, 500, 1000, 2000)
+
+# Puts the temporary file in place of the target: File.Replace when the target exists, otherwise File.Move.
+function Move-TemporaryFile {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$TemporaryPath,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Path
+    )
+
+    if (-not $PSCmdlet.ShouldProcess($Path, 'Replace file')) {
+        return
+    }
+
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        # [NullString]::Value passes a real null for the backup file; PowerShell would turn $null into an empty, invalid path.
+        [System.IO.File]::Replace($TemporaryPath, $Path, [NullString]::Value)
+    }
+    else {
+        [System.IO.File]::Move($TemporaryPath, $Path)
+    }
+}
+
+# Writes the text as UTF-8 without BOM to <name>.tmp first, which then replaces the target file (or is renamed to it), so an interruption leaves either the complete previous file or an orphaned .tmp file, never a truncated file. When another program holds the target or the temporary file open (IOException or access denied), the write is repeated up to five times with growing waits; after the last attempt it throws an IOException that names the file and keeps the original exception as inner exception. A missing file or folder fails at once.
 function Save-AtomicTextFile {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
@@ -37,13 +65,31 @@ function Save-AtomicTextFile {
     }
 
     $temporaryPath = [System.IO.Path]::ChangeExtension($Path, '.tmp')
-    [System.IO.File]::WriteAllText($temporaryPath, $Content, (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false))
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        # [NullString]::Value passes a real null for the backup file; PowerShell would turn $null into an empty, invalid path.
-        [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
-    }
-    else {
-        [System.IO.File]::Move($temporaryPath, $Path)
+    $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try {
+            [System.IO.File]::WriteAllText($temporaryPath, $Content, $encoding)
+            Move-TemporaryFile -TemporaryPath $temporaryPath -Path $Path -Confirm:$false
+            return
+        }
+        catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {
+            throw
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            $cause = $_.Exception
+            if ($cause -is [System.Management.Automation.MethodInvocationException] -and $null -ne $cause.InnerException) {
+                $cause = $cause.InnerException
+            }
+
+            if ($attempt -gt $script:AtomicWriteRetryDelayMilliseconds.Count) {
+                $message = "Could not write '$Path' after $attempt attempts, because another program (for example a cloud sync client or a virus scanner) kept the file or its temporary file open: $($cause.Message.Trim())"
+                throw (New-Object -TypeName System.IO.IOException -ArgumentList $message, $cause)
+            }
+
+            Start-Sleep -Milliseconds $script:AtomicWriteRetryDelayMilliseconds[$attempt - 1]
+        }
     }
 }
 

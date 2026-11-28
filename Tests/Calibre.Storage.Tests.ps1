@@ -3,7 +3,7 @@
     Pester tests for the Calibre.Storage module.
 
 .DESCRIPTION
-    Covers the manifest, Save-AtomicTextFile (UTF-8 without BOM, replace of an existing file, no temporary file left, -WhatIf), Test-ResultFileComplete (missing, truncated, error, and complete result files), and Get-ExportTimestamp (export and result file names).
+    Covers the manifest, Save-AtomicTextFile (UTF-8 without BOM, replace of an existing file, no temporary file left, -WhatIf, no retry for a missing folder, retry while the target is locked, IOException after the last attempt),Test-ResultFileComplete (missing, truncated, error, and complete result files), and Get-ExportTimestamp (export and result file names).
     All files are created in the Pester TestDrive.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
@@ -58,6 +58,67 @@ Describe 'Save-AtomicTextFile' {
         $whatIfPath = Join-Path -Path $TestDrive -ChildPath 'whatif.json'
         Save-AtomicTextFile -Path $whatIfPath -Content '{}' -WhatIf
         Test-Path -LiteralPath $whatIfPath | Should Be $false
+    }
+
+    It 'fails at once without retry when the folder does not exist' {
+        Mock -ModuleName Calibre.Storage Start-Sleep {}
+        $missingFolderPath = Join-Path -Path $TestDrive -ChildPath 'missing\state.json'
+        { Save-AtomicTextFile -Path $missingFolderPath -Content '{}' } | Should Throw
+        Assert-MockCalled -ModuleName Calibre.Storage Start-Sleep -Times 0 -Exactly -Scope It
+    }
+}
+
+Describe 'Save-AtomicTextFile with a locked file' {
+    $path = Join-Path -Path $TestDrive -ChildPath 'Pipeline-RunState.json'
+    $temporaryPath = [System.IO.Path]::ChangeExtension($path, '.tmp')
+    # The mock of Move-TemporaryFile runs in the module scope and cannot see test variables, so it counts its calls in a file under the global $TestDrive.
+    $callCountPath = Join-Path -Path $TestDrive -ChildPath 'move-calls.txt'
+
+    It 'retries while the target cannot be replaced and succeeds when it is released' {
+        [System.IO.File]::WriteAllText($path, '{ "Status": "Running" }')
+        [System.IO.File]::WriteAllText($callCountPath, '0')
+        Mock -ModuleName Calibre.Storage Start-Sleep {}
+        Mock -ModuleName Calibre.Storage Move-TemporaryFile {
+            $countPath = Join-Path -Path $TestDrive -ChildPath 'move-calls.txt'
+            $count = [int][System.IO.File]::ReadAllText($countPath) + 1
+            [System.IO.File]::WriteAllText($countPath, [string]$count)
+            if ($count -le 2) {
+                throw (New-Object -TypeName System.IO.IOException -ArgumentList 'The file to be replaced could not be removed.')
+            }
+            [System.IO.File]::Replace($TemporaryPath, $Path, [NullString]::Value)
+        }
+
+        Save-AtomicTextFile -Path $path -Content '{ "Status": "Completed" }'
+
+        [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | Should BeExactly '{ "Status": "Completed" }'
+        Test-Path -LiteralPath $temporaryPath | Should Be $false
+        Assert-MockCalled -ModuleName Calibre.Storage Move-TemporaryFile -Times 3 -Exactly -Scope It
+        Assert-MockCalled -ModuleName Calibre.Storage Start-Sleep -Times 2 -Exactly -Scope It
+    }
+
+    It 'throws an IOException naming the file after six attempts while another program keeps it open without delete sharing' {
+        [System.IO.File]::WriteAllText($path, '{ "Status": "Running" }')
+        Mock -ModuleName Calibre.Storage Start-Sleep {}
+        # A sync client or virus scanner opens the file like this: reading and writing allowed for others, deleting not.
+        $lock = New-Object -TypeName System.IO.FileStream -ArgumentList $path, ([System.IO.FileMode]::Open), ([System.IO.FileAccess]::Read), ([System.IO.FileShare]::ReadWrite)
+        try {
+            $caught = $null
+            try {
+                Save-AtomicTextFile -Path $path -Content '{ "Status": "Completed" }'
+            }
+            catch {
+                $caught = $_.Exception
+            }
+        }
+        finally {
+            $lock.Dispose()
+        }
+
+        $caught -is [System.IO.IOException] | Should Be $true
+        $caught.Message | Should Match ([regex]::Escape("Could not write '$path' after 6 attempts"))
+        $null -ne $caught.InnerException | Should Be $true
+        Assert-MockCalled -ModuleName Calibre.Storage Start-Sleep -Times 5 -Exactly -Scope It
+        [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | Should BeExactly '{ "Status": "Running" }'
     }
 }
 

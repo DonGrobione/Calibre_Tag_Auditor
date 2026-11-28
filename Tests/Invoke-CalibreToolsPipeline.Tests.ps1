@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Covers the ChangedWithinDays, FullContent, and Resume script parameters, the resume functions Get-PipelineRunState, Save-PipelineRunState, Get-BookExportTimestamp, Test-PipelineRunResumable, Get-ResumeProgress, and Read-ResumeChoice (with files under $TestDrive and a mocked Read-Host), source checks of the resume flow (export steps skipped, run state written before the LLM step, -Resume not combinable with ChangedWithinDays or FullContent), Test-BookExportFile, which decides whether the pipeline continues after the book export, Get-StepScriptParameter, which forwards ChangedWithinDays to the book export and FullContent to the LLM step. The source tests also check that the summary counts the missing_books of the LLM result files, ends with the token total, and that a new run deletes the old token ledger. Add-TokenUsageCount and Get-RunTokenSummary are tested with result files and token ledgers under $TestDrive (ledger counts with the tokens of interrupted requests, fallback to the result files, total as prompt + tool use + completion). The Step loop tests check in the source that the pipeline leaves the step loop after the book export when no book export file was written. The pipeline runs all steps when it is executed, so the tests parse it, load only the function definitions under test, and import Modules\Calibre.Storage.psd1 for the file helpers they use. The parameter metadata is read with Get-Command, which does not run the script.
-    The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0.
+    The Logging setup tests check in the source that the script imports DonGrobione.Logging 2.2.0 or later and turns off size-based log rotation with Start-Log -MaxFileSizeMB 0. The Error handling tests check in the source that the catch block logs errors of the pipeline itself once, prints errors of step scripts (already logged by the step) to the terminal only, and exits with code 1.
     The tests use Pester v4-compatible syntax (Describe/Context/It with "Should Be") and run in Windows PowerShell 5.1 with Pester 3.4 or 4.x; Pester 5 does not support this syntax.
 
 .EXAMPLE
@@ -409,5 +409,34 @@ Describe 'Logging setup' {
 
     It 'imports DonGrobione.Logging without -Force, which would reset a running log session' {
         $loggingImports[0].Extent.Text | Should Not Match '-Force\b'
+    }
+}
+
+Describe 'Error handling' {
+    $mainTry = @($scriptAst.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })[0]
+    $catchText = $mainTry.CatchClauses[0].Body.Extent.Text
+    $stepCall = $mainTry.Body.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and $node.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and $node.Extent.Text -match '^& \$scriptPath\b'
+        }, $true)
+
+    It 'marks the running step around the step script call only' {
+        $stepCall | Should Not BeNullOrEmpty
+        $mainTry.Body.Extent.Text | Should Match '(?s)\$runningStep = \$script\s+& \$scriptPath @stepParameters\s+\$runningStep = \$null'
+        $scriptAst.Extent.Text | Should Match '(?m)^\$runningStep = \$null\s*$'
+    }
+
+    It 'logs an error of the pipeline itself once with its error record' {
+        $catchText | Should Match '(?s)if \(\$null -eq \$runningStep\) \{\s+Write-ScriptLog -Level ERROR -Message "Pipeline error: \$errorMessage" -ErrorRecord \$_\s+\}'
+    }
+
+    It 'prints an error of a step script to the terminal only, because the step has logged it' {
+        $catchText | Should Match '(?s)else \{\s+Microsoft\.PowerShell\.Utility\\Write-Error \$errorMessage -ErrorAction Continue\s+\}'
+        ([regex]::Matches($catchText, 'Write-ScriptLog')).Count | Should Be 1
+    }
+
+    It 'exits with code 1 instead of rethrowing' {
+        $catchText | Should Match '\bexit 1\b'
+        $catchText | Should Not Match '\bthrow\b'
     }
 }

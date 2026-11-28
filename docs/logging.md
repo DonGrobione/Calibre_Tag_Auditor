@@ -3,6 +3,8 @@ All scripts log through the DonGrobione.Logging module. Each run writes one log 
 
 Terminal output shows the same messages; warnings and errors are prefixed with `WARN:` or `ERROR:`.
 
+Every error is written to the log file once. A step that fails logs its own error, and the pipeline then shows it in the terminal only. An error of the pipeline itself, for example when the run state file cannot be written, is logged by the pipeline with the prefix `Pipeline error:`.
+
 To update the logging module:
 
 ```powershell
