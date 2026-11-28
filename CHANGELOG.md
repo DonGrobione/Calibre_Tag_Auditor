@@ -1,6 +1,17 @@
 # Changelog
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules use [Semantic Versioning](https://semver.org/). Module versions are maintained in their manifests (`Modules/*.psd1`); standalone scripts keep their version in their comment-based help block.
 
+## 2026-11-28
+
+### Modules
+- `Calibre.Storage` 1.1.0: `Save-AtomicTextFile` repeats the write up to five times with growing waits (100 ms to 2 s, 3.85 s in total) when the target or the temporary file cannot be replaced or written (IOException or access denied). A run in a synchronized folder failed after the ODS conversion with "The file to be replaced cannot be removed", because the HiDrive sync client still held the run state file that was written 5 seconds earlier. After the last attempt it throws an IOException that names the file; a missing file or folder fails at once. The replace itself moved to the private function `Move-TemporaryFile`. With tests, including one that holds the file open without delete sharing.
+
+### Scripts
+- `Invoke-CalibreToolsPipeline.ps1` 1.24: errors of the pipeline itself (raised while no step script runs, for example when the run state file cannot be written) are now written to the log file once, with the prefix `Pipeline error:`. Before, they appeared only in the terminal, so the log ended without any error. Errors of step scripts are still shown in the terminal only, because the step has already logged them. With tests.
+
+### Documentation
+- docs/common-issues.md: new entry for files that another program keeps open. docs/logging.md: describes which errors the pipeline logs.
+
 ## 2026-11-25
 
 ### Documentation
